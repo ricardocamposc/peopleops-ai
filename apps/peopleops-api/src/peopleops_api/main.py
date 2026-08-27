@@ -17,7 +17,7 @@ from peopleops_api.db import get_db
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClient
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
-from peopleops_api.models import PolicyDocument
+from peopleops_api.models import HumanReviewRequest, PolicyDocument
 from peopleops_api.policy_ingestion import (
     PolicyIngestionService,
     PolicyUploadError,
@@ -26,10 +26,18 @@ from peopleops_api.policy_ingestion import (
     get_embedding_model,
 )
 from peopleops_api.policy_retrieval import PolicyKnowledgeProvider
-from peopleops_api.repositories import create_interaction, get_interaction
+from peopleops_api.repositories import (
+    create_interaction,
+    get_human_review,
+    get_interaction,
+    list_human_reviews,
+    record_human_review_decision,
+)
 from peopleops_api.schemas import (
     AnalysisCreate,
     AnalysisRead,
+    HumanReviewDecisionCreate,
+    HumanReviewRead,
     PolicyChunkRead,
     PolicyDocumentRead,
     PolicyJobRead,
@@ -108,6 +116,99 @@ def read_analysis(request_id: str, session: Annotated[Session, Depends(get_db)])
     if interaction is None:
         raise HTTPException(status_code=404, detail="analysis not found")
     return AnalysisRead.model_validate(interaction)
+
+
+def _human_review_response(review: HumanReviewRequest) -> HumanReviewRead:
+    analysis = review.analysis
+    return HumanReviewRead(
+        id=review.id,
+        analysis_id=review.analysis_id,
+        request_id=analysis.request_id,
+        question=analysis.question,
+        analysis_status=analysis.status,
+        status=review.status,
+        reason=review.reason,
+        recommendation_snapshot=review.recommendation_snapshot,
+        evidence_snapshot=review.evidence_snapshot,
+        requested_at=review.requested_at,
+        reviewed_at=review.reviewed_at,
+        reviewed_by=review.reviewed_by,
+        decision=review.decision,
+        comments=review.comments,
+        decisions=review.decisions,
+    )
+
+
+@app.get("/api/v1/human-review", response_model=list[HumanReviewRead], tags=["human-review"])
+@app.get("/api/v1/human-review/inbox", response_model=list[HumanReviewRead], tags=["human-review"])
+def human_review_inbox(
+    status_filter: str | None = "pending",
+    session: Annotated[Session, Depends(get_db)] = None,
+) -> list[HumanReviewRead]:
+    if status_filter not in {None, "pending", "approve", "reject", "needs_information"}:
+        raise HTTPException(status_code=422, detail="invalid human review status")
+    return [
+        _human_review_response(item) for item in list_human_reviews(session, status=status_filter)
+    ]
+
+
+@app.get("/api/v1/human-review/{review_id}", response_model=HumanReviewRead, tags=["human-review"])
+def human_review_detail(
+    review_id: UUID, session: Annotated[Session, Depends(get_db)]
+) -> HumanReviewRead:
+    review = get_human_review(session, review_id)
+    if review is None:
+        raise HTTPException(status_code=404, detail="human review not found")
+    return _human_review_response(review)
+
+
+@app.post(
+    "/api/v1/human-review/{review_id}/decision",
+    response_model=HumanReviewRead,
+    tags=["human-review"],
+)
+def human_review_decision(
+    review_id: UUID,
+    payload: HumanReviewDecisionCreate,
+    session: Annotated[Session, Depends(get_db)],
+) -> HumanReviewRead:
+    try:
+        review, _, created = record_human_review_decision(
+            session,
+            review_id,
+            decision=payload.decision,
+            reviewed_by=payload.reviewed_by,
+            comments=payload.comments,
+        )
+        session.commit()
+    except LookupError as exc:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if created:
+        interaction = session.get(type(review.analysis), review.analysis_id)
+        if interaction is None:
+            raise HTTPException(status_code=404, detail="analysis not found")
+        workflow = AnalysisWorkflow(
+            session=session,
+            gateway=HRDataGateway(
+                MCPClient(
+                    server_url=str(settings.reference_mcp_server_url),
+                    timeout_seconds=settings.mcp_timeout_seconds,
+                    max_retries=settings.mcp_max_retries,
+                )
+            ),
+            model=OpenAIStructuredModel(
+                api_key=settings.openai_api_key, model=settings.openai_model
+            ),
+            security=SecurityContext(),
+            policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
+        )
+        workflow.resume(interaction)
+        session.refresh(review)
+    return _human_review_response(review)
 
 
 def _policy_response(version, job, idempotent: bool) -> PolicyUploadResponse:

@@ -76,6 +76,59 @@ class AnalysisInteraction(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     conversation: Mapped[Conversation | None] = relationship(back_populates="interactions")
+    human_review: Mapped["HumanReviewRequest | None"] = relationship(
+        back_populates="analysis", foreign_keys="HumanReviewRequest.analysis_id", uselist=False
+    )
+
+
+class HumanReviewRequest(Base):
+    __tablename__ = "human_review_request"
+    __table_args__ = (UniqueConstraint("analysis_id", name="uq_human_review_request_analysis"),)
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    analysis_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("analysis_interaction.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    recommendation_snapshot: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    evidence_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(String(255))
+    decision: Mapped[str | None] = mapped_column(String(32))
+    comments: Mapped[str | None] = mapped_column(Text)
+
+    analysis: Mapped[AnalysisInteraction] = relationship(back_populates="human_review")
+    decisions: Mapped[list["HumanReviewDecision"]] = relationship(
+        back_populates="review_request",
+        cascade="all, delete-orphan",
+        order_by="HumanReviewDecision.decided_at",
+    )
+
+
+class HumanReviewDecision(Base):
+    __tablename__ = "human_review_decision"
+    __table_args__ = (
+        UniqueConstraint("review_request_id", name="uq_human_review_decision_request"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True, default=uuid4)
+    review_request_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("human_review_request.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    comments: Mapped[str | None] = mapped_column(Text)
+    reviewed_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    review_request: Mapped[HumanReviewRequest] = relationship(back_populates="decisions")
 
 
 class PolicyDocument(Base):

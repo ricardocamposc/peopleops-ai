@@ -97,6 +97,7 @@ class AnalysisState(TypedDict, total=False):
     response: StructuredAnswer
     replan_count: int
     query_errors: list[str]
+    human_decision: str
 
 
 @dataclass
@@ -109,6 +110,8 @@ class AnalysisWorkflow:
     max_replans: int = 1
 
     def run(self, interaction: AnalysisInteraction) -> AnalysisInteraction:
+        if interaction.status == "pending_human_review":
+            return self.resume(interaction)
         graph = self._build_graph()
         started = monotonic()
         interaction.model_name = self.model.model_name
@@ -127,7 +130,8 @@ class AnalysisWorkflow:
                 }
             )
             interaction.latency_ms = round((monotonic() - started) * 1000)
-            interaction.completed_at = datetime.now(UTC)
+            if interaction.status != "pending_human_review":
+                interaction.completed_at = datetime.now(UTC)
             self.session.add(interaction)
             self.session.commit()
             return result["interaction"]
@@ -140,6 +144,43 @@ class AnalysisWorkflow:
         except Exception:  # noqa: BLE001 - normalize unexpected workflow boundary failures
             return self._fail(interaction, "SYSTEM_ERROR", "analysis workflow failed")
 
+    def resume(self, interaction: AnalysisInteraction) -> AnalysisInteraction:
+        """Resume from the durable evidence and review decision."""
+        review = interaction.human_review
+        if (
+            interaction.status != "pending_human_review"
+            or review is None
+            or review.decision is None
+        ):
+            return interaction
+        graph = self._build_resume_graph()
+        try:
+            result = graph.invoke(
+                {
+                    "interaction": interaction,
+                    "question": interaction.question,
+                    "evidence": interaction.evidence or [],
+                    "facts": [
+                        item
+                        for item in (interaction.evidence or [])
+                        if item.get("type") == "structured_data"
+                    ],
+                    "policies": [
+                        item
+                        for item in (interaction.evidence or [])
+                        if item.get("type") == "policy"
+                    ],
+                    "warnings": interaction.warnings or [],
+                    "human_decision": review.decision,
+                }
+            )
+            self.session.commit()
+            return result["interaction"]
+        except OpenAIModelError as exc:
+            return self._fail(interaction, "MODEL_ERROR", str(exc))
+        except Exception:  # noqa: BLE001 - normalize unexpected resume failures
+            return self._fail(interaction, "HUMAN_REVIEW_ERROR", "analysis resume failed")
+
     def _build_graph(self):
         builder = StateGraph(AnalysisState)
         builder.add_node("understand_request", self._understand_request)
@@ -148,6 +189,7 @@ class AnalysisWorkflow:
         builder.add_node("execute_queries", self._execute_queries)
         builder.add_node("retrieve_policy", self._retrieve_policy)
         builder.add_node("merge_evidence", self._merge_evidence)
+        builder.add_node("human_review", self._human_review)
         builder.add_node("synthesize", self._synthesize)
         builder.add_edge(START, "understand_request")
         builder.add_conditional_edges(
@@ -167,9 +209,51 @@ class AnalysisWorkflow:
             {"replan": "plan_queries", "policy": "retrieve_policy", "merge": "merge_evidence"},
         )
         builder.add_edge("retrieve_policy", "merge_evidence")
-        builder.add_edge("merge_evidence", "synthesize")
+        builder.add_conditional_edges(
+            "merge_evidence",
+            self._after_evidence_merge,
+            {"review": "human_review", "synthesize": "synthesize"},
+        )
+        builder.add_edge("human_review", END)
         builder.add_edge("synthesize", END)
         return builder.compile()
+
+    def _build_resume_graph(self):
+        builder = StateGraph(AnalysisState)
+        builder.add_node("synthesize", self._synthesize)
+        builder.add_edge(START, "synthesize")
+        builder.add_edge("synthesize", END)
+        return builder.compile()
+
+    @staticmethod
+    def _after_evidence_merge(state: AnalysisState) -> str:
+        semantic = state.get("semantic_request")
+        if semantic and (semantic.sensitivity == "restricted" or semantic.requires_human_review):
+            return "review"
+        return "synthesize"
+
+    def _human_review(self, state: AnalysisState) -> dict[str, Any]:
+        from peopleops_api.repositories import create_human_review
+
+        review = create_human_review(
+            self.session,
+            state["interaction"],
+            reason="The structured analysis is classified as requiring human review.",
+            recommendation_snapshot={
+                "type": "inference",
+                "status": "requires_human_review",
+                "summary": "No employment action is executed; a reviewer must decide how to proceed.",
+            },
+            evidence_snapshot=list(state.get("evidence", [])),
+        )
+        self._stage(
+            state,
+            "human_review",
+            "pending_human_review",
+            snapshots={"evidence": list(state.get("evidence", []))},
+        )
+        state["interaction"].human_review_id = review.id
+        return {"interaction": state["interaction"]}
 
     @staticmethod
     def _after_understanding(state: AnalysisState) -> str:
@@ -367,6 +451,24 @@ class AnalysisWorkflow:
         }
 
     def _synthesize(self, state: AnalysisState) -> dict[str, Any]:
+        human_decision = state.get("human_decision")
+        if human_decision == "reject":
+            return self._complete_after_review(
+                state,
+                StructuredAnswer(
+                    answer="The reviewer rejected proceeding with this analysis.",
+                    warnings=["Human Review decision: reject."],
+                ),
+            )
+        if human_decision == "needs_information":
+            return self._complete_after_review(
+                state,
+                StructuredAnswer(
+                    answer="The reviewer requested more information before this analysis can continue.",
+                    status="insufficient_data",
+                    warnings=["Human Review decision: needs_information."],
+                ),
+            )
         evidence = state.get("evidence", [])
         data_available = any(
             item.get("result", {}).get("rows")
@@ -423,6 +525,21 @@ class AnalysisWorkflow:
             final_status,
             snapshots={"response": response.model_dump(mode="json")},
         )
+        return {"response": response, "interaction": state["interaction"]}
+
+    def _complete_after_review(
+        self, state: AnalysisState, response: StructuredAnswer
+    ) -> dict[str, Any]:
+        response.facts = state.get("facts", [])
+        response.policies = state.get("policies", [])
+        response.warnings = _unique([*state.get("warnings", []), *response.warnings])
+        self._stage(
+            state,
+            "synthesis",
+            response.status,
+            snapshots={"response": response.model_dump(mode="json")},
+        )
+        state["interaction"].completed_at = datetime.now(UTC)
         return {"response": response, "interaction": state["interaction"]}
 
     def _stage(

@@ -51,6 +51,43 @@ class AnalysisRead(BaseModel):
     completed_at: datetime | None
 
 
+class HumanReviewDecisionCreate(BaseModel):
+    decision: str = Field(pattern="^(approve|reject|needs_information)$")
+    reviewed_by: str = Field(min_length=1, max_length=255)
+    comments: str | None = Field(default=None, max_length=4000)
+
+
+class HumanReviewDecisionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    review_request_id: UUID
+    decision: str
+    comments: str | None
+    reviewed_by: str
+    decided_at: datetime
+
+
+class HumanReviewRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    analysis_id: UUID
+    request_id: UUID
+    question: str
+    analysis_status: str
+    status: str
+    reason: str
+    recommendation_snapshot: dict
+    evidence_snapshot: list
+    requested_at: datetime
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    decision: str | None
+    comments: str | None
+    decisions: list[HumanReviewDecisionRead]
+
+
 class AnalysisCreated(BaseModel):
     request_id: UUID
     conversation_id: UUID | None

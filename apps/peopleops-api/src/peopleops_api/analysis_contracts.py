@@ -17,6 +17,7 @@ class SemanticRequest(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list, max_length=8)
     entities: list[str] = Field(default_factory=list, max_length=8)
     sensitivity: Literal["standard", "restricted"] = "standard"
+    requires_human_review: bool = False
     time_scope_description: str | None = Field(default=None, max_length=255)
     requires_structured_data: bool = True
     requires_policy: bool = False
