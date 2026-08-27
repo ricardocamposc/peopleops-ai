@@ -13,15 +13,15 @@ Scalar = str | int | float | bool | date | Decimal
 
 class QuerySelect(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: str
-    alias: str | None = None
+    field: str = Field(max_length=128)
+    alias: str | None = Field(default=None, max_length=128)
 
 
 class QueryMetric(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: str | None = None
+    field: str | None = Field(default=None, max_length=128)
     function: Literal["count", "sum", "avg", "min", "max"] = "count"
-    alias: str | None = None
+    alias: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def field_required_when_not_count(self) -> QueryMetric:
@@ -42,6 +42,8 @@ class QueryFilter(BaseModel):
             raise ValueError("null checks do not accept a value")
         if self.operator in {"in", "not_in"} and not isinstance(self.value, list):
             raise ValueError("membership filters require a list value")
+        if self.operator in {"in", "not_in"} and not self.value:
+            raise ValueError("membership filters require at least one value")
         if self.operator not in {"is_null", "not_null"} and self.value is None:
             raise ValueError("this filter requires a value")
         return self
@@ -97,6 +99,12 @@ class ConceptualQuery(BaseModel):
     order_by: list[QueryOrder] = Field(default_factory=list, max_length=8)
     dimensions: list[str] = Field(default_factory=list, max_length=16)
     limit: int = Field(default=100, ge=1, le=1000)
+
+    @model_validator(mode="after")
+    def bounded_identifiers(self) -> ConceptualQuery:
+        if any(len(value) > 128 for value in self.entities + self.relationships + self.dimensions):
+            raise ValueError("query identifiers are too long")
+        return self
 
 
 class QueryValidation(BaseModel):

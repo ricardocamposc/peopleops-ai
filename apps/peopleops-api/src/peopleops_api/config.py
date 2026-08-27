@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     )
     mcp_timeout_seconds: float = Field(default=5.0, gt=0, alias="MCP_TIMEOUT_SECONDS")
     mcp_max_retries: int = Field(default=2, ge=0, le=5, alias="MCP_MAX_RETRIES")
+    mcp_max_response_bytes: int = Field(
+        default=1_048_576, ge=1024, le=10_485_760, alias="MCP_MAX_RESPONSE_BYTES"
+    )
+    openai_timeout_seconds: float = Field(
+        default=30.0, gt=0, le=120, alias="OPENAI_TIMEOUT_SECONDS"
+    )
+    openai_max_retries: int = Field(default=0, ge=0, le=2, alias="OPENAI_MAX_RETRIES")
+    max_question_length: int = Field(default=4000, ge=1, le=20000, alias="MAX_QUESTION_LENGTH")
+    max_policy_top_k: int = Field(default=20, ge=1, le=50, alias="MAX_POLICY_TOP_K")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
     policy_storage_path: str = Field(default="./var/policies", alias="POLICY_STORAGE_PATH")

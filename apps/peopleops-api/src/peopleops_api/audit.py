@@ -4,6 +4,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from peopleops_api.models import AnalysisInteraction
+from peopleops_api.observability import safe_error_detail
 
 
 def transition(
@@ -16,6 +17,8 @@ def transition(
     error_detail: str | None = None,
     snapshots: dict[str, Any] | None = None,
 ) -> AnalysisInteraction:
+    if error_detail is not None:
+        error_detail = safe_error_detail(error_detail)
     event = {
         "stage": stage,
         "status": status,

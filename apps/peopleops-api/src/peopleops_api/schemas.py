@@ -5,7 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class AnalysisCreate(BaseModel):
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=4000)
     conversation_id: UUID | None = None
     created_by: str | None = Field(default=None, max_length=255)
     metadata: dict = Field(default_factory=dict)

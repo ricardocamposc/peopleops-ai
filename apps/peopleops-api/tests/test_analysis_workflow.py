@@ -146,6 +146,32 @@ def test_workflow_uses_typed_model_gateway_and_persists_observable_stages(db_ses
     assert "chain" not in str(result.response).lower()
 
 
+def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="payroll explanation",
+                required_capabilities=["payroll"],
+                entities=["payroll"],
+            )
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+    ).run(interaction)
+
+    assert result.status == "failed"
+    assert result.error_type == "AUTHORIZATION_ERROR"
+    assert result.error_detail == "payroll access requires the hr:payroll scope"
+
+
 def test_invalid_query_is_replanned_once_and_does_not_loop(db_session):
     model = FakeModel(
         [

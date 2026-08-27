@@ -4,7 +4,7 @@ import pytest
 
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClient, MCPContractError, MCPTimeoutError
-from peopleops_api.mcp_contracts import SecurityContext
+from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
 
 
 @dataclass
@@ -67,6 +67,57 @@ def test_timeout_is_normalized_and_retries_are_bounded() -> None:
     assert error.value.code == "MCP_TIMEOUT"
     assert error.value.request_id == "req-timeout"
     assert transport.calls == 3
+
+
+def test_transient_http_errors_are_retried_with_a_bounded_attempt_count() -> None:
+    responses = [
+        type("Response", (), {"status_code": 503, "body": b"", "headers": {}})(),
+        type("Response", (), {"status_code": 429, "body": b"", "headers": {}})(),
+        type(
+            "Response",
+            (),
+            {
+                "status_code": 200,
+                "body": b'{"provider_type":"reference","catalog_version":"v1",'
+                b'"fingerprint":"abc","capabilities":[],"entities":[],"relationships":[]}',
+                "headers": {},
+            },
+        )(),
+    ]
+
+    @dataclass
+    class SequenceTransport:
+        responses: list[object]
+        calls: int = 0
+
+        def request(self, **kwargs):
+            self.calls += 1
+            return self.responses.pop(0)
+
+    transport = SequenceTransport(responses)
+    client = MCPClient(server_url="http://provider:8001", transport=transport, max_retries=2)
+
+    result = client.get_json("/discovery/catalog", DiscoveryCatalog, _context())
+
+    assert result.provider_type == "reference"
+    assert transport.calls == 3
+
+
+def test_provider_response_size_is_rejected_before_contract_parsing() -> None:
+    transport = FakeTransport(
+        response=type("Response", (), {"status_code": 200, "body": b"x" * 1025, "headers": {}})()
+    )
+    client = MCPClient(
+        server_url="http://provider:8001",
+        transport=transport,
+        max_retries=0,
+        max_response_bytes=1024,
+    )
+
+    with pytest.raises(MCPContractError) as error:
+        client.get_json("/discovery/catalog", object, _context())
+
+    assert error.value.code == "MCP_RESPONSE_TOO_LARGE"
 
 
 def test_invalid_provider_payload_is_a_safe_contract_error() -> None:

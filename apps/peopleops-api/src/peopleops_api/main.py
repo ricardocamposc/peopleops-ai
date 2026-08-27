@@ -6,10 +6,9 @@ from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -67,6 +66,24 @@ app.add_middleware(
 )
 
 
+def _security_context(request: Request) -> SecurityContext:
+    """Build the provider context from the authenticated edge context.
+
+    The default is read-only and deliberately excludes payroll. Browsers are
+    not an authorization authority; deployments must set these headers at the
+    authenticated gateway.
+    """
+    try:
+        return SecurityContext(
+            actor_id=request.headers.get("X-Actor-ID"),
+            role=request.headers.get("X-Role"),
+            scopes=request.headers.get("X-Security-Scopes", "hr:read").split(","),
+        )
+    except ValueError:
+        # Malformed edge context must fail closed without exposing validation details.
+        return SecurityContext()
+
+
 @app.middleware("http")
 async def observe_request(request: Request, call_next):
     request_id = request_id_from_header(request.headers.get("X-Request-ID"))
@@ -94,21 +111,24 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/v1/hr-data/catalog", response_model=DiscoveryCatalog, tags=["hr-data"])
-def read_hr_data_catalog() -> DiscoveryCatalog:
+def read_hr_data_catalog(request: Request) -> DiscoveryCatalog:
     gateway = HRDataGateway(
         MCPClient(
             server_url=str(settings.reference_mcp_server_url),
             timeout_seconds=settings.mcp_timeout_seconds,
             max_retries=settings.mcp_max_retries,
+            max_response_bytes=settings.mcp_max_response_bytes,
         )
     )
-    return gateway.discover_catalog(request_id=str(uuid4()), security=SecurityContext())
+    return gateway.discover_catalog(request_id=str(uuid4()), security=_security_context(request))
 
 
 @app.post("/api/v1/analysis", response_model=AnalysisRead, status_code=status.HTTP_201_CREATED)
 def register_analysis(
-    payload: AnalysisCreate, session: Annotated[Session, Depends(get_db)]
+    payload: AnalysisCreate, request: Request, session: Annotated[Session, Depends(get_db)]
 ) -> AnalysisRead:
+    if len(payload.question) > settings.max_question_length:
+        raise HTTPException(status_code=422, detail="question exceeds the configured size limit")
     try:
         interaction = create_interaction(
             session,
@@ -125,13 +145,19 @@ def register_analysis(
             server_url=str(settings.reference_mcp_server_url),
             timeout_seconds=settings.mcp_timeout_seconds,
             max_retries=settings.mcp_max_retries,
+            max_response_bytes=settings.mcp_max_response_bytes,
         )
     )
     workflow = AnalysisWorkflow(
         session=session,
         gateway=gateway,
-        model=OpenAIStructuredModel(api_key=settings.openai_api_key, model=settings.openai_model),
-        security=SecurityContext(),
+        model=OpenAIStructuredModel(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+            max_retries=settings.openai_max_retries,
+        ),
+        security=_security_context(request),
         policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
     )
     interaction = workflow.run(interaction)
@@ -214,6 +240,7 @@ def human_review_detail(
 def human_review_decision(
     review_id: UUID,
     payload: HumanReviewDecisionCreate,
+    request: Request,
     session: Annotated[Session, Depends(get_db)],
 ) -> HumanReviewRead:
     try:
@@ -242,12 +269,16 @@ def human_review_decision(
                     server_url=str(settings.reference_mcp_server_url),
                     timeout_seconds=settings.mcp_timeout_seconds,
                     max_retries=settings.mcp_max_retries,
+                    max_response_bytes=settings.mcp_max_response_bytes,
                 )
             ),
             model=OpenAIStructuredModel(
-                api_key=settings.openai_api_key, model=settings.openai_model
+                api_key=settings.openai_api_key,
+                model=settings.openai_model,
+                timeout_seconds=settings.openai_timeout_seconds,
+                max_retries=settings.openai_max_retries,
             ),
-            security=SecurityContext(),
+            security=_security_context(request),
             policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
         )
         workflow.resume(interaction)
@@ -287,7 +318,7 @@ def upload_policy(
         business_metadata = json.loads(metadata)
         if not isinstance(business_metadata, dict):
             raise TypeError("policy metadata must be a JSON object")
-        content = file.file.read()
+        content = file.file.read(settings.policy_max_upload_bytes + 1)
         service = PolicyIngestionService(session, settings)
         policy_version, job, idempotent = service.upload(
             document_key=document_key,

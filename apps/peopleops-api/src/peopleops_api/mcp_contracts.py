@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class DiscoveryField(BaseModel):
@@ -69,9 +69,20 @@ class DiscoveryCatalog(BaseModel):
 class SecurityContext(BaseModel):
     """Minimal opaque authorization context forwarded to the provider."""
 
-    actor_id: str | None = None
-    scopes: list[str] = Field(default_factory=list)
-    role: str | None = None
+    actor_id: str | None = Field(default=None, max_length=255)
+    scopes: list[str] = Field(default_factory=list, max_length=16)
+    role: str | None = Field(default=None, max_length=64)
+
+    @field_validator("scopes")
+    @classmethod
+    def normalize_scopes(cls, value: list[str]) -> list[str]:
+        normalized = [scope.strip() for scope in value if scope.strip()]
+        if any(len(scope) > 100 for scope in normalized):
+            raise ValueError("security scope is too long")
+        return list(dict.fromkeys(normalized))
+
+    def allows_payroll(self) -> bool:
+        return "hr:payroll" in self.scopes
 
 
 class DiscoveryRequestContext(BaseModel):

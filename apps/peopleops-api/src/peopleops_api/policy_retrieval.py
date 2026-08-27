@@ -150,6 +150,7 @@ class PolicyKnowledgeProvider:
                 reason="a non-empty query and positive top_k are required",
             )
 
+        top_k = min(top_k, 20)
         selected_versions, conflict = self._select_versions(as_of, filters)
         if conflict:
             return PolicyRetrievalResult(

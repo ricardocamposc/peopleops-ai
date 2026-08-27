@@ -14,15 +14,15 @@ FieldReference = str
 
 class QuerySelect(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: FieldReference
-    alias: str | None = None
+    field: FieldReference = Field(max_length=128)
+    alias: str | None = Field(default=None, max_length=128)
 
 
 class QueryMetric(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    field: FieldReference | None = None
+    field: FieldReference | None = Field(default=None, max_length=128)
     function: Literal["count", "sum", "avg", "min", "max"] = "count"
-    alias: str | None = None
+    alias: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def count_or_field(self) -> QueryMetric:
@@ -45,6 +45,8 @@ class QueryFilter(BaseModel):
             raise ValueError("null checks do not accept a value")
         if self.operator in {"in", "not_in"} and not isinstance(self.value, list):
             raise ValueError("membership filters require a list value")
+        if self.operator in {"in", "not_in"} and not self.value:
+            raise ValueError("membership filters require at least one value")
         if self.operator not in {"is_null", "not_null"} and self.value is None:
             raise ValueError("this filter requires a value")
         return self
@@ -105,6 +107,8 @@ class ConceptualQuery(BaseModel):
     def require_projection(self) -> ConceptualQuery:
         if not self.select and not self.metrics:
             raise ValueError("query must select a field or metric")
+        if any(len(value) > 128 for value in self.entities + self.relationships + self.dimensions):
+            raise ValueError("query identifiers are too long")
         return self
 
 

@@ -110,7 +110,13 @@ def create_app(schema: str | None = None) -> FastAPI:
         return server_catalog.relationships
 
     def scopes(request: Request) -> list[str]:
-        return [scope for scope in request.headers.get("X-Security-Scopes", "").split(",") if scope]
+        raw_scopes = request.headers.get("X-Security-Scopes", "")
+        if len(raw_scopes) > 2048:
+            return []
+        values = [scope.strip() for scope in raw_scopes.split(",") if scope.strip()]
+        if len(values) > 16 or any(len(scope) > 100 for scope in values):
+            return []
+        return list(dict.fromkeys(values))
 
     @server.post("/query/validate", response_model=QueryValidation, tags=["query"])
     async def validate_conceptual_query(

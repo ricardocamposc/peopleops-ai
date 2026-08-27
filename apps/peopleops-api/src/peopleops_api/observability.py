@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from time import monotonic
@@ -15,6 +16,17 @@ request_correlation_id: ContextVar[str] = ContextVar("request_correlation_id", d
 # Backwards-compatible name used by the API/workflow integration.
 request_id_context = request_correlation_id
 logger = logging.getLogger("peopleops.observability")
+SAFE_REQUEST_ID = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+SECRET_VALUE = re.compile(
+    r"(?i)(bearer\s+|(?:api[_-]?key|password|passwd|secret|token)\s*[=:]\s*)[^\s,;]+"
+)
+
+
+def safe_error_detail(value: str, *, limit: int = 500) -> str:
+    """Bound diagnostic text and remove credentials/log control characters."""
+    sanitized = value.replace("\n", " ").replace("\r", " ").replace("\x1b", "").strip()
+    sanitized = SECRET_VALUE.sub(lambda match: f"{match.group(1)}[REDACTED]", sanitized)
+    return sanitized[:limit]
 
 
 class JsonFormatter(logging.Formatter):
@@ -83,7 +95,7 @@ def log_event(
 
 
 def request_id_from_header(candidate: str | None) -> str:
-    return new_request_id(candidate)
+    return new_request_id(candidate if candidate and SAFE_REQUEST_ID.fullmatch(candidate) else None)
 
 
 @contextmanager

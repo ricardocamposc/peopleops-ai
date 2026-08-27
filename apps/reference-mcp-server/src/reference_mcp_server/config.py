@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     )
     query_timeout_seconds: float = Field(default=5.0, gt=0, le=60, alias="QUERY_TIMEOUT_SECONDS")
     max_result_rows: int = Field(default=1000, ge=1, le=10000, alias="MAX_RESULT_ROWS")
+    max_result_bytes: int = Field(
+        default=1_048_576, ge=1024, le=10_485_760, alias="MAX_RESULT_BYTES"
+    )
 
 
 @lru_cache

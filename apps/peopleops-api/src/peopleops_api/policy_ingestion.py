@@ -8,6 +8,7 @@ as application instructions.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from datetime import UTC, date, datetime
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 PDF_MIME = "application/pdf"
 PDF_EXTENSION = ".pdf"
 MAX_METADATA_KEYS = 32
+MAX_METADATA_BYTES = 16_384
+MAX_METADATA_VALUE_LENGTH = 1_024
 
 
 class PolicyUploadError(ValueError):
@@ -134,7 +137,20 @@ def _safe_metadata(metadata: dict | None) -> dict:
         return {}
     if len(metadata) > MAX_METADATA_KEYS:
         raise PolicyUploadError("policy metadata has too many keys")
-    return {str(key): value for key, value in metadata.items()}
+    normalized = {str(key): value for key, value in metadata.items()}
+    if any(len(key) > 128 for key in normalized):
+        raise PolicyUploadError("policy metadata key is too long")
+    if any(
+        isinstance(value, str) and len(value) > MAX_METADATA_VALUE_LENGTH
+        for value in normalized.values()
+    ):
+        raise PolicyUploadError("policy metadata value is too long")
+    try:
+        if len(json.dumps(normalized, ensure_ascii=False).encode()) > MAX_METADATA_BYTES:
+            raise PolicyUploadError("policy metadata exceeds the configured size limit")
+    except (TypeError, ValueError) as exc:
+        raise PolicyUploadError("policy metadata must contain JSON values") from exc
+    return normalized
 
 
 def _job_read(job: IngestionJob) -> dict:
@@ -293,8 +309,8 @@ class PolicyIngestionService:
             if job is None or version is None:
                 raise
             job.status = "failed"
-            job.error_type = type(exc).__name__
-            job.error_detail = str(exc)[:1000]
+            job.error_type = "POLICY_INGESTION_ERROR"
+            job.error_detail = "policy ingestion failed"
             job.completed_at = datetime.now(UTC)
             version.status = "failed"
             self.session.commit()

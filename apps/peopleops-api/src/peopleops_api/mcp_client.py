@@ -58,6 +58,9 @@ class HTTPTransport(Protocol):
 
 
 class UrllibHTTPTransport:
+    def __init__(self, max_response_bytes: int = 1_048_576) -> None:
+        self.max_response_bytes = max_response_bytes
+
     def request(
         self,
         *,
@@ -70,9 +73,16 @@ class UrllibHTTPTransport:
         request = Request(url, data=body, method=method, headers=headers)
         try:
             with urlopen(request, timeout=timeout) as response:
+                content_length = response.headers.get("Content-Length")
+                if content_length and int(content_length) > self.max_response_bytes:
+                    return TransportResponse(
+                        status_code=response.status,
+                        body=b"0" * (self.max_response_bytes + 1),
+                        headers=dict(response.headers.items()),
+                    )
                 return TransportResponse(
                     status_code=response.status,
-                    body=response.read(),
+                    body=response.read(self.max_response_bytes + 1),
                     headers=dict(response.headers.items()),
                 )
         except HTTPError as exc:
@@ -90,16 +100,19 @@ class MCPClient:
         server_url: str,
         timeout_seconds: float = 5.0,
         max_retries: int = 2,
+        max_response_bytes: int = 1_048_576,
         transport: HTTPTransport | None = None,
     ) -> None:
         self.server_url = server_url.rstrip("/")
-        self.timeout_seconds = timeout_seconds
-        self.max_retries = max_retries
-        self.transport = transport or UrllibHTTPTransport()
+        self.timeout_seconds = min(max(timeout_seconds, 0.1), 120.0)
+        self.max_retries = min(max(max_retries, 0), 5)
+        self.max_response_bytes = min(max(max_response_bytes, 1024), 10_485_760)
+        self.transport = transport or UrllibHTTPTransport(self.max_response_bytes)
 
     def get_json(
         self, path: str, response_model: type[BaseModel], context: DiscoveryRequestContext
     ) -> BaseModel:
+        self._validate_path(path)
         headers = self._headers(context)
         attempts = self.max_retries + 1
         for attempt in range(attempts):
@@ -128,9 +141,15 @@ class MCPClient:
                     retryable=True,
                 ) from exc
 
-            if response.status_code in {502, 503, 504} and attempt + 1 < attempts:
+            if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
                 time.sleep(0.01)
                 continue
+            if response.status_code in {401, 403}:
+                raise MCPProviderError(
+                    "MCP_AUTHORIZATION_ERROR",
+                    "MCP provider denied the requested scope",
+                    request_id=context.request_id,
+                )
             if response.status_code >= 400:
                 raise MCPProviderError(
                     "MCP_PROVIDER_ERROR",
@@ -138,6 +157,7 @@ class MCPClient:
                     request_id=context.request_id,
                     retryable=response.status_code in {429, 500, 502, 503, 504},
                 )
+            self._check_response_size(response.body, context)
             echoed_request_id = response.headers.get("X-Request-ID")
             if echoed_request_id and echoed_request_id != context.request_id:
                 raise MCPContractError(
@@ -166,6 +186,7 @@ class MCPClient:
         response_model: type[BaseModel],
         context: DiscoveryRequestContext,
     ) -> BaseModel:
+        self._validate_path(path)
         headers = {**self._headers(context), "Content-Type": "application/json"}
         body = json.dumps(payload.model_dump(mode="json"), separators=(",", ":")).encode()
         attempts = self.max_retries + 1
@@ -196,7 +217,7 @@ class MCPClient:
                     request_id=context.request_id,
                     retryable=True,
                 ) from exc
-            if response.status_code in {502, 503, 504} and attempt + 1 < attempts:
+            if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
                 time.sleep(0.01)
                 continue
             echoed_request_id = response.headers.get("X-Request-ID")
@@ -206,6 +227,12 @@ class MCPClient:
                     "MCP provider returned an unexpected correlation identifier",
                     request_id=context.request_id,
                 )
+            if response.status_code in {401, 403}:
+                raise MCPProviderError(
+                    "MCP_AUTHORIZATION_ERROR",
+                    "MCP provider denied the requested scope",
+                    request_id=context.request_id,
+                )
             if response.status_code >= 400:
                 raise MCPProviderError(
                     "MCP_PROVIDER_ERROR",
@@ -213,6 +240,7 @@ class MCPClient:
                     request_id=context.request_id,
                     retryable=response.status_code in {429, 500, 502, 503, 504},
                 )
+            self._check_response_size(response.body, context)
             try:
                 return response_model.model_validate(json.loads(response.body))
             except (json.JSONDecodeError, ValidationError) as exc:
@@ -239,3 +267,16 @@ class MCPClient:
         if security.role:
             headers["X-Role"] = security.role
         return headers
+
+    @staticmethod
+    def _validate_path(path: str) -> None:
+        if not path.startswith("/") or "://" in path or "\\" in path:
+            raise ValueError("MCP path must be a relative HTTP path")
+
+    def _check_response_size(self, body: bytes, context: DiscoveryRequestContext) -> None:
+        if len(body) > self.max_response_bytes:
+            raise MCPContractError(
+                "MCP_RESPONSE_TOO_LARGE",
+                "MCP provider response exceeded the configured size limit",
+                request_id=context.request_id,
+            )
