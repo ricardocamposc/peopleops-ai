@@ -20,6 +20,7 @@ def create_interaction(
     conversation_id: UUID | None,
     created_by: str | None,
     metadata: dict,
+    request_id: UUID | None = None,
 ) -> AnalysisInteraction:
     conversation = None
     if conversation_id:
@@ -31,7 +32,7 @@ def create_interaction(
         session.add(conversation)
         session.flush()
     interaction = AnalysisInteraction(
-        conversation_id=conversation.id, question=question, stage_history=[]
+        conversation_id=conversation.id, question=question, stage_history=[], request_id=request_id
     )
     session.add(interaction)
     session.flush()

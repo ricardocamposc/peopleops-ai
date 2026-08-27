@@ -11,6 +11,14 @@ def test_health() -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_request_correlation_header_is_propagated() -> None:
+    response = TestClient(app).get(
+        "/api/v1/health", headers={"X-Request-ID": "request-correlation-16"}
+    )
+    assert response.headers["x-request-id"] == "request-correlation-16"
+    assert response.headers["x-correlation-id"] == "request-correlation-16"
+
+
 def test_explicit_cors_preflight() -> None:
     response = TestClient(app).options(
         "/api/v1/health",

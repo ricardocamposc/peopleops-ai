@@ -646,6 +646,23 @@ replace the deterministic baseline.
 Evaluation cases and expected ground truth are separate from real
 `AnalysisInteraction` execution records.
 
+### Slice 16 integrated runner
+
+The versioned integrated dataset evaluates semantic interpretation,
+conceptual/MCP contracts, structured data, Policy RAG, workflow recovery,
+Human Review and final-answer grounding. It produces one JSON and one
+Markdown artifact per run under `evaluation/runs/`, correlates every case
+with a `request_id`, and compares deterministic metrics with the MVP
+baseline:
+
+```bash
+make evaluate
+```
+
+The optional LLM judge is disabled for the baseline. LangSmith tracing can
+be enabled with `LANGSMITH_TRACING=true`; it is complementary and
+`AnalysisInteraction` remains the functional audit store.
+
 ## Security and privacy
 
 The public repository must use synthetic data and synthetic policies

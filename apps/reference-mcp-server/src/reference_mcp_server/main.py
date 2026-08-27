@@ -1,4 +1,7 @@
+import json
+import logging
 import os
+from time import monotonic
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -17,6 +20,20 @@ from reference_mcp_server.execution import QueryExecutionError, execute_query, v
 from reference_mcp_server.query_contracts import ConceptualQuery, QueryResult, QueryValidation
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+
+
+class JsonFormatter(logging.Formatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return json.dumps(
+            {
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                **getattr(record, "fields", {}),
+            },
+            sort_keys=True,
+        )
 
 
 def create_app(schema: str | None = None) -> FastAPI:
@@ -25,14 +42,31 @@ def create_app(schema: str | None = None) -> FastAPI:
     selected_schema = schema or os.environ.get("MCP_SCHEMA", "A")
     server_catalog = build_alternate_catalog() if selected_schema == "B" else build_catalog()
     server = FastAPI(title="Reference MCP Server", version="0.1.0")
+    handler = logging.StreamHandler()
+    handler.setFormatter(JsonFormatter())
+    logger.handlers.clear()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
     @server.middleware("http")
     async def propagate_request_correlation(request: Request, call_next):
         request_id = request.headers.get("X-Request-ID", "")
+        started = monotonic()
         response = await call_next(request)
         if request_id:
             response.headers["X-Request-ID"] = request_id
             response.headers["X-Correlation-ID"] = request_id
+        logger.info(
+            "request completed",
+            extra={
+                "fields": {
+                    "event": "http_request",
+                    "request_id": request_id or "-",
+                    "status": response.status_code,
+                    "latency_ms": round((monotonic() - started) * 1000),
+                }
+            },
+        )
         return response
 
     @server.get("/health", tags=["health"])

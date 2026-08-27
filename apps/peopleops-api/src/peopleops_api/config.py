@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     )
     embedding_model: str = Field(default="text-embedding-3-small", alias="EMBEDDING_MODEL")
     embedding_dimension: int = Field(default=1536, gt=0, alias="EMBEDDING_DIMENSION")
+    langsmith_tracing: bool = Field(default=False, alias="LANGSMITH_TRACING")
+    langsmith_project: str = Field(default="peopleops-ai", alias="LANGSMITH_PROJECT")
 
 
 @lru_cache

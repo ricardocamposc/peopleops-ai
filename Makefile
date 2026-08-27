@@ -1,7 +1,10 @@
 .DEFAULT_GOAL := help
 
 help:
-	@printf '%s\n' 'Available targets: help install build up down restart ps logs lint format test test-unit test-integration health clean'
+	@printf '%s\n' 'Available targets: help install build up down restart ps logs lint format test test-unit test-integration evaluate health clean'
+
+evaluate:
+	cd apps/peopleops-api && PYTHONPATH=src poetry run python -m peopleops_api.evaluation_runner --dataset ../../evaluation/cases/integrated_v1.jsonl --output-dir ../../evaluation/runs --baseline ../../evaluation/baselines/slice16-integrated.json
 
 install:
 	poetry -C apps/peopleops-api install
@@ -55,4 +58,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up down restart ps logs lint format test test-unit test-integration health clean
+.PHONY: help install build up down restart ps logs lint format test test-unit test-integration evaluate health clean

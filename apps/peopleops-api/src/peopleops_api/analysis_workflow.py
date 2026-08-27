@@ -6,6 +6,7 @@ executes, persists and merges evidence. No physical HRIS schema is used here.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClientError
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
 from peopleops_api.models import AnalysisInteraction
+from peopleops_api.observability import log_event, optional_langsmith_trace, request_id_context
 from peopleops_api.policy_retrieval import (
     PolicyKnowledgeProvider,
     PolicyRetrievalResult,
@@ -29,6 +31,8 @@ from peopleops_api.policy_retrieval import (
 )
 from peopleops_api.payroll_analysis import derive_payroll_facts
 from peopleops_api.query_contracts import QueryResult
+
+logger = logging.getLogger(__name__)
 
 
 class StructuredModel(Protocol):
@@ -120,18 +124,27 @@ class AnalysisWorkflow:
         transition(self.session, interaction, stage="workflow", status="running")
         self.session.commit()
         try:
-            result = graph.invoke(
-                {
-                    "interaction": interaction,
-                    "question": interaction.question,
-                    "replan_count": 0,
-                    "results": [],
-                    "facts": [],
-                    "policies": [],
-                    "warnings": [],
-                }
-            )
+            with optional_langsmith_trace(
+                name="peopleops.analysis", request_id=str(interaction.request_id)
+            ):
+                result = graph.invoke(
+                    {
+                        "interaction": interaction,
+                        "question": interaction.question,
+                        "replan_count": 0,
+                        "results": [],
+                        "facts": [],
+                        "policies": [],
+                        "warnings": [],
+                    }
+                )
             interaction.latency_ms = round((monotonic() - started) * 1000)
+            log_event(
+                "analysis.completed",
+                request_id=str(interaction.request_id),
+                status=interaction.status,
+                duration_ms=interaction.latency_ms,
+            )
             if interaction.status != "pending_human_review":
                 interaction.completed_at = datetime.now(UTC)
             self.session.add(interaction)
@@ -571,6 +584,17 @@ class AnalysisWorkflow:
             self.session, state["interaction"], stage=stage, status=status, snapshots=snapshots
         )
         self.session.commit()
+        token = request_id_context.set(str(state["interaction"].request_id))
+        try:
+            log_event(
+                logger,
+                "analysis stage transition",
+                event="analysis_stage",
+                stage=stage,
+                status=status,
+            )
+        finally:
+            request_id_context.reset(token)
 
     def _fail(
         self, interaction: AnalysisInteraction, error_type: str, detail: str

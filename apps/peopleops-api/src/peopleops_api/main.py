@@ -1,5 +1,6 @@
 import json
 import logging
+from time import monotonic
 from datetime import date
 from pathlib import Path
 from typing import Annotated
@@ -8,6 +9,7 @@ from uuid import UUID, uuid4
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,12 @@ from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClient
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
 from peopleops_api.models import HumanReviewRequest, PolicyDocument
+from peopleops_api.observability import (
+    configure_logging,
+    log_event,
+    request_id_context,
+    request_id_from_header,
+)
 from peopleops_api.policy_ingestion import (
     PolicyIngestionService,
     PolicyUploadError,
@@ -46,7 +54,8 @@ from peopleops_api.schemas import (
     PolicyVersionRead,
 )
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+configure_logging()
+logger = logging.getLogger(__name__)
 settings = get_settings()
 app = FastAPI(title="PeopleOps AI API", version="0.1.0")
 app.add_middleware(
@@ -56,6 +65,27 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def observe_request(request: Request, call_next):
+    request_id = request_id_from_header(request.headers.get("X-Request-ID"))
+    token = request_id_context.set(request_id)
+    started = monotonic()
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Correlation-ID"] = request_id
+        log_event(
+            logger,
+            "request completed",
+            event="http_request",
+            status=response.status_code,
+            latency_ms=round((monotonic() - started) * 1000),
+        )
+        return response
+    finally:
+        request_id_context.reset(token)
 
 
 @app.get("/api/v1/health", tags=["health"])
@@ -86,6 +116,7 @@ def register_analysis(
             conversation_id=payload.conversation_id,
             created_by=payload.created_by,
             metadata=payload.metadata,
+            request_id=UUID(request_id_context.get()),
         )
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
