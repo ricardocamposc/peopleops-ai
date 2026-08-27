@@ -57,7 +57,7 @@ services:
       retries: 10
 
   peopleops-db:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_DB: ${PEOPLEOPS_DATABASE_NAME:-peopleops}
       POSTGRES_USER: ${PEOPLEOPS_DATABASE_USER:-peopleops_app}

@@ -49,6 +49,7 @@ test-integration:
 health:
 	curl --fail --silent --show-error http://localhost:$${API_PORT:-8000}/api/v1/health
 	curl --fail --silent --show-error http://localhost:$${MCP_PORT:-8001}/health
+	curl --fail --silent --show-error http://localhost:$${WEB_PORT:-3000}/
 
 clean:
 	docker compose down --volumes --remove-orphans
