@@ -87,7 +87,7 @@ class CapabilityMetadata(BaseModel):
 class CatalogMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_type: Literal["reference_synthetic_hris"]
+    provider_type: str
     catalog_version: str
     fingerprint: str
     capabilities: list[CapabilityMetadata]

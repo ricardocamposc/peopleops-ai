@@ -1,0 +1,22 @@
+BEGIN;
+TRUNCATE PAY_MOVEMENT, TIME_EVENT, HR_CONTRACT, PAY_RUN, HR_PERSON RESTART IDENTITY CASCADE;
+INSERT INTO HR_PERSON VALUES
+ (1,'E-100','Ana','Silva','active','2022-03-14'),
+ (2,'E-101','Bruno','Costa','active','2024-01-08'),
+ (3,'E-102','Carla','Mendes','active','2021-07-19'),
+ (4,'E-103','Diego','Rocha','active','2023-05-02');
+INSERT INTO HR_CONTRACT VALUES
+ (1,1,'fixed_term','2022-03-14','2025-12-31','active'),
+ (2,2,'indefinite','2024-01-08',NULL,'active'),
+ (3,3,'fixed_term','2021-07-19','2025-10-31','active'),
+ (4,4,'indefinite','2023-05-02',NULL,'active');
+INSERT INTO TIME_EVENT VALUES
+ (1,1,'2025-02-12',120,'approved'), (2,4,'2025-02-12',600,'approved');
+INSERT INTO PAY_RUN VALUES
+ (1,'2025-01','2025-01-01','2025-01-31','2025-02-05','paid'),
+ (2,'2025-02','2025-02-01','2025-02-28','2025-03-05','paid');
+INSERT INTO PAY_MOVEMENT VALUES
+ (1,4,1,4000,600,3400,4800,'CC-100'), (2,4,2,4000,1000,3000,4800,'CC-100'),
+ (3,1,2,5000,750,4250,6000,'CC-100'), (4,2,2,3200,480,2720,3840,'CC-200'),
+ (5,3,2,4500,675,3825,5400,'CC-300');
+COMMIT;
