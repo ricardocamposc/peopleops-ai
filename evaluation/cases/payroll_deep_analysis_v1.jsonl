@@ -1,0 +1,4 @@
+{"id":"payroll_period_comparison_e103","layer":"payroll","employee_code":"E-103","previous_period":"2025-01","current_period":"2025-02","expected":{"previous_net":3400,"current_net":3000,"net_change":-400,"deductions_change":400}}
+{"id":"overtime_discrepancy_e103","layer":"payroll","employee_code":"E-103","period":"2025-02","expected":{"recorded_overtime_hours":10,"paid_overtime_hours":0,"status":"discrepancy"}}
+{"id":"payroll_aggregate_cost_center","layer":"payroll","period":"2025-02","expected":{"CC-100":{"gross":9000,"net":7250},"CC-200":{"gross":3200,"net":2720},"CC-300":{"gross":4500,"net":3825}}}
+{"id":"unauthorized_payroll","layer":"security","expected":{"authorized":false,"required_scope":"hr:payroll"}}

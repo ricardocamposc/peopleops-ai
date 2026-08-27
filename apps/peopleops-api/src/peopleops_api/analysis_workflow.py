@@ -27,6 +27,7 @@ from peopleops_api.policy_retrieval import (
     PolicyRetrievalResult,
     PolicyRetrievalStatus,
 )
+from peopleops_api.payroll_analysis import derive_payroll_facts
 from peopleops_api.query_contracts import QueryResult
 
 
@@ -93,6 +94,7 @@ class AnalysisState(TypedDict, total=False):
     facts: list[dict[str, Any]]
     policies: list[dict[str, Any]]
     inference: list[str]
+    payroll_analysis: dict[str, Any]
     warnings: list[str]
     response: StructuredAnswer
     replan_count: int
@@ -428,6 +430,19 @@ class AnalysisWorkflow:
         policy_evidence = state.get("policies", [])
         evidence = [*data_evidence, *[{"type": "policy", **item} for item in policy_evidence]]
         facts = [item for item in data_evidence]
+        payroll_facts: dict[str, Any] = {}
+        semantic = state.get("semantic_request")
+        if semantic and "payroll" in semantic.required_capabilities:
+            payroll_facts = derive_payroll_facts(state.get("results", []))
+            if payroll_facts:
+                calculation_evidence = {
+                    "type": "structured_calculation",
+                    "calculation": "payroll_deep_analysis",
+                    "result": payroll_facts,
+                    "source_count": len(data_evidence),
+                }
+                evidence.append(calculation_evidence)
+                facts.append(calculation_evidence)
         warnings = list(state.get("warnings", []))
         policy_result = state.get("policy_result")
         if policy_result and policy_result.status is not PolicyRetrievalStatus.COMPLETED:
@@ -445,6 +460,7 @@ class AnalysisWorkflow:
         return {
             "evidence": evidence,
             "facts": facts,
+            "payroll_analysis": payroll_facts,
             "policy_result": policy_result,
             "warnings": _unique(warnings),
             "interaction": state["interaction"],
