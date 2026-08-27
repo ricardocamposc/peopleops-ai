@@ -1,10 +1,10 @@
 .DEFAULT_GOAL := help
 
 help:
-	@printf '%s\n' 'Available targets: help install build up down restart ps logs lint format test test-unit test-integration evaluate health clean'
+	@printf '%s\n' 'Available targets: help install build up down restart ps logs lint format test test-unit test-integration evaluate demo-setup smoke health clean'
 
 evaluate:
-	cd apps/peopleops-api && PYTHONPATH=src poetry run python -m peopleops_api.evaluation_runner --dataset ../../evaluation/cases/integrated_v1.jsonl --output-dir ../../evaluation/runs --baseline ../../evaluation/baselines/slice16-integrated.json
+	poetry -C apps/peopleops-api run python ../../ops/release_evaluation.py
 
 install:
 	poetry -C apps/peopleops-api install
@@ -31,12 +31,12 @@ logs:
 	docker compose logs
 
 lint:
-	poetry -C apps/peopleops-api run ruff check src tests
+	poetry -C apps/peopleops-api run ruff check src tests ../../ops
 	poetry -C apps/reference-mcp-server run ruff check src tests
 	cd apps/peopleops-web && npm run lint
 
 format:
-	poetry -C apps/peopleops-api run ruff format --check src tests
+	poetry -C apps/peopleops-api run ruff format --check src tests ../../ops
 	poetry -C apps/reference-mcp-server run ruff format --check src tests
 	cd apps/peopleops-web && npm run format
 
@@ -50,6 +50,16 @@ test-unit:
 test-integration:
 	@docker compose config >/dev/null
 
+demo-setup:
+	@docker compose exec -T peopleops-api alembic upgrade head
+	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/seeds/seed.sql
+	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/alternate-schema/migration.sql
+	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/alternate-schema/seed.sql
+	@printf '%s\n' 'Demo databases ready. See docs/portfolio/DEMO-SCRIPT.md for policy upload and scenarios.'
+
+smoke:
+	poetry -C apps/peopleops-api run python ../../ops/release_smoke.py
+
 health:
 	curl --fail --silent --show-error http://localhost:$${API_PORT:-8000}/api/v1/health
 	curl --fail --silent --show-error http://localhost:$${MCP_PORT:-8001}/health
@@ -58,4 +68,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up down restart ps logs lint format test test-unit test-integration evaluate health clean
+.PHONY: help install build up down restart ps logs lint format test test-unit test-integration evaluate demo-setup smoke health clean

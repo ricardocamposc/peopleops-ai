@@ -1,0 +1,43 @@
+{
+  "datasets": {
+    "integrated_v1": {
+      "case_count": 7,
+      "path": "evaluation/cases/integrated_v1.jsonl"
+    },
+    "multilingual_antihardcoding_v1": {
+      "case_count": 12,
+      "path": "evaluation/cases/multilingual_antihardcoding_v1.jsonl"
+    },
+    "payroll_deep_analysis_v1": {
+      "case_count": 4,
+      "path": "evaluation/cases/payroll_deep_analysis_v1.jsonl"
+    },
+    "policy_rag_v1": {
+      "case_count": 5,
+      "path": "evaluation/cases/policy_rag_v1.jsonl"
+    },
+    "schema_independence_v1": {
+      "case_count": 2,
+      "path": "evaluation/cases/schema_independence_v1.jsonl"
+    }
+  },
+  "deterministic": true,
+  "generated_at": "2026-08-27T17:40:03.833214+00:00",
+  "integrated_metrics": {
+    "conceptual_mcp": 1.0,
+    "final_answer": 1.0,
+    "hitl": 1.0,
+    "policy_rag": 1.0,
+    "semantic": 1.0,
+    "structured_data": 1.0,
+    "workflow": 1.0
+  },
+  "integrated_run_id": "57eac1ca9b94aa1a",
+  "note": "Per-layer runners and MCP/PostgreSQL contract tests remain authoritative; this index does not replace them or mutate observations.",
+  "policy_corpus": [
+    "policies/synthetic/README.md",
+    "policies/synthetic/payroll-procedure-v1.md",
+    "policies/synthetic/vacation-policy-v1.md"
+  ],
+  "schema_version": "slice18.portfolio_evaluation.v1"
+}

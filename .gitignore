@@ -26,3 +26,5 @@ coverage/
 .DS_Store
 evaluation/runs/*
 !evaluation/runs/.gitkeep
+!evaluation/runs/slice18-portfolio.json
+!evaluation/runs/slice18-portfolio.md

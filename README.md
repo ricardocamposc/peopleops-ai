@@ -17,9 +17,9 @@ discovered dynamically through MCP, conceptual queries are built without
 depending on physical tables or SQL dialects, policies are retrieved
 with evidence, and LangGraph coordinates the analysis workflow.
 
-> **Project status:** Slice 00 foundation implemented; business slices remain pending.\
-> This repository is **production-oriented**, not claimed to be
-> production-ready.
+> **Project status:** Slice 18 portfolio/pilot release baseline implemented.\
+> This repository is **production-oriented**, not production-ready. Use only
+> synthetic data and a controlled, read-only pilot.
 
 ## Why this project exists
 
@@ -94,23 +94,26 @@ Customer MCP Server + Real ERP / HRIS
 Real BIZAG, SAP, Workday, Dynamics or customer-specific adapters are
 future integrations and are not required for the public MVP.
 
-## Slice 00 local setup
+## Quickstart / portfolio release
 
-Slice 00 provides the three deployable scaffolds, two isolated PostgreSQL
-services, explicit CORS, health endpoints and reproducible root commands.
-It intentionally contains no HR models, migrations, MCP tools, analysis,
-RAG, LangGraph, Human Review or functional business UI.
+The release provides three deployables, two isolated PostgreSQL services,
+deterministic synthetic fixtures, explicit CORS, health endpoints, Policy RAG,
+Human Review, evaluation artifacts and reproducible root commands.
 
 Requirements: Docker with Compose, Python 3.11, Poetry and Node.js. The
 frontend uses npm, bundled with Node.js.
 
 ```bash
 cp .env.example .env
+cp apps/peopleops-web/.env.example apps/peopleops-web/.env.local
 make build
 make up
+make demo-setup
 make health
+make smoke
 make lint
 make test
+make evaluate
 make down
 ```
 
@@ -122,8 +125,9 @@ and internal PostgreSQL port `5432`.
 Ownership is intentionally separate: `peopleops-api` receives only
 PeopleOps database settings, `reference-mcp-server` receives only
 Synthetic HRIS settings, and the web receives only the public API URL.
-The databases are empty infrastructure in this slice; no migrations or
-seeders are run.
+`make demo-setup` applies migrations and loads disposable Schema A and Schema
+B fixtures. Live analysis requires `OPENAI_API_KEY` in the environment; the
+deterministic evaluation and smoke paths do not require a key.
 
 ## What the MVP demonstrates
 
@@ -646,7 +650,7 @@ replace the deterministic baseline.
 Evaluation cases and expected ground truth are separate from real
 `AnalysisInteraction` execution records.
 
-### Slice 16 integrated runner
+### Slice 16 integrated runner and Slice 18 index
 
 The versioned integrated dataset evaluates semantic interpretation,
 conceptual/MCP contracts, structured data, Policy RAG, workflow recovery,
@@ -659,9 +663,20 @@ baseline:
 make evaluate
 ```
 
-The optional LLM judge is disabled for the baseline. LangSmith tracing can
-be enabled with `LANGSMITH_TRACING=true`; it is complementary and
-`AnalysisInteraction` remains the functional audit store.
+This writes the reproducible JSON and Markdown artifacts under
+`evaluation/runs/`, including `slice18-portfolio.json` and
+`slice18-portfolio.md`. The index covers every versioned case dataset and
+records the integrated run ID; the layer-specific tests/runners remain the
+authoritative results. The optional LLM judge is disabled for the baseline.
+LangSmith tracing can be enabled with `LANGSMITH_TRACING=true`; it is
+complementary and `AnalysisInteraction` remains the functional audit store.
+
+Release materials:
+
+- [`docs/portfolio/DEMO-SCRIPT.md`](docs/portfolio/DEMO-SCRIPT.md)
+- [`docs/portfolio/PILOT-GUIDE.md`](docs/portfolio/PILOT-GUIDE.md)
+- [`docs/portfolio/RELEASE-CHECKLIST.md`](docs/portfolio/RELEASE-CHECKLIST.md)
+- [`evaluation/runs/slice18-portfolio.md`](evaluation/runs/slice18-portfolio.md)
 
 ## Security and privacy
 
