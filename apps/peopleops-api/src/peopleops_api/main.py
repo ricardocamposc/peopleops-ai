@@ -30,6 +30,7 @@ from peopleops_api.repositories import (
     create_interaction,
     get_human_review,
     get_interaction,
+    list_interactions,
     list_human_reviews,
     record_human_review_decision,
 )
@@ -116,6 +117,18 @@ def read_analysis(request_id: str, session: Annotated[Session, Depends(get_db)])
     if interaction is None:
         raise HTTPException(status_code=404, detail="analysis not found")
     return AnalysisRead.model_validate(interaction)
+
+
+@app.get("/api/v1/analysis", response_model=list[AnalysisRead])
+def list_analysis(
+    session: Annotated[Session, Depends(get_db)], limit: int = 50
+) -> list[AnalysisRead]:
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+    return [
+        AnalysisRead.model_validate(interaction)
+        for interaction in list_interactions(session, limit=limit)
+    ]
 
 
 def _human_review_response(review: HumanReviewRequest) -> HumanReviewRead:

@@ -49,6 +49,17 @@ def get_interaction(session: Session, request_id: UUID) -> AnalysisInteraction |
     )
 
 
+def list_interactions(session: Session, *, limit: int = 50) -> list[AnalysisInteraction]:
+    """Return recent analyses for the user-facing history view."""
+    bounded_limit = max(1, min(limit, 100))
+    statement = (
+        select(AnalysisInteraction)
+        .order_by(AnalysisInteraction.created_at.desc())
+        .limit(bounded_limit)
+    )
+    return list(session.scalars(statement).all())
+
+
 def create_human_review(
     session: Session,
     interaction: AnalysisInteraction,

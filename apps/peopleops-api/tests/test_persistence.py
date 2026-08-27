@@ -81,6 +81,29 @@ def test_analysis_api_registers_and_reads_interaction(monkeypatch, db_session) -
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_analysis_api_lists_recent_interactions(db_session) -> None:
+    from peopleops_api.db import get_db
+
+    create_interaction(
+        db_session,
+        question="History question",
+        conversation_id=None,
+        created_by="tester",
+        metadata={},
+    )
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get("/api/v1/analysis?limit=10")
+        assert response.status_code == 200
+        assert response.json()[0]["question"] == "History question"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_missing_conversation_is_rejected(db_session) -> None:
     with pytest.raises(LookupError):
         create_interaction(
