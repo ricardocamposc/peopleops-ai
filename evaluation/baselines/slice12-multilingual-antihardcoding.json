@@ -1,0 +1,11 @@
+{
+  "dataset": "multilingual_antihardcoding_v1",
+  "metrics": [
+    "semantic_correctness",
+    "plan_composition_correctness",
+    "outcome_correctness",
+    "multilingual_consistency"
+  ],
+  "judge": null,
+  "notes": "Deterministic metrics over typed SemanticRequest, AnalysisPlan and StructuredAnswer artifacts."
+}
