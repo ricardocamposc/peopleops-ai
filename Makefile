@@ -6,7 +6,7 @@ help:
 install:
 	poetry -C apps/peopleops-api install
 	poetry -C apps/reference-mcp-server install
-	cd apps/peopleops-web && pnpm install
+	cd apps/peopleops-web && npm install
 
 build:
 	docker compose build
@@ -30,12 +30,12 @@ logs:
 lint:
 	poetry -C apps/peopleops-api run ruff check src tests
 	poetry -C apps/reference-mcp-server run ruff check src tests
-	cd apps/peopleops-web && pnpm lint
+	cd apps/peopleops-web && npm run lint
 
 format:
 	poetry -C apps/peopleops-api run ruff format --check src tests
 	poetry -C apps/reference-mcp-server run ruff format --check src tests
-	cd apps/peopleops-web && pnpm format
+	cd apps/peopleops-web && npm run format
 
 test: test-unit test-integration
 

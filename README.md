@@ -102,7 +102,7 @@ It intentionally contains no HR models, migrations, MCP tools, analysis,
 RAG, LangGraph, Human Review or functional business UI.
 
 Requirements: Docker with Compose, Python 3.11, Poetry and Node.js. The
-frontend uses pnpm through Corepack.
+frontend uses npm, bundled with Node.js.
 
 ```bash
 cp .env.example .env
@@ -411,7 +411,7 @@ The web application receives neither.
   Python lint / format                   Ruff
   Frontend                               Next.js + React + TypeScript
   Frontend routing                       App Router
-  Frontend package manager               pnpm
+  Frontend package manager               npm
   Agentic tracing / evaluation support   LangSmith
   Local orchestration                    Docker Compose
   Developer workflow                     root Makefile
@@ -472,7 +472,7 @@ peopleops-ai/
 │   │   ├── lib/
 │   │   ├── public/
 │   │   ├── package.json
-│   │   ├── pnpm-lock.yaml
+│   │   ├── package-lock.json
 │   │   ├── Dockerfile
 │   │   └── .env.example
 │   │
@@ -544,7 +544,7 @@ Next.js
 React
 TypeScript
 App Router
-pnpm
+npm
 ```
 
 Local frontend port:
@@ -615,7 +615,7 @@ PeopleOps PostgreSQL: localhost:5436
 Synthetic HRIS DB:    localhost:5437
 ```
 
-The Makefile should delegate to Poetry, pnpm and Docker Compose rather
+The Makefile should delegate to Poetry, npm and Docker Compose rather
 than duplicate complex logic in shell.
 
 Do not add LocalStack, Phoenix, Redis or another runtime service to the

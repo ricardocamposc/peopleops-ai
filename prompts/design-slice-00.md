@@ -265,14 +265,14 @@ Se cierran las decisiones operativas del Slice 00 para que Codex pueda implement
 - **Next.js**.
 - **TypeScript**.
 - React como runtime de UI provisto por Next.js.
-- pnpm como package manager.
+- npm como package manager.
 - App Router como convención base del frontend.
 - Slice 00 crea solo el scaffold técnico mínimo; la UI funcional pertenece al slice de UX.
 - No se incorpora un template UI propietario en el foundation.
 - Variable pública obligatoria: `NEXT_PUBLIC_API_BASE_URL`.
 
 #### Makefile
-`Makefile` raíz es la **interfaz operativa canónica** del repositorio. Targets mínimos: `help`, `install`, `build`, `up`, `down`, `restart`, `ps`, `logs`, `lint`, `format`, `test`, `test-unit`, `test-integration`, `health`, `clean`. Debe delegar en Poetry, pnpm y Docker Compose.
+`Makefile` raíz es la **interfaz operativa canónica** del repositorio. Targets mínimos: `help`, `install`, `build`, `up`, `down`, `restart`, `ps`, `logs`, `lint`, `format`, `test`, `test-unit`, `test-integration`, `health`, `clean`. Debe delegar en Poetry, npm y Docker Compose.
 
 #### Puertos locales
 | Servicio | Host | Container |
@@ -583,7 +583,7 @@ alternativas:
 - PostgreSQL + pgvector;
 - Alembic para migrations;
 - Pytest + Ruff;
-- Next.js + React + TypeScript + App Router + pnpm;
+- Next.js + React + TypeScript + App Router + npm;
 - LangGraph;
 - OpenAI;
 - LlamaIndex;
@@ -777,7 +777,7 @@ Debe existir únicamente `apps/peopleops-web/` como deployable identificable y c
 
 ### Framework
 
-`peopleops-web` usa Next.js + TypeScript con pnpm y App Router. Slice 00 crea solo el scaffold mínimo verificable; no implementa pantallas funcionales ni adopta todavía un design system específico.
+`peopleops-web` usa Next.js + TypeScript con npm y App Router. Slice 00 crea solo el scaffold mínimo verificable; no implementa pantallas funcionales ni adopta todavía un design system específico.
 
 ### Pantallas
 
@@ -882,7 +882,7 @@ Implementar únicamente:
 
 1. Crear solo el deployable/directorio base.
 2. No implementar UI.
-3. Usar el scaffold confirmado de Next.js + TypeScript + pnpm + App Router.
+3. Usar el scaffold confirmado de Next.js + TypeScript + npm + App Router.
 
 **Hito crítico:** no adelantar Slice 14.
 
@@ -978,7 +978,7 @@ Revisar:
 
 1. Python 3.11 + Poetry.
 2. FastAPI + Pydantic v2 + Pytest + Ruff + Alembic.
-3. Next.js + TypeScript + pnpm + App Router.
+3. Next.js + TypeScript + npm + App Router.
 4. Puertos: web 3000, API 8000, MCP 8001, PeopleOps DB 5436, Synthetic HRIS DB 5437.
 5. Bases/users: `peopleops`/`peopleops_app` y `synthetic_hris`/`synthetic_hris_app`.
 6. `Makefile` raíz como interfaz operativa canónica.

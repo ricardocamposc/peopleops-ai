@@ -302,7 +302,7 @@ unless a later approved ADR explicitly changes it.
   Python lint / format                   Ruff
   Frontend                               Next.js + React + TypeScript
   Frontend routing                       Next.js App Router
-  Frontend package manager               pnpm
+  Frontend package manager               npm
   Agentic tracing / evaluation support   LangSmith
   Local orchestration                    Docker Compose
   Developer command interface            root Makefile
@@ -463,7 +463,7 @@ peopleops-ai/
 │   │   ├── lib/
 │   │   ├── public/
 │   │   ├── package.json
-│   │   ├── pnpm-lock.yaml
+│   │   ├── package-lock.json
 │   │   ├── Dockerfile
 │   │   └── .env.example
 │   │
@@ -515,7 +515,7 @@ Confirmed frontend:
 -   React;
 -   TypeScript;
 -   App Router;
--   pnpm.
+-   npm.
 
 Environment:
 
@@ -621,7 +621,7 @@ tests.
 ### 6.11 Root Makefile
 
 The root `Makefile` is the canonical developer interface. Codex should
-prefer it over documenting long ad-hoc Poetry/pnpm/Docker commands.
+prefer it over documenting long ad-hoc Poetry/npm/Docker commands.
 
 Minimum targets:
 
@@ -643,7 +643,7 @@ make health
 make clean
 ```
 
-Targets should delegate to Poetry, pnpm and Docker Compose. Keep shell
+Targets should delegate to Poetry, npm and Docker Compose. Keep shell
 logic small and transparent.
 
 Do not add targets for LocalStack, Phoenix, Redis or other services that
@@ -950,7 +950,7 @@ Examples:
 Prefer clear, typed, boring code around the agentic core.
 
 Use the confirmed baseline: Ruff for Python lint/format, Pytest for
-Python tests, and the Next.js/pnpm scripts committed by `peopleops-web`
+Python tests, and the Next.js/npm scripts committed by `peopleops-web`
 for frontend lint/build/test checks. Slice 00 must make these commands
 reproducible through the root Makefile.
 

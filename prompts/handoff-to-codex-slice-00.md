@@ -6,7 +6,7 @@
 
 - Monorepo reproducible con tres deployables: `peopleops-api`, `peopleops-web` y `reference-mcp-server`.
 - Estructura base de `packages/`, `synthetic-hris/`, `policies/`, `evaluation/`, `ops/` y documentación.
-- Stack confirmado: Python 3.11, Poetry, FastAPI, Pydantic v2, pydantic-settings, Pytest, Ruff, Alembic preparado, Next.js, React, TypeScript, App Router, pnpm, Docker Compose y PostgreSQL.
+- Stack confirmado: Python 3.11, Poetry, FastAPI, Pydantic v2, pydantic-settings, Pytest, Ruff, Alembic preparado, Next.js, React, TypeScript, App Router, npm, Docker Compose y PostgreSQL.
 - Dos servicios PostgreSQL separados: `peopleops-db` y `synthetic-hris-db`.
 - `.env.example` seguro, `.gitignore`, configuración separada por ownership y CORS explícito para `http://localhost:3000`.
 - Scaffold mínimo, health/liveness, logging técnico seguro, baseline de lint/tests y `Makefile` raíz.
@@ -42,7 +42,7 @@ Crear desde la raíz: `docker-compose.yml`, `Makefile`, `.env.example`, `.gitign
 
 ### Plantilla frontend
 
-`AGENTS.md` confirma que no hay template UI propietario para Slice 00. No consultar ni copiar una plantilla. El frontend debe ser únicamente un scaffold mínimo de Next.js + TypeScript + App Router + pnpm. No registrar fake APIs, MSW, mocks, demo plugins ni datos de ejemplo.
+`AGENTS.md` confirma que no hay template UI propietario para Slice 00. No consultar ni copiar una plantilla. El frontend debe ser únicamente un scaffold mínimo de Next.js + TypeScript + App Router + npm. No registrar fake APIs, MSW, mocks, demo plugins ni datos de ejemplo.
 
 ### Base de datos
 
@@ -58,7 +58,7 @@ No existe configuración previa. El baseline debe crearla de forma explícita en
 
 - Los tres deployables y los cinco servicios Compose.
 - Python 3.11 + Poetry para ambos backends; FastAPI/Pydantic/Pytest/Ruff.
-- Next.js + React + TypeScript + App Router + pnpm para web.
+- Next.js + React + TypeScript + App Router + npm para web.
 - Health HTTP `GET /api/v1/health` y `GET /health`.
 - Separación estricta de credenciales: API solo PeopleOps DB; MCP Server solo Synthetic HRIS DB; web ninguna DB.
 - `Makefile` como interfaz operativa; puertos configurables por entorno; single-tenant por instancia.
@@ -68,14 +68,14 @@ No existe configuración previa. El baseline debe crearla de forma explícita en
 
 - Como el repo está vacío, la lista de archivos autorizados se concreta en el prompt operativo y debe mantenerse mínima.
 - `git status`, rama base, remote y PR no pueden darse por hechos: el runbook debe comprobarlos y detener las operaciones Git si no hay `.git` o no se puede identificar la rama base.
-- No documentar comandos como verificados hasta ejecutarlos realmente. La ejecución de Docker, Poetry, pnpm o `gh` puede quedar como requisito pendiente si el entorno no los tiene.
+- No documentar comandos como verificados hasta ejecutarlos realmente. La ejecución de Docker, Poetry, npm o `gh` puede quedar como requisito pendiente si el entorno no los tiene.
 - No crear `.env` con secretos durante esta fase; solo `.env.example` versionable y reglas para que el implementador cree archivos locales ignorados.
 
 ### Requiere confirmación
 
 - Si la carpeta no es el checkout Git correcto, confirmar la raíz/branch antes de crear rama o PR.
 - El diseño menciona una posible preparación de Alembic, pero no exige una migración vacía: usar solo tooling/configuración mínima y no introducir una migration si no es necesaria para el scaffold.
-- Confirmar la disponibilidad local de Docker, Compose, Poetry, pnpm y Node antes de marcar verificaciones como ejecutadas.
+- Confirmar la disponibilidad local de Docker, Compose, Poetry, npm y Node antes de marcar verificaciones como ejecutadas.
 
 ## 4. Plan de trabajo para Codex
 

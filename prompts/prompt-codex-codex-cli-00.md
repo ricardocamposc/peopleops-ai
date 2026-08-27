@@ -28,7 +28,7 @@ Si encuentras una contradicción real, detén la parte afectada y reporta los do
 
 No hay flujo de usuario HR. El flujo operativo es: checkout → `.env` local desde `.env.example` → validación → `docker compose config` → build/start → health de cinco servicios → lint/tests → revisión de guardrails.
 
-Entradas: checkout, Docker/Compose, Python 3.11/Poetry, Node/pnpm y configuración local no versionada. Salidas: monorepo arrancable, tres deployables identificables, dos DB aisladas, health verificable y comandos reproducibles.
+Entradas: checkout, Docker/Compose, Python 3.11/Poetry, Node/npm y configuración local no versionada. Salidas: monorepo arrancable, tres deployables identificables, dos DB aisladas, health verificable y comandos reproducibles.
 
 Reglas obligatorias:
 
@@ -65,7 +65,7 @@ Scaffold Python 3.11 + Poetry + FastAPI o mecanismo HTTP mínimo compatible con 
 
 ### `apps/peopleops-web/`
 
-Scaffold mínimo Next.js + React + TypeScript + App Router + pnpm. Puede mostrar únicamente un placeholder técnico si el scaffold lo necesita para arrancar. No implementar pantallas ni datos demo.
+Scaffold mínimo Next.js + React + TypeScript + App Router + npm. Puede mostrar únicamente un placeholder técnico si el scaffold lo necesita para arrancar. No implementar pantallas ni datos demo.
 
 ### `packages/contracts/` y `packages/shared/`
 
@@ -73,7 +73,7 @@ Crear solo si el scaffold necesita estas áreas. Mantenerlos neutrales. Prohibid
 
 ### Infraestructura y configuración
 
-Crear Compose con exactamente cinco servicios: `peopleops-web`, `peopleops-api`, `reference-mcp-server`, `peopleops-db`, `synthetic-hris-db`. Usar nombres de servicio y puertos internos entre contenedores; dejar puertos host configurables por `.env`. DBs con health checks. Aplicaciones con health/liveness mínimo. Añadir `Makefile` con `help install build up down restart ps logs lint format test test-unit test-integration health clean`, delegando a Poetry, pnpm y Compose.
+Crear Compose con exactamente cinco servicios: `peopleops-web`, `peopleops-api`, `reference-mcp-server`, `peopleops-db`, `synthetic-hris-db`. Usar nombres de servicio y puertos internos entre contenedores; dejar puertos host configurables por `.env`. DBs con health checks. Aplicaciones con health/liveness mínimo. Añadir `Makefile` con `help install build up down restart ps logs lint format test test-unit test-integration health clean`, delegando a Poetry, npm y Compose.
 
 ## Diseño frontend (6)
 
@@ -98,7 +98,7 @@ Crear/verificar `apps/peopleops-web/.env.example` con `NEXT_PUBLIC_API_BASE_URL=
 
 - Ejecuta `pwd`, `git status`, `git branch --show-current` y `git remote -v` si existe `.git`; registra la ausencia de Git sin detener la implementación no-Git.
 - Inspecciona `AGENTS.md`, README, docs, `prompts/`, `ops/`, Compose, `.env*`, `Makefile`, `apps/`, `packages/`, tests y configuraciones existentes.
-- Confirma Python 3.11, Poetry, Node, pnpm, Docker y Compose. No sustituyas herramientas por analogía.
+- Confirma Python 3.11, Poetry, Node, npm, Docker y Compose. No sustituyas herramientas por analogía.
 - Clasifica cada archivo como `crear`, `modificar por integración directa` o `no tocar`.
 - Busca secretos y datos reales. No copies datos del HRIS ni documentos privados.
 
@@ -128,7 +128,7 @@ Crear/verificar `apps/peopleops-web/.env.example` con `NEXT_PUBLIC_API_BASE_URL=
 
 #### Fase 5 — Frontend
 
-- Crea el scaffold mínimo Next.js + React + TypeScript + App Router + pnpm.
+- Crea el scaffold mínimo Next.js + React + TypeScript + App Router + npm.
 - Crea/verifica `apps/peopleops-web/.env.example` con `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000`; crea `.env.local` desde ese archivo solo si ejecutas checks frontend.
 - No copies template, no agregues UI funcional, páginas demo, fake APIs, MSW, `mockServiceWorker.js`, handlers, aliases mock ni datos de ejemplo.
 - Verifica que web no contenga variables de DB, Synthetic HRIS, MCP o secretos.
@@ -136,7 +136,7 @@ Crear/verificar `apps/peopleops-web/.env.example` con `NEXT_PUBLIC_API_BASE_URL=
 #### Fase 6 — Makefile y documentación
 
 - Crea `Makefile` raíz con exactamente los targets mínimos documentados: `help`, `install`, `build`, `up`, `down`, `restart`, `ps`, `logs`, `lint`, `format`, `test`, `test-unit`, `test-integration`, `health`, `clean`.
-- Cada target debe delegar a Poetry, pnpm o Docker Compose existentes; no inventes targets que no puedan ejecutarse.
+- Cada target debe delegar a Poetry, npm o Docker Compose existentes; no inventes targets que no puedan ejecutarse.
 - Documenta en README el arranque limpio, variables, puertos, ownership, health, tests y límites de Slice 00. No afirmes checks no ejecutados.
 
 #### Fase 7 — Pruebas y guardrails
@@ -225,7 +225,7 @@ Solo con autorización explícita: rama `codex/slice00`; commits claros por fase
 
 ## Comportamiento ante bloqueos
 
-No conviertas una herramienta ausente en una razón para omitir la implementación. Si falta Git, continúa con archivos y checks no-Git; si falta Docker, ejecuta validaciones estáticas y reporta los smoke tests pendientes; si falta Poetry/pnpm, valida estructura/configuración y reporta los comandos pendientes. Solo detén una decisión que cambie arquitectura, seguridad, contrato público o alcance.
+No conviertas una herramienta ausente en una razón para omitir la implementación. Si falta Git, continúa con archivos y checks no-Git; si falta Docker, ejecuta validaciones estáticas y reporta los smoke tests pendientes; si falta Poetry/npm, valida estructura/configuración y reporta los comandos pendientes. Solo detén una decisión que cambie arquitectura, seguridad, contrato público o alcance.
 
 ## Runbook
 
