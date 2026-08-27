@@ -23,7 +23,9 @@ from peopleops_api.policy_ingestion import (
     PolicyUploadError,
     get_ingestion_job,
     get_policy_version,
+    get_embedding_model,
 )
+from peopleops_api.policy_retrieval import PolicyKnowledgeProvider
 from peopleops_api.repositories import create_interaction, get_interaction
 from peopleops_api.schemas import (
     AnalysisCreate,
@@ -90,6 +92,7 @@ def register_analysis(
         gateway=gateway,
         model=OpenAIStructuredModel(api_key=settings.openai_api_key, model=settings.openai_model),
         security=SecurityContext(),
+        policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
     )
     interaction = workflow.run(interaction)
     return AnalysisRead.model_validate(interaction)

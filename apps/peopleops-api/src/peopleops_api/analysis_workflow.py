@@ -16,16 +16,17 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from peopleops_api.analysis_contracts import (
-    AnalysisPlan,
-    SemanticRequest,
-    StructuredAnswer,
-)
+from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
 from peopleops_api.audit import transition
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClientError
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
 from peopleops_api.models import AnalysisInteraction
+from peopleops_api.policy_retrieval import (
+    PolicyKnowledgeProvider,
+    PolicyRetrievalResult,
+    PolicyRetrievalStatus,
+)
 from peopleops_api.query_contracts import QueryResult
 
 
@@ -39,6 +40,10 @@ class StructuredModel(Protocol):
 
 class OpenAIModelError(Exception):
     """Safe boundary error for unavailable or invalid model responses."""
+
+
+class PolicyProviderError(Exception):
+    """Safe boundary error for unavailable or invalid policy retrieval."""
 
 
 class OpenAIStructuredModel:
@@ -84,6 +89,11 @@ class AnalysisState(TypedDict, total=False):
     plan: AnalysisPlan
     results: list[QueryResult]
     evidence: list[dict[str, Any]]
+    policy_result: PolicyRetrievalResult
+    facts: list[dict[str, Any]]
+    policies: list[dict[str, Any]]
+    inference: list[str]
+    warnings: list[str]
     response: StructuredAnswer
     replan_count: int
     query_errors: list[str]
@@ -95,6 +105,7 @@ class AnalysisWorkflow:
     gateway: HRDataGateway
     model: StructuredModel
     security: SecurityContext
+    policy_provider: PolicyKnowledgeProvider | None = None
     max_replans: int = 1
 
     def run(self, interaction: AnalysisInteraction) -> AnalysisInteraction:
@@ -110,6 +121,9 @@ class AnalysisWorkflow:
                     "question": interaction.question,
                     "replan_count": 0,
                     "results": [],
+                    "facts": [],
+                    "policies": [],
+                    "warnings": [],
                 }
             )
             interaction.latency_ms = round((monotonic() - started) * 1000)
@@ -121,6 +135,8 @@ class AnalysisWorkflow:
             return self._fail(interaction, exc.code, self._safe_error(exc))
         except OpenAIModelError as exc:
             return self._fail(interaction, "MODEL_ERROR", str(exc))
+        except PolicyProviderError as exc:
+            return self._fail(interaction, "POLICY_RETRIEVAL_ERROR", str(exc))
         except Exception:  # noqa: BLE001 - normalize unexpected workflow boundary failures
             return self._fail(interaction, "SYSTEM_ERROR", "analysis workflow failed")
 
@@ -130,20 +146,43 @@ class AnalysisWorkflow:
         builder.add_node("discover_catalog", self._discover_catalog)
         builder.add_node("plan_queries", self._plan_queries)
         builder.add_node("execute_queries", self._execute_queries)
+        builder.add_node("retrieve_policy", self._retrieve_policy)
         builder.add_node("merge_evidence", self._merge_evidence)
         builder.add_node("synthesize", self._synthesize)
         builder.add_edge(START, "understand_request")
-        builder.add_edge("understand_request", "discover_catalog")
+        builder.add_conditional_edges(
+            "understand_request",
+            self._after_understanding,
+            {"discover": "discover_catalog", "plan": "plan_queries"},
+        )
         builder.add_edge("discover_catalog", "plan_queries")
-        builder.add_edge("plan_queries", "execute_queries")
+        builder.add_conditional_edges(
+            "plan_queries",
+            self._after_planning,
+            {"data": "execute_queries", "policy": "retrieve_policy", "merge": "merge_evidence"},
+        )
         builder.add_conditional_edges(
             "execute_queries",
             self._after_execution,
-            {"replan": "plan_queries", "merge": "merge_evidence"},
+            {"replan": "plan_queries", "policy": "retrieve_policy", "merge": "merge_evidence"},
         )
+        builder.add_edge("retrieve_policy", "merge_evidence")
         builder.add_edge("merge_evidence", "synthesize")
         builder.add_edge("synthesize", END)
         return builder.compile()
+
+    @staticmethod
+    def _after_understanding(state: AnalysisState) -> str:
+        return "discover" if state["semantic_request"].requires_structured_data else "plan"
+
+    @staticmethod
+    def _after_planning(state: AnalysisState) -> str:
+        semantic = state["semantic_request"]
+        if semantic.requires_structured_data and state["plan"].queries:
+            return "data"
+        if semantic.requires_policy:
+            return "policy"
+        return "merge"
 
     def _understand_request(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "understanding", "running")
@@ -187,6 +226,7 @@ class AnalysisWorkflow:
     def _plan_queries(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "planning", "running")
         feedback = "; ".join(state.get("query_errors", []))
+        catalog = state.get("catalog")
         plan = self.model.parse(
             purpose=(
                 "Create a bounded plan of provider-neutral conceptual queries. Use semantic IDs from "
@@ -194,7 +234,7 @@ class AnalysisWorkflow:
             ),
             instructions=(
                 f"Semantic request: {state['semantic_request'].model_dump_json()}\n"
-                f"Catalog metadata: {state['catalog'].model_dump_json()}\n"
+                f"Catalog metadata: {catalog.model_dump_json() if catalog else 'not required for this plan'}\n"
                 f"Previous validation feedback (if any): {feedback or 'none'}"
             ),
             output_model=AnalysisPlan,
@@ -248,11 +288,51 @@ class AnalysisWorkflow:
         if state.get("query_errors") and state.get("replan_count", 0) < self.max_replans:
             state["replan_count"] = state.get("replan_count", 0) + 1
             return "replan"
+        if state["semantic_request"].requires_policy:
+            return "policy"
         return "merge"
+
+    def _retrieve_policy(self, state: AnalysisState) -> dict[str, Any]:
+        self._stage(state, "policy_retrieval", "running")
+        if self.policy_provider is None:
+            raise PolicyProviderError("Policy provider is not configured")
+        policy_plan = state["plan"].policy
+        semantic = state["semantic_request"]
+        query = policy_plan.query if policy_plan else semantic.policy_query or state["question"]
+        as_of = policy_plan.as_of if policy_plan else semantic.policy_as_of
+        if as_of is None:
+            raise PolicyProviderError("policy retrieval requires an effective date")
+        filters = policy_plan.filters if policy_plan else semantic.policy_filters
+        result = self.policy_provider.retrieve(
+            query,
+            as_of=as_of,
+            filters=_policy_filters(filters),
+            top_k=policy_plan.top_k if policy_plan else 5,
+        )
+        policy_evidence = [item.as_dict() for item in result.evidence]
+        status = (
+            "completed"
+            if result.status is PolicyRetrievalStatus.COMPLETED
+            else result.status.value.lower()
+        )
+        snapshots = {
+            "policy_sources": _policy_sources(policy_evidence),
+            "policy_versions": _policy_versions(policy_evidence),
+            "evidence": policy_evidence,
+            "warnings": []
+            if result.status is PolicyRetrievalStatus.COMPLETED
+            else [result.reason or status],
+        }
+        self._stage(state, "policy_retrieval", status, snapshots=snapshots)
+        return {
+            "policy_result": result,
+            "policies": policy_evidence,
+            "interaction": state["interaction"],
+        }
 
     def _merge_evidence(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "evidence_merge", "running")
-        evidence = [
+        data_evidence = [
             {
                 "type": "structured_data",
                 "purpose": planned.purpose,
@@ -261,20 +341,58 @@ class AnalysisWorkflow:
             }
             for planned, result in state.get("results", [])
         ]
-        self._stage(state, "evidence_merge", "completed", snapshots={"evidence": evidence})
-        return {"evidence": evidence, "interaction": state["interaction"]}
+        policy_evidence = state.get("policies", [])
+        evidence = [*data_evidence, *[{"type": "policy", **item} for item in policy_evidence]]
+        facts = [item for item in data_evidence]
+        warnings = list(state.get("warnings", []))
+        policy_result = state.get("policy_result")
+        if policy_result and policy_result.status is not PolicyRetrievalStatus.COMPLETED:
+            warnings.append(policy_result.reason or policy_result.status.value)
+        self._stage(
+            state,
+            "evidence_merge",
+            "completed",
+            snapshots={
+                "evidence": evidence,
+                "structured_result": facts,
+                "warnings": _unique(warnings),
+            },
+        )
+        return {
+            "evidence": evidence,
+            "facts": facts,
+            "policy_result": policy_result,
+            "warnings": _unique(warnings),
+            "interaction": state["interaction"],
+        }
 
     def _synthesize(self, state: AnalysisState) -> dict[str, Any]:
         evidence = state.get("evidence", [])
-        if not any(item["result"].get("rows") for item in evidence):
+        data_available = any(
+            item.get("result", {}).get("rows")
+            for item in evidence
+            if item["type"] == "structured_data"
+        )
+        policy_result = state.get("policy_result")
+        policy_available = bool(state.get("policies"))
+        if not data_available and not policy_available:
+            status = _terminal_status(policy_result)
             response = StructuredAnswer(
-                answer="No sufficient structured HR data was returned for this question.",
-                warnings=["The requested analysis has insufficient data."],
+                answer="The available evidence is insufficient to support this analysis.",
+                facts=state.get("facts", []),
+                policies=[],
+                status=status,
+                warnings=_unique(
+                    [
+                        *state.get("warnings", []),
+                        "The requested analysis has insufficient evidence.",
+                    ]
+                ),
             )
             self._stage(
                 state,
                 "synthesis",
-                "insufficient_data",
+                status,
                 snapshots={
                     "response": response.model_dump(mode="json"),
                     "warnings": response.warnings,
@@ -284,18 +402,25 @@ class AnalysisWorkflow:
         self._stage(state, "synthesis", "running")
         response = self.model.parse(
             purpose=(
-                "Synthesize only a concise answer grounded in the structured evidence. Preserve numeric "
-                "values exactly. Facts must be attributable to evidence; do not mention hidden reasoning."
+                "Synthesize a concise answer grounded only in the supplied evidence. Return separate "
+                "facts (structured data), policies (verified document evidence), and inference. Preserve "
+                "numeric values exactly; do not turn policy into facts or mention hidden reasoning."
             ),
             instructions=f"Question: {state['question']}\nEvidence: {evidence}",
             output_model=StructuredAnswer,
         )
         assert isinstance(response, StructuredAnswer)
         _assert_supported_numbers(response, evidence)
+        response.facts = state.get("facts", [])
+        response.policies = state.get("policies", [])
+        response.warnings = _unique([*state.get("warnings", []), *response.warnings])
+        if policy_result and policy_result.status is not PolicyRetrievalStatus.COMPLETED:
+            response.status = _terminal_status(policy_result)
+        final_status = response.status
         self._stage(
             state,
             "synthesis",
-            "completed",
+            final_status,
             snapshots={"response": response.model_dump(mode="json")},
         )
         return {"response": response, "interaction": state["interaction"]}
@@ -349,3 +474,49 @@ def _assert_supported_numbers(response: StructuredAnswer, evidence: list[dict[st
         for number in re.findall(r"(?<![A-Za-z])[+-]?\d+(?:[.,]\d+)?", text):
             if number not in serialized and number.replace(",", ".") not in serialized:
                 raise OpenAIModelError("structured response contained an unsupported numeric claim")
+
+
+def _policy_filters(values: dict[str, Any]) -> Any:
+    from peopleops_api.policy_retrieval import PolicyRetrievalFilters
+
+    allowed = {
+        key: values[key]
+        for key in ("document_key", "document_type", "department", "confidentiality", "metadata")
+        if key in values
+    }
+    return PolicyRetrievalFilters(**allowed)
+
+
+def _policy_sources(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: item[key] for key in ("document_id", "document_key", "title")} for item in evidence
+    ]
+
+
+def _policy_versions(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            key: item[key]
+            for key in ("policy_version_id", "version", "effective_from", "effective_to")
+        }
+        for item in evidence
+    ]
+
+
+def _terminal_status(result: PolicyRetrievalResult | None) -> str:
+    if result is None:
+        return "insufficient_data"
+    status = (
+        result.status.value
+        if isinstance(result.status, PolicyRetrievalStatus)
+        else str(result.status)
+    )
+    return {
+        PolicyRetrievalStatus.POLICY_NOT_FOUND.value: "policy_not_found",
+        PolicyRetrievalStatus.POLICY_CONFLICT.value: "policy_conflict",
+        PolicyRetrievalStatus.INSUFFICIENT_DATA.value: "insufficient_data",
+    }.get(status, "insufficient_data")
+
+
+def _unique(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))

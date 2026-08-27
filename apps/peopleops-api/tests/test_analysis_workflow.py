@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from uuid import uuid4
 
 from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
@@ -6,6 +7,7 @@ from peopleops_api.analysis_workflow import AnalysisWorkflow
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QuerySelect, QueryValidation
+from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrievalStatus
 
 
 @dataclass
@@ -57,6 +59,18 @@ class FakeGateway:
         )
 
 
+@dataclass
+class FakePolicyProvider:
+    result: PolicyRetrievalResult
+
+    def __post_init__(self):
+        self.calls = []
+
+    def retrieve(self, query, *, as_of, filters, top_k):
+        self.calls.append({"query": query, "as_of": as_of, "filters": filters, "top_k": top_k})
+        return self.result
+
+
 def _interaction():
     return AnalysisInteraction(
         request_id=uuid4(), question="Which employees are active?", stage_history=[]
@@ -74,6 +88,26 @@ def _plan():
                 ),
             }
         ],
+    )
+
+
+def _policy_semantic(*, structured: bool, status_query: str = "Vacation approval"):
+    return SemanticRequest(
+        goal="evaluate vacation request",
+        required_capabilities=["vacation"] if structured else [],
+        entities=["vacation"] if structured else [],
+        requires_structured_data=structured,
+        requires_policy=True,
+        policy_query=status_query,
+        policy_as_of=date(2026, 11, 1),
+    )
+
+
+def _policy_plan():
+    return AnalysisPlan(
+        goal="evaluate vacation request",
+        queries=[_plan().queries[0]],
+        policy={"query": "Vacation approval", "as_of": date(2026, 11, 1)},
     )
 
 
@@ -153,3 +187,101 @@ def test_empty_structured_result_is_insufficient_data(db_session):
     ).run(interaction)
     assert result.status == "insufficient_data"
     assert result.response["warnings"]
+
+
+def test_combined_workflow_preserves_fact_policy_and_inference_provenance(db_session):
+    from peopleops_api.policy_retrieval import PolicyEvidence
+
+    policy = PolicyEvidence(
+        document_id=uuid4(),
+        document_key="vacation-policy",
+        title="Vacation Policy",
+        policy_version_id=uuid4(),
+        version="2026.1",
+        effective_from=date(2026, 1, 1),
+        effective_to=None,
+        page=3,
+        section="Requests",
+        chunk_id=uuid4(),
+        chunk_index=0,
+        fragment="Vacation requests require manager approval.",
+        score=0.94,
+    )
+    model = FakeModel(
+        [
+            _policy_semantic(structured=True),
+            _policy_plan(),
+            StructuredAnswer(
+                answer="The request is supported by the available facts and policy.",
+                inference=["Manager approval is required."],
+            ),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        policy_provider=FakePolicyProvider(
+            PolicyRetrievalResult(status=PolicyRetrievalStatus.COMPLETED, evidence=[policy])
+        ),
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.response["facts"][0]["type"] == "structured_data"
+    assert result.response["policies"][0]["document_key"] == "vacation-policy"
+    assert result.policy_sources[0]["document_key"] == "vacation-policy"
+    assert result.policy_versions[0]["version"] == "2026.1"
+    assert {item["type"] for item in result.evidence} == {"structured_data", "policy"}
+    assert "policy_retrieval" in {event["stage"] for event in result.stage_history}
+
+
+def test_policy_only_workflow_does_not_call_structured_provider(db_session):
+    provider = FakePolicyProvider(
+        PolicyRetrievalResult(status=PolicyRetrievalStatus.POLICY_NOT_FOUND, reason="policy absent")
+    )
+    model = FakeModel([_policy_semantic(structured=False), AnalysisPlan(goal="policy only")])
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    gateway = FakeGateway()
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=gateway,
+        model=model,
+        security=SecurityContext(),
+        policy_provider=provider,
+    ).run(interaction)
+
+    assert result.status == "policy_not_found"
+    assert gateway.catalog_calls == 0
+    assert gateway.execution_calls == 0
+    assert result.policy_sources == []
+    assert result.response["warnings"]
+
+
+def test_policy_conflict_is_not_resolved_by_the_workflow(db_session):
+    provider = FakePolicyProvider(
+        PolicyRetrievalResult(
+            status=PolicyRetrievalStatus.POLICY_CONFLICT,
+            reason="two active versions apply",
+        )
+    )
+    model = FakeModel([_policy_semantic(structured=False), AnalysisPlan(goal="policy conflict")])
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        policy_provider=provider,
+    ).run(interaction)
+
+    assert result.status == "policy_conflict"
+    assert result.response["policies"] == []
+    assert "two active versions apply" in result.response["warnings"]
