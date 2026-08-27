@@ -1,0 +1,85 @@
+services:
+  peopleops-web:
+    build:
+      context: ./apps/peopleops-web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:${API_PORT:-8000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:3000"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      peopleops-api:
+        condition: service_healthy
+
+  peopleops-api:
+    build:
+      context: ./apps/peopleops-api
+    environment:
+      PEOPLEOPS_DATABASE_HOST: peopleops-db
+      PEOPLEOPS_DATABASE_PORT: 5432
+      PEOPLEOPS_DATABASE_NAME: ${PEOPLEOPS_DATABASE_NAME:-peopleops}
+      PEOPLEOPS_DATABASE_USER: ${PEOPLEOPS_DATABASE_USER:-peopleops_app}
+      PEOPLEOPS_DATABASE_PASSWORD: ${PEOPLEOPS_DATABASE_PASSWORD:-peopleops_local_placeholder}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      peopleops-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  reference-mcp-server:
+    build:
+      context: ./apps/reference-mcp-server
+    environment:
+      SYNTHETIC_HRIS_DATABASE_HOST: synthetic-hris-db
+      SYNTHETIC_HRIS_DATABASE_PORT: 5432
+      SYNTHETIC_HRIS_DATABASE_NAME: ${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}
+      SYNTHETIC_HRIS_DATABASE_USER: ${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}
+      SYNTHETIC_HRIS_DATABASE_PASSWORD: ${SYNTHETIC_HRIS_DATABASE_PASSWORD:-synthetic_hris_local_placeholder}
+    ports:
+      - "${MCP_PORT:-8001}:8001"
+    depends_on:
+      synthetic-hris-db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8001/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  peopleops-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${PEOPLEOPS_DATABASE_NAME:-peopleops}
+      POSTGRES_USER: ${PEOPLEOPS_DATABASE_USER:-peopleops_app}
+      POSTGRES_PASSWORD: ${PEOPLEOPS_DATABASE_PASSWORD:-peopleops_local_placeholder}
+    ports:
+      - "${PEOPLEOPS_DB_PORT:-5436}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  synthetic-hris-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}
+      POSTGRES_USER: ${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}
+      POSTGRES_PASSWORD: ${SYNTHETIC_HRIS_DATABASE_PASSWORD:-synthetic_hris_local_placeholder}
+    ports:
+      - "${SYNTHETIC_HRIS_DB_PORT:-5437}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

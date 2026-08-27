@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "peopleops-api"
+version = "0.1.0"
+description = "PeopleOps AI API foundation"
+authors = ["PeopleOps AI"]
+packages = [{ include = "peopleops_api", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.12"
+fastapi = "^0.115.0"
+pydantic = "^2.9.0"
+pydantic-settings = "^2.5.0"
+uvicorn = {version = "^0.30.0", extras = ["standard"]}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.0"
+ruff = "^0.6.0"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
