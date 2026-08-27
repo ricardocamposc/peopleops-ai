@@ -25,10 +25,15 @@ services:
       PEOPLEOPS_DATABASE_USER: ${PEOPLEOPS_DATABASE_USER:-peopleops_app}
       PEOPLEOPS_DATABASE_PASSWORD: ${PEOPLEOPS_DATABASE_PASSWORD:-peopleops_local_placeholder}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      REFERENCE_MCP_SERVER_URL: http://reference-mcp-server:8001
+      MCP_TIMEOUT_SECONDS: ${MCP_TIMEOUT_SECONDS:-5}
+      MCP_MAX_RETRIES: ${MCP_MAX_RETRIES:-2}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
       peopleops-db:
+        condition: service_healthy
+      reference-mcp-server:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/api/v1/health')"]

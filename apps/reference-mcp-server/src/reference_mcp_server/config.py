@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     synthetic_hris_database_password: str = Field(
         default="", alias="SYNTHETIC_HRIS_DATABASE_PASSWORD"
     )
+    query_timeout_seconds: float = Field(default=5.0, gt=0, le=60, alias="QUERY_TIMEOUT_SECONDS")
+    max_result_rows: int = Field(default=1000, ge=1, le=10000, alias="MAX_RESULT_ROWS")
 
 
 @lru_cache

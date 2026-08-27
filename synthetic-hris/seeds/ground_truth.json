@@ -1,0 +1,13 @@
+{
+  "version": "slice-02-v1",
+  "scenarios": [
+    {"id": "contract_expiring", "employee_code": "E-100", "fact": "contract ends 2025-12-31"},
+    {"id": "vacation_sufficient", "employee_code": "E-100", "available_days": 12, "request_days": 10, "expected": "sufficient"},
+    {"id": "vacation_insufficient", "employee_code": "E-101", "available_days": 2, "request_days": 5, "expected": "insufficient"},
+    {"id": "vacation_contract_boundary", "employee_code": "E-102", "contract_end": "2025-10-31", "vacation_end": "2025-10-24"},
+    {"id": "overtime_reconciliation", "employee_code": "E-103", "recorded_overtime_hours": 10, "paid_overtime_hours": 0, "expected": "discrepancy"},
+    {"id": "payroll_period_comparison", "employee_code": "E-103", "previous_net": 3400, "current_net": 3000, "net_change": -400, "driver": "deduction increase"},
+    {"id": "absence_effect", "employee_code": "E-102", "leave_date": "2025-02-10", "absence_minutes": 480},
+    {"id": "human_review_candidate", "employee_code": "E-101", "reason": "vacation request exceeds available balance"}
+  ]
+}

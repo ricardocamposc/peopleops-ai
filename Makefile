@@ -40,6 +40,7 @@ format:
 test: test-unit test-integration
 
 test-unit:
+	docker compose up -d peopleops-db
 	poetry -C apps/peopleops-api run pytest
 	poetry -C apps/reference-mcp-server run pytest
 

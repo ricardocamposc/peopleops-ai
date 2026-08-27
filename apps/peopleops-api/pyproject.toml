@@ -10,7 +10,18 @@ python = ">=3.11,<3.12"
 fastapi = "^0.115.0"
 pydantic = "^2.9.0"
 pydantic-settings = "^2.5.0"
+sqlalchemy = "^2.0.36"
+psycopg = {version = "^3.2.3", extras = ["binary"]}
+alembic = "^1.14.0"
 uvicorn = {version = "^0.30.0", extras = ["standard"]}
+langgraph = "^0.2.50"
+openai = "^1.54.0"
+llama-index-core = "^0.12.23"
+llama-index-readers-file = "^0.4.6"
+llama-index-embeddings-openai = "^0.3.1"
+pgvector = "^0.3.6"
+pypdf = "^5.3.1"
+python-multipart = "^0.0.18"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"
@@ -21,9 +32,8 @@ line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "../reference-mcp-server/src"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
 build-backend = "poetry.core.masonry.api"
-
