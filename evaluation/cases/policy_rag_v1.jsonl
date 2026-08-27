@@ -1,0 +1,5 @@
+{"case_id":"current-vacation","query":"What approval is required for vacation?","as_of":"2026-06-01","expected_status":"COMPLETED","expected_document_key":"vacation-policy","expected_version":"2"}
+{"case_id":"historical-vacation","query":"What approval was required for vacation?","as_of":"2025-06-01","expected_status":"COMPLETED","expected_document_key":"vacation-policy","expected_version":"1"}
+{"case_id":"missing-policy","query":"What is the relocation allowance?","as_of":"2026-06-01","expected_status":"POLICY_NOT_FOUND"}
+{"case_id":"insufficient-match","query":"Explain an unsupported policy claim","as_of":"2026-06-01","expected_status":"INSUFFICIENT_DATA"}
+{"case_id":"metadata-filter","query":"What approval is required for vacation?","as_of":"2026-06-01","filters":{"department":"People"},"expected_status":"COMPLETED","expected_document_key":"vacation-policy","expected_version":"2"}

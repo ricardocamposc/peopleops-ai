@@ -1,0 +1,12 @@
+{
+  "dataset": "policy_rag_v1",
+  "metrics": [
+    "document_hit_recall",
+    "policy_version_accuracy",
+    "citation_validity",
+    "answerability_accuracy",
+    "abstention_accuracy"
+  ],
+  "judge": null,
+  "notes": "Deterministic baseline; execute against an already-ingested corpus with evaluation/policy_rag_v1.jsonl."
+}
