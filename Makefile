@@ -52,6 +52,15 @@ baseline-policy-rag: baseline-policy
 baseline-policy-rag-holdout:
 	PYTHONPATH=src poetry -C apps/peopleops-api run python ../../ops/policy_rag_baseline.py --dataset "$(abspath evaluation/cases/policy_rag_holdout_v1.jsonl)" --output-dir "$(abspath $(if $(POLICY_HOLDOUT_OUTPUT_DIR),$(POLICY_HOLDOUT_OUTPUT_DIR),evaluation/runs/holdout-$(shell date +%Y%m%d-%H%M%S)))"
 
+baseline-policy-rag-validation:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python ../../ops/policy_rag_baseline.py --dataset "$(abspath evaluation/cases/policy_rag_holdout_v1.jsonl)" --output-dir "$(abspath $(if $(POLICY_VALIDATION_OUTPUT_DIR),$(POLICY_VALIDATION_OUTPUT_DIR),evaluation/runs/validation-$(shell date +%Y%m%d-%H%M%S)))"
+
+baseline-policy-rag-holdout-v2:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python ../../ops/policy_rag_baseline.py --dataset "$(abspath evaluation/cases/policy_rag_holdout_v2.jsonl)" --output-dir "$(abspath $(if $(POLICY_HOLDOUT_V2_OUTPUT_DIR),$(POLICY_HOLDOUT_V2_OUTPUT_DIR),evaluation/runs/holdout-v2-$(shell date +%Y%m%d-%H%M%S)))"
+
+publish-policy-baseline:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/publish_policy_baseline.py --run-dir "$(POLICY_RUN_DIR)" --baseline-name "$(POLICY_BASELINE_NAME)"
+
 baseline-hris-mcp:
 	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/hris_mcp_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(HRIS_BASELINE_OUTPUT_DIR),$(HRIS_BASELINE_OUTPUT_DIR),evaluation/runs/hris-mcp-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/hris-mcp-mvp.json)"
 
@@ -130,4 +139,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-holdout baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean
+.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-validation baseline-policy-rag-holdout baseline-policy-rag-holdout-v2 publish-policy-baseline baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean

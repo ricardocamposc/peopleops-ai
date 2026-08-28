@@ -173,6 +173,49 @@ def _promoted_document_precision(expected: set[str], promoted: set[str]) -> floa
     return len(expected & promoted) / len(promoted)
 
 
+def _normalise_fact(value: Any) -> tuple[str, ...]:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    normalized = "".join(char for char in normalized if not unicodedata.combining(char))
+    return tuple(re.findall(r"[\w]+", normalized.casefold(), flags=re.UNICODE))
+
+
+def _policy_fact_coverage(
+    case: PolicyEvaluationCase,
+    prediction: dict[str, Any],
+    evidence: list[dict[str, Any]],
+) -> tuple[list[str], list[str], float | None]:
+    """Match only concrete expected facts using language-neutral normalization.
+
+    This is intentionally a diagnostic metric. It does not infer synonyms or
+    route application queries. Facts that cannot be represented as at least two
+    normalized tokens remain N/A instead of being evaluated with a fragile
+    heuristic.
+    """
+
+    if not case.expected_policy_facts:
+        return [], [], None
+    searchable = _normalise_fact(
+        " ".join(
+            [
+                str(prediction.get("answer") or ""),
+                _evidence_text(evidence),
+            ]
+        )
+    )
+    searchable_set = set(searchable)
+    supported: list[str] = []
+    evaluable: list[str] = []
+    for fact in case.expected_policy_facts:
+        tokens = _normalise_fact(fact)
+        if len(tokens) < 2:
+            continue
+        evaluable.append(fact)
+        if set(tokens).issubset(searchable_set):
+            supported.append(fact)
+    coverage = len(supported) / len(evaluable) if evaluable else None
+    return evaluable, supported, coverage
+
+
 def evaluate_predictions(
     dataset: Iterable[PolicyEvaluationCase], predictions: Iterable[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -211,6 +254,8 @@ def evaluate_predictions(
             for item in evidence
             if item.get("document_key") or item.get("document_id")
         }
+        retrieved_document_keys = sorted(observed_docs)
+        promoted_document_keys = sorted(promoted_docs)
         lexical_groundedness, lexical_relevance = _lexical_metrics(case, prediction, evidence)
         expected_answerable = case.expected_answerable
         if expected_answerable is None:
@@ -244,8 +289,12 @@ def evaluate_predictions(
         status_match = observed_status == expected_observed_status
         answerability_match = bool(observed_answerable) == bool(expected_answerable)
         abstention_match = (not bool(observed_answerable)) == (not bool(expected_answerable))
+        evaluated_facts, supported_facts, fact_coverage = _policy_fact_coverage(
+            case, prediction, evidence
+        )
         case_result = {
             "case_id": case.case_id,
+            "question": case.query,
             "pdd_section": case.pdd_section,
             "capability": case.capability or "policy_rag",
             "expected_sources": list(case.expected_sources),
@@ -253,6 +302,16 @@ def evaluate_predictions(
             "status": observed_status,
             "expected_status": case.expected_status.value,
             "expected_workflow_status": case.expected_workflow_status,
+            "expected_policy_facts": list(case.expected_policy_facts),
+            "observed_policy_facts": supported_facts,
+            "supported_facts": supported_facts,
+            "policy_fact_coverage": fact_coverage,
+            "expected_document_keys": sorted(expected_docs),
+            "retrieved_document_keys": retrieved_document_keys,
+            "promoted_document_keys": promoted_document_keys,
+            "expected_versions": sorted(expected_versions),
+            "observed_versions": sorted(observed_versions),
+            "verification_result": verification,
             "answerable": bool(observed_answerable),
             "expected_answerable": bool(expected_answerable),
             "status_match": status_match,
@@ -273,7 +332,13 @@ def evaluate_predictions(
                 if verification_answerable is not None
                 else None
             ),
-            "failed_layer": _failed_layer(case, prediction, status_match, answerability_match),
+            "failed_layer": _failed_layer(
+                case,
+                prediction,
+                status_match,
+                answerability_match,
+                fact_coverage,
+            ),
         }
         add("document_hit_rate", float(bool(expected_docs & observed_docs)), bool(expected_docs))
         add("document_recall", doc_recall or 0.0, doc_recall is not None)
@@ -289,11 +354,16 @@ def evaluate_predictions(
         if filter_precision is not None:
             add("filter_precision", float(filter_precision))
         add("answerability_accuracy", float(answerability_match))
-        add("abstention_accuracy", float(abstention_match))
+        add(
+            "abstention_accuracy",
+            float(abstention_match),
+            bool(expected_answerable) is False,
+        )
         add("citation_validity", float(citation_valid))
         add("lexical_groundedness", lexical_groundedness)
         add("lexical_relevance", lexical_relevance)
         add("evidence_verification_accuracy", case_result["evidence_verification_accuracy"] or 0.0, case_result["evidence_verification_accuracy"] is not None)
+        add("policy_fact_coverage", fact_coverage or 0.0, fact_coverage is not None)
         results.append(case_result)
 
     metric_names = (
@@ -311,6 +381,7 @@ def evaluate_predictions(
         "lexical_groundedness",
         "lexical_relevance",
         "evidence_verification_accuracy",
+        "policy_fact_coverage",
     )
     summary = {
         metric: sum(counters[metric]) / len(counters[metric]) if counters.get(metric) else None
@@ -331,11 +402,20 @@ def _failed_layer(
     prediction: dict[str, Any],
     status_match: bool,
     answerability_match: bool,
+    policy_fact_coverage: float | None,
 ) -> str | None:
     if prediction.get("error"):
         return str(prediction.get("failed_layer") or "runner")
     if prediction.get("ingestion_status") not in (None, "completed", "ready"):
         return "ingestion"
+    expected_docs = set(case.expected_document_keys)
+    observed_docs = _observed_document_keys(prediction)
+    if expected_docs and not expected_docs.intersection(observed_docs):
+        return "retrieval"
+    expected_versions = set(case.expected_versions)
+    observed_versions = _observed_versions(prediction)
+    if expected_versions and not expected_versions.intersection(observed_versions):
+        return "policy_version_selection"
     if not status_match and case.expected_status in {
         PolicyRetrievalStatus.POLICY_NOT_FOUND,
         PolicyRetrievalStatus.POLICY_CONFLICT,
@@ -344,12 +424,23 @@ def _failed_layer(
     if case.filters is not None and prediction.get("filters_match") is False:
         return "metadata_filter"
     verification = prediction.get("evidence_verification") or {}
+    retrieved = prediction.get("retrieved_evidence") or prediction.get("retrieved_policy_documents") or []
+    required = ("document_id", "policy_version_id", "chunk_id", "fragment", "version")
+    if retrieved and any(
+        not all(item.get(field) for field in required) or item.get("verified") is not True
+        for item in retrieved
+    ):
+        return "structural_evidence_verification"
     if not answerability_match and verification:
-        return "evidence_verification"
+        return "semantic_evidence_verification"
     if not answerability_match:
         return "final_synthesis"
     if prediction.get("citations_valid") is False:
         return "citation_validation"
+    if policy_fact_coverage is not None and policy_fact_coverage < 1.0:
+        return "final_synthesis"
+    if not status_match:
+        return "final_synthesis"
     return None
 
 

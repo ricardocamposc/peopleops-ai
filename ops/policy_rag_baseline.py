@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 import uuid
@@ -112,12 +113,21 @@ def run(dataset: Path, output_dir: Path, base_url: str, timeout: float) -> dict:
         "base_url": base_url,
         "request_timeout_seconds": timeout,
         "execution": "real_peopleops_api",
+        "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "embedding_model": os.getenv("EMBEDDING_MODEL", "text-embedding-3-small"),
+        "embedding_dimension": int(os.getenv("EMBEDDING_DIMENSION", "1536")),
+        "retrieval_top_k": 6,
+        "retrieval_minimum_score": 0.30,
+        "policy_non_synthetic_mode": os.getenv("POLICY_NON_SYNTHETIC_MODE", "insufficient"),
+        "judge_model": None,
         "artifact_contract": {
             "manifest": "manifest.json",
+            "dataset": "dataset.jsonl",
             "predictions": "predictions.jsonl",
             "evidence": "evidence.jsonl",
             "metrics": "metrics.json",
             "report": "report.md",
+            "optional": ["metrics_judged.json", "predictions_judged.jsonl"],
         },
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -128,6 +138,11 @@ def run(dataset: Path, output_dir: Path, base_url: str, timeout: float) -> dict:
     evidence_records: list[dict] = []
     for index, case in enumerate(cases, start=1):
         started = time.monotonic()
+        expected_answerable = (
+            case.expected_answerable
+            if case.expected_answerable is not None
+            else case.expected_status.value == "COMPLETED"
+        )
         request_payload = {
             "question": _evaluation_question(case),
             "metadata": {
@@ -149,6 +164,8 @@ def run(dataset: Path, output_dir: Path, base_url: str, timeout: float) -> dict:
             "capability": case.capability or "policy_rag",
             "expected_sources": list(case.expected_sources),
             "expected_behavior": case.expected_behavior,
+            "expected_answerable": expected_answerable,
+            "expected_policy_facts": list(case.expected_policy_facts),
         }
         try:
             response = _json_request(
@@ -201,11 +218,21 @@ def run(dataset: Path, output_dir: Path, base_url: str, timeout: float) -> dict:
         _write_evidence(output_dir, evidence_records)
         print(f"[{index}/{len(cases)}] {case.case_id} {prediction.get('status')} {prediction.get('latency_ms')}ms")
     result = evaluate_predictions(cases, predictions)
+    result["dataset"] = dataset.stem
     write_artifact(result, output_dir / "metrics.json")
     # Keep the portfolio-compatible baseline artifact name in addition to the
     # canonical metrics.json name. Both contain the same deterministic result.
     write_artifact(result, output_dir / "enterprise_rag_baseline.json")
-    (output_dir / "report.md").write_text(_report(result), encoding="utf-8")
+    report = _report(result)
+    report = report.replace(
+        "# Policy RAG evaluation\n",
+        "# Policy RAG evaluation\n\n"
+        f"- Run: `{run_id}`\n"
+        f"- Commit: `{manifest['git_commit']}`\n"
+        f"- Dataset: `{dataset}`\n",
+        1,
+    )
+    (output_dir / "report.md").write_text(report, encoding="utf-8")
     return result
 
 
@@ -289,12 +316,28 @@ def _write_partial_failure(
 
 
 def _report(result: dict) -> str:
-    lines = ["# Policy RAG baseline", "", f"Cases: {result['case_count']}", "", "## Metrics", ""]
+    lines = ["# Policy RAG evaluation", "", f"Cases: {result['case_count']}", "", "## Deterministic metrics", ""]
     for key, value in result["metrics"].items():
         lines.append(f"- `{key}`: {value if value is not None else 'N/A'}")
     lines.extend(["", "## Failed cases", ""])
     failed = result.get("failed_cases") or []
-    lines.extend(f"- `{item['case_id']}`: {item.get('failed_layer') or item.get('error')}" for item in failed)
+    for item in failed:
+        lines.extend(
+            [
+                f"### `{item['case_id']}`",
+                f"- failed_layer: `{item.get('failed_layer') or item.get('error')}`",
+                f"- expected_status: `{item.get('expected_workflow_status') or item.get('expected_status')}`",
+                f"- observed_status: `{item.get('status')}`",
+                f"- expected_docs: `{item.get('expected_document_keys', [])}`",
+                f"- retrieved_docs: `{item.get('retrieved_document_keys', [])}`",
+                f"- promoted_docs: `{item.get('promoted_document_keys', [])}`",
+                f"- expected_versions: `{item.get('expected_versions', [])}`",
+                f"- observed_versions: `{item.get('observed_versions', [])}`",
+                f"- answerability: `{item.get('answerable')}` (expected `{item.get('expected_answerable')}`)",
+                f"- policy_fact_coverage: `{item.get('policy_fact_coverage')}`",
+                f"- verification: `{item.get('verification_result', {})}`",
+            ]
+        )
     if not failed:
         lines.append("- None")
     return "\n".join(lines) + "\n"

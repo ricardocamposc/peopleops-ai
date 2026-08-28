@@ -68,6 +68,51 @@ def test_semantic_verifier_removes_citations_when_model_marks_evidence_insuffici
     assert result.answerable is False
     assert result.insufficient_evidence is True
     assert result.citation_indexes == []
+    assert model.calls == 1
+
+
+def test_valid_negative_decision_is_not_retried():
+    model = FakeVerifierModel(
+        EvidenceVerification(
+            answerable=False,
+            insufficient_evidence=True,
+            citation_indexes=[],
+            reason="The evidence is related but does not support the claim.",
+        )
+    )
+    PolicyEvidenceVerifier(model).verify(
+        question="Is relocation reimbursed?", evidence=evidence(), language="en"
+    )
+    assert model.calls == 1
+
+
+def test_contradictory_verifier_result_can_retry_once():
+    class ContradictoryModel(FakeVerifierModel):
+        def __init__(self):
+            super().__init__(EvidenceVerification(
+                answerable=False,
+                insufficient_evidence=False,
+                citation_indexes=[0],
+                reason="The evidence directly supports the claim.",
+            ))
+
+        def parse(self, *, purpose, instructions, output_model):
+            self.calls += 1
+            if self.calls == 1:
+                return self.result
+            return EvidenceVerification(
+                answerable=True,
+                insufficient_evidence=False,
+                citation_indexes=[0],
+                reason="The evidence supports the claim.",
+            )
+
+    model = ContradictoryModel()
+    result = PolicyEvidenceVerifier(model).verify(
+        question="Who approves leave?", evidence=evidence(), language="en"
+    )
+    assert model.calls == 2
+    assert result.answerable is True
 
 
 def test_unmarked_content_never_crosses_external_semantic_boundary():
@@ -85,6 +130,8 @@ def test_unmarked_content_never_crosses_external_semantic_boundary():
         evidence=evidence(synthetic=False),
     )
 
-    assert result.answerable is True
-    assert result.citation_indexes == [0]
+    assert result.answerable is False
+    assert result.insufficient_evidence is True
+    assert result.citation_indexes == []
+    assert result.semantic_verification_status == "NOT_PERFORMED"
     assert model.calls == 0
