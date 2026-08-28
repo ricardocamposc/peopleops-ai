@@ -238,6 +238,8 @@ def execute_query(
                 f"SET LOCAL statement_timeout = {int(settings.query_timeout_seconds * 1000)}"
             )
             with connection.cursor() as cursor:
+                cursor.execute(f"EXPLAIN {physical.sql}", physical.params)
+                cursor.fetchall()
                 cursor.execute(physical.sql, physical.params)
                 rows = [
                     dict(zip(physical.columns, row, strict=True))
@@ -253,6 +255,10 @@ def execute_query(
     except psycopg.errors.QueryCanceled as exc:
         raise QueryExecutionError(
             "QUERY_TIMEOUT", "query exceeded the provider timeout", retryable=True
+        ) from exc
+    except (psycopg.errors.SyntaxError, psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+        raise QueryExecutionError(
+            "QUERY_VALIDATION_FAILED", "provider rejected the validated physical query"
         ) from exc
     except (psycopg.Error, OSError) as exc:
         raise QueryExecutionError(

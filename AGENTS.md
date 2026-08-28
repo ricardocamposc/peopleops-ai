@@ -169,6 +169,10 @@ conceptual query
 
 Never add raw-SQL escape hatches to make a test pass.
 
+Physical HRIS query generation, physical query validation, EXPLAIN/dry-run and
+database execution belong exclusively to the MCP/provider side. `peopleops-api`
+must never implement or bypass those responsibilities.
+
 Never put physical table/column mappings in PeopleOps prompts.
 
 ### 4.4 Policy RAG belongs to PeopleOps

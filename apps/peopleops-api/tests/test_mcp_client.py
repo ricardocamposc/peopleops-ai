@@ -1,165 +1,75 @@
-from dataclasses import dataclass
+import asyncio
 
 import pytest
+from mcp import Client
 
 from peopleops_api.hr_data_gateway import HRDataGateway
-from peopleops_api.mcp_client import MCPClient, MCPContractError, MCPTimeoutError
-from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
+from peopleops_api.mcp_client import MCPClient, MCPProviderError, MCPTimeoutError, MCPUnavailableError
+from peopleops_api.mcp_contracts import DiscoveryRequestContext, SecurityContext
+from peopleops_api.query_contracts import ConceptualQuery, QuerySelect
 
 
-@dataclass
-class FakeTransport:
-    response: object | None = None
-    error: Exception | None = None
-    calls: int = 0
-    last_headers: dict[str, str] | None = None
+def test_official_in_memory_handshake_exposes_protocol_metadata() -> None:
+    from reference_mcp_server.main import create_mcp_server
 
-    def request(self, *, url, headers, timeout, method="GET", body=None):
-        self.calls += 1
-        self.last_headers = headers
-        if self.error:
-            raise self.error
-        return self.response
+    async def check() -> tuple[object, object, str, list[object]]:
+        async with Client(create_mcp_server()) as client:
+            tools = await client.list_tools()
+            return client.server_info, client.server_capabilities, client.protocol_version, tools.tools
 
-
-def test_gateway_maps_typed_catalog_and_forwards_correlation_context() -> None:
-    transport = FakeTransport(
-        response=type(
-            "Response",
-            (),
-            {
-                "status_code": 200,
-                "body": b'{"provider_type":"reference","catalog_version":"v1",'
-                b'"fingerprint":"abc","capabilities":[],"entities":[],"relationships":[]}',
-                "headers": {"X-Request-ID": "req-1"},
-            },
-        )()
-    )
-    gateway = HRDataGateway(
-        MCPClient(server_url="http://provider:8001", transport=transport, max_retries=0)
-    )
-
-    catalog = gateway.discover_catalog(
-        request_id="req-1",
-        security=SecurityContext(actor_id="analyst-1", role="hr", scopes=["hr:read"]),
-    )
-
-    assert catalog.provider_type == "reference"
-    assert transport.last_headers == {
-        "Accept": "application/json",
-        "X-Request-ID": "req-1",
-        "X-Correlation-ID": "req-1",
-        "X-Security-Scopes": "hr:read",
-        "X-Actor-ID": "analyst-1",
-        "X-Role": "hr",
+    info, capabilities, protocol, tools = asyncio.run(check())
+    assert info is not None
+    assert info.name == "reference-mcp-server"
+    assert capabilities is not None
+    assert protocol
+    assert {tool.name for tool in tools} >= {
+        "discover_catalog",
+        "validate_conceptual_query",
+        "execute_conceptual_query",
     }
 
 
-def test_timeout_is_normalized_and_retries_are_bounded() -> None:
-    transport = FakeTransport(error=TimeoutError())
-    client = MCPClient(
-        server_url="http://provider:8001", transport=transport, max_retries=2, timeout_seconds=0.1
-    )
+def test_gateway_uses_official_in_memory_mcp_server() -> None:
+    from reference_mcp_server.main import create_mcp_server
 
-    with pytest.raises(MCPTimeoutError) as error:
-        client.get_json("/discovery/catalog", object, _context())
-
-    assert error.value.code == "MCP_TIMEOUT"
-    assert error.value.request_id == "req-timeout"
-    assert transport.calls == 3
+    gateway = HRDataGateway(MCPClient(server=create_mcp_server(), max_retries=0))
+    catalog = gateway.discover_catalog(request_id="req-1", security=SecurityContext(scopes=["hr:read"]))
+    assert catalog.provider_type == "reference_synthetic_hris"
+    assert catalog.entities
 
 
-def test_transient_http_errors_are_retried_with_a_bounded_attempt_count() -> None:
-    responses = [
-        type("Response", (), {"status_code": 503, "body": b"", "headers": {}})(),
-        type("Response", (), {"status_code": 429, "body": b"", "headers": {}})(),
-        type(
-            "Response",
-            (),
-            {
-                "status_code": 200,
-                "body": b'{"provider_type":"reference","catalog_version":"v1",'
-                b'"fingerprint":"abc","capabilities":[],"entities":[],"relationships":[]}',
-                "headers": {},
-            },
-        )(),
-    ]
+def test_gateway_validates_query_through_mcp_tool() -> None:
+    from reference_mcp_server.main import create_mcp_server
 
-    @dataclass
-    class SequenceTransport:
-        responses: list[object]
-        calls: int = 0
-
-        def request(self, **kwargs):
-            self.calls += 1
-            return self.responses.pop(0)
-
-    transport = SequenceTransport(responses)
-    client = MCPClient(server_url="http://provider:8001", transport=transport, max_retries=2)
-
-    result = client.get_json("/discovery/catalog", DiscoveryCatalog, _context())
-
-    assert result.provider_type == "reference"
-    assert transport.calls == 3
-
-
-def test_provider_response_size_is_rejected_before_contract_parsing() -> None:
-    transport = FakeTransport(
-        response=type("Response", (), {"status_code": 200, "body": b"x" * 1025, "headers": {}})()
-    )
-    client = MCPClient(
-        server_url="http://provider:8001",
-        transport=transport,
-        max_retries=0,
-        max_response_bytes=1024,
-    )
-
-    with pytest.raises(MCPContractError) as error:
-        client.get_json("/discovery/catalog", object, _context())
-
-    assert error.value.code == "MCP_RESPONSE_TOO_LARGE"
-
-
-def test_invalid_provider_payload_is_a_safe_contract_error() -> None:
-    transport = FakeTransport(
-        response=type("Response", (), {"status_code": 200, "body": b"not-json", "headers": {}})()
-    )
-    client = MCPClient(server_url="http://provider:8001", transport=transport, max_retries=0)
-
-    with pytest.raises(MCPContractError) as error:
-        client.get_json("/discovery/catalog", object, _context())
-
-    assert str(error.value) == "MCP provider returned an invalid discovery contract"
-
-
-def test_gateway_posts_typed_query_and_preserves_request_id() -> None:
-    transport = FakeTransport(
-        response=type(
-            "Response",
-            (),
-            {
-                "status_code": 200,
-                "body": b'{"request_id":"req-query","valid":true,"query_hash":"abc",'
-                b'"catalog_version":"v1","errors":[],"warnings":[]}',
-                "headers": {"X-Request-ID": "req-query"},
-            },
-        )()
-    )
-    from peopleops_api.query_contracts import ConceptualQuery, QuerySelect
-
-    gateway = HRDataGateway(
-        MCPClient(server_url="http://provider:8001", transport=transport, max_retries=0)
-    )
+    gateway = HRDataGateway(MCPClient(server=create_mcp_server(), max_retries=0))
     result = gateway.validate_query(
-        ConceptualQuery(entities=["employee"], select=[QuerySelect(field="employee.id")]),
+        ConceptualQuery(entities=["employee"], select=[QuerySelect(field="employee.employee_code")]),
         request_id="req-query",
+        security=SecurityContext(scopes=["hr:read"]),
     )
     assert result.valid is True
-    assert result.request_id == "req-query"
-    assert transport.last_headers["Content-Type"] == "application/json"
+    assert result.catalog_version
 
 
-def _context():
-    from peopleops_api.mcp_contracts import DiscoveryRequestContext
+def test_unavailable_provider_is_normalized() -> None:
+    client = MCPClient(server_url="http://127.0.0.1:1", max_retries=0, timeout_seconds=0.1)
+    with pytest.raises((MCPTimeoutError, MCPProviderError, MCPUnavailableError)):
+        client.call_tool(
+            "discover_catalog",
+            {"request_id": "req-timeout", "security": {}},
+            object,
+            DiscoveryRequestContext(request_id="req-timeout"),
+        )
 
-    return DiscoveryRequestContext(request_id="req-timeout")
+
+def test_mcp_client_never_exposes_a_physical_sql_operation() -> None:
+    from reference_mcp_server.main import create_mcp_server
+
+    async def check() -> list[str]:
+        async with Client(create_mcp_server()) as client:
+            result = await client.list_tools()
+            return [tool.name for tool in result.tools]
+
+    names = asyncio.run(check())
+    assert "execute_sql" not in names
+    assert "execute_conceptual_query" in names

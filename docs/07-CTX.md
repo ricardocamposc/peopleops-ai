@@ -136,12 +136,16 @@ Redis no es obligatorio; solo incorporar si checkpointing/resilience lo justific
 
 ## 8. MCP Boundary
 ```text
-PeopleOps
- ↓ conceptual request
-MCP Server
- ↓ source-specific translation
-ERP/HRIS
+PeopleOps API
+ ↓ HRDataGateway / official MCP Client
+ ↓ Streamable HTTP (/mcp)
+Reference MCP Server
+ ↓ discovery + mapping + validation + read-only execution
+Synthetic HRIS
 ```
+
+`/health` is operational diagnostics only. Discovery and query operations do
+not use a parallel REST contract.
 
 Sustitución futura:
 ```text
@@ -210,6 +214,8 @@ Verificables en code review:
 8. AnalysisInteraction no depende de LangSmith.
 9. schema-independence usa el mismo build de PeopleOps.
 10. MCP failure nunca activa acceso directo alternativo.
+11. Physical SQL generation, EXPLAIN and execution belong only to the MCP
+    provider side.
 
 ## 13. Future Integration
 ```text

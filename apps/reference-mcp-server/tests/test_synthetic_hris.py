@@ -6,7 +6,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-from reference_mcp_server.discovery import build_catalog
+from reference_mcp_server.discovery import build_catalog, build_catalog_from_database
 
 ROOT = Path(__file__).parents[3]
 MIGRATIONS = ROOT / "synthetic-hris" / "migrations"
@@ -73,7 +73,7 @@ def test_migration_creates_all_reference_entities(migrated_database) -> None:
 
 
 def test_discovery_catalog_maps_to_real_reference_tables(migrated_database) -> None:
-    catalog = build_catalog()
+    catalog = build_catalog_from_database(DATABASE_URL, build_catalog())
     physical_sources = {entity.physical_source for entity in catalog.entities}
     with migrated_database.cursor() as cursor:
         cursor.execute(
@@ -82,6 +82,7 @@ def test_discovery_catalog_maps_to_real_reference_tables(migrated_database) -> N
         )
         actual_tables = {row[0] for row in cursor.fetchall()}
     assert physical_sources == actual_tables
+    assert catalog.physical_tables
 
 
 def test_seed_is_deterministic_and_preserves_referential_integrity(migrated_database) -> None:

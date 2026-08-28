@@ -129,6 +129,22 @@ capabilities + metadata + relationships + conceptual query + evidence.
 
 ---
 
+# ADR-012 — Official MCP Streamable HTTP Boundary
+**Status:** Accepted
+
+La integración funcional entre PeopleOps y el proveedor estructurado utiliza
+el SDK oficial MCP con lifecycle/handshake y transporte Streamable HTTP en
+`/mcp`. Las rutas REST de discovery/query no forman parte del contrato
+funcional.
+
+PeopleOps conserva `ConceptualQuery` y `HRDataGateway`. El Reference MCP Server
+es la frontera del proveedor: descubre el schema físico, aplica semantic
+mapping, traduce y valida consultas, ejecuta en modo read-only y devuelve
+evidence provider-neutral. Las credenciales y SQL físico permanecen dentro del
+servidor proveedor.
+
+---
+
 # ADR-012 — Deterministic Guardrails around Agentic Reasoning
 **Status:** Accepted
 

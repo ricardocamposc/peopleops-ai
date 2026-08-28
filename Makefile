@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 help:
-	@printf '%s\n' 'Available targets: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline-policy-judge baseline-judge inspect-policy-run smoke health clean'
+	@printf '%s\n' 'Available targets: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline-policy-judge baseline-judge inspect-policy-run smoke health clean'
 
 infra:
 	$(MAKE) -C apps infra
@@ -63,6 +63,12 @@ publish-policy-baseline:
 
 baseline-hris-mcp:
 	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/hris_mcp_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(HRIS_BASELINE_OUTPUT_DIR),$(HRIS_BASELINE_OUTPUT_DIR),evaluation/runs/hris-mcp-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/hris-mcp-mvp.json)"
+
+baseline-mcp:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/mcp_boundary_baseline.py --dataset "$(abspath evaluation/cases/mcp_boundary_v1.jsonl)" --output-dir "$(abspath $(if $(MCP_BASELINE_OUTPUT_DIR),$(MCP_BASELINE_OUTPUT_DIR),evaluation/runs/mcp-$(shell date +%Y%m%d-%H%M%S)))" --base-url "$(if $(MCP_BASE_URL),$(MCP_BASE_URL),http://127.0.0.1:$${MCP_PORT:-8001})" --alternate-url "$(MCP_ALTERNATE_URL)"
+
+publish-mcp-baseline:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/publish_mcp_baseline.py --run-dir "$(MCP_RUN_DIR)" --baseline-name "$(MCP_BASELINE_NAME)"
 
 baseline-combined:
 	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/peopleops_combined_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(COMBINED_BASELINE_OUTPUT_DIR),$(COMBINED_BASELINE_OUTPUT_DIR),evaluation/runs/combined-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/combined-mvp.json)"
@@ -139,4 +145,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-validation baseline-policy-rag-holdout baseline-policy-rag-holdout-v2 publish-policy-baseline baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean
+.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-validation baseline-policy-rag-holdout baseline-policy-rag-holdout-v2 publish-policy-baseline publish-mcp-baseline baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean

@@ -334,8 +334,10 @@ Area: MCP / Integration
 Why it matters: The current MCP boundary is synthetic/reference-only and has
 not been validated against a real client HRIS.
 
-Current evidence: MCP contract and synthetic HRIS tests exist; real client
-integration is not validated.
+Current evidence: the reference implementation now uses the official MCP SDK
+and Streamable HTTP with the synthetic HRIS. Real client integration,
+authentication, mTLS/OAuth, network policy and client-specific mapping remain
+unvalidated.
 
 Risk if unresolved: Unauthorized data access, schema mismatch, unsafe writes or
 silent integration failures.

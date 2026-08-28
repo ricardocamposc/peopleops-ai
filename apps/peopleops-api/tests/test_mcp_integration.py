@@ -20,6 +20,7 @@ def reference_server():
     server_root = Path(__file__).parents[2] / "reference-mcp-server"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(server_root / "src")
+    env["MCP_LIVE_DISCOVERY"] = "false"
     process = subprocess.Popen(
         [
             sys.executable,
@@ -33,8 +34,8 @@ def reference_server():
         ],
         cwd=server_root,
         env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
     try:
         for _ in range(50):
@@ -44,7 +45,8 @@ def reference_server():
             except OSError:
                 time.sleep(0.1)
         else:
-            pytest.skip("reference MCP server could not start")
+            output = process.stdout.read().decode(errors="replace") if process.stdout else ""
+            pytest.fail(f"reference MCP server could not start: {output}")
         yield f"http://127.0.0.1:{port}"
     finally:
         process.terminate()

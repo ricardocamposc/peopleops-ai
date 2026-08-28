@@ -1,14 +1,14 @@
-"""Small real HTTP client for the Reference MCP discovery transport."""
+"""Official MCP client boundary for the provider-neutral HR gateway."""
 
 from __future__ import annotations
 
-import json
-import time
-from dataclasses import dataclass
-from typing import Protocol
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+import asyncio
+import threading
+from concurrent.futures import Future
+from typing import Any
 
+from mcp import Client
+from mcp.types import TextContent
 from pydantic import BaseModel, ValidationError
 
 from peopleops_api.mcp_contracts import DiscoveryRequestContext
@@ -38,245 +38,110 @@ class MCPProviderError(MCPClientError):
     pass
 
 
-@dataclass(frozen=True)
-class TransportResponse:
-    status_code: int
-    body: bytes
-    headers: dict[str, str]
-
-
-class HTTPTransport(Protocol):
-    def request(
-        self,
-        *,
-        url: str,
-        headers: dict[str, str],
-        timeout: float,
-        method: str = "GET",
-        body: bytes | None = None,
-    ) -> TransportResponse: ...
-
-
-class UrllibHTTPTransport:
-    def __init__(self, max_response_bytes: int = 1_048_576) -> None:
-        self.max_response_bytes = max_response_bytes
-
-    def request(
-        self,
-        *,
-        url: str,
-        headers: dict[str, str],
-        timeout: float,
-        method: str = "GET",
-        body: bytes | None = None,
-    ) -> TransportResponse:
-        request = Request(url, data=body, method=method, headers=headers)
-        try:
-            with urlopen(request, timeout=timeout) as response:
-                content_length = response.headers.get("Content-Length")
-                if content_length and int(content_length) > self.max_response_bytes:
-                    return TransportResponse(
-                        status_code=response.status,
-                        body=b"0" * (self.max_response_bytes + 1),
-                        headers=dict(response.headers.items()),
-                    )
-                return TransportResponse(
-                    status_code=response.status,
-                    body=response.read(self.max_response_bytes + 1),
-                    headers=dict(response.headers.items()),
-                )
-        except HTTPError as exc:
-            return TransportResponse(
-                status_code=exc.code,
-                body=exc.read(),
-                headers=dict(exc.headers.items()) if exc.headers else {},
-            )
-
-
 class MCPClient:
-    def __init__(
-        self,
-        *,
-        server_url: str,
-        timeout_seconds: float = 5.0,
-        max_retries: int = 2,
-        max_response_bytes: int = 1_048_576,
-        transport: HTTPTransport | None = None,
-    ) -> None:
-        self.server_url = server_url.rstrip("/")
+    """Synchronous application adapter over the official async MCP client."""
+
+    def __init__(self, *, server_url: str | None = None, server: Any | None = None, timeout_seconds: float = 5.0, max_retries: int = 0, **_: Any):
+        if server is None and server_url is None:
+            raise ValueError("server_url or in-process server is required")
+        endpoint = str(server_url).rstrip("/") if server_url else None
+        if endpoint and not endpoint.endswith("/mcp"):
+            endpoint += "/mcp"
+        self._server = server if server is not None else endpoint
+        self.server_url = endpoint
         self.timeout_seconds = min(max(timeout_seconds, 0.1), 120.0)
-        self.max_retries = min(max(max_retries, 0), 5)
-        self.max_response_bytes = min(max(max_response_bytes, 1024), 10_485_760)
-        self.transport = transport or UrllibHTTPTransport(self.max_response_bytes)
+        self.max_retries = min(max(max_retries, 0), 3)
+        self.server_info: Any | None = None
+        self.server_capabilities: Any | None = None
+        self.protocol_version: str | None = None
 
-    def get_json(
-        self, path: str, response_model: type[BaseModel], context: DiscoveryRequestContext
+    def call_tool(
+        self, name: str, arguments: dict[str, Any], response_model: type[BaseModel], context: DiscoveryRequestContext
     ) -> BaseModel:
-        self._validate_path(path)
-        headers = self._headers(context)
-        attempts = self.max_retries + 1
-        for attempt in range(attempts):
-            try:
-                response = self.transport.request(
-                    url=f"{self.server_url}{path}",
-                    headers=headers,
-                    timeout=self.timeout_seconds,
-                )
-            except TimeoutError as exc:
-                if attempt + 1 < attempts:
-                    continue
-                raise MCPTimeoutError(
-                    "MCP_TIMEOUT",
-                    "MCP provider timed out",
-                    request_id=context.request_id,
-                    retryable=True,
-                ) from exc
-            except (URLError, OSError) as exc:
-                if attempt + 1 < attempts:
-                    continue
-                raise MCPUnavailableError(
-                    "MCP_UNAVAILABLE",
-                    "MCP provider is unavailable",
-                    request_id=context.request_id,
-                    retryable=True,
-                ) from exc
+        return self._run(self._call_tool(name, arguments, response_model, context), context)
 
-            if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
-                time.sleep(0.01)
-                continue
-            if response.status_code in {401, 403}:
-                raise MCPProviderError(
-                    "MCP_AUTHORIZATION_ERROR",
-                    "MCP provider denied the requested scope",
-                    request_id=context.request_id,
-                )
-            if response.status_code >= 400:
-                raise MCPProviderError(
-                    "MCP_PROVIDER_ERROR",
-                    "MCP provider rejected the request",
-                    request_id=context.request_id,
-                    retryable=response.status_code in {429, 500, 502, 503, 504},
-                )
-            self._check_response_size(response.body, context)
-            echoed_request_id = response.headers.get("X-Request-ID")
-            if echoed_request_id and echoed_request_id != context.request_id:
-                raise MCPContractError(
-                    "MCP_CONTRACT_ERROR",
-                    "MCP provider returned an unexpected correlation identifier",
-                    request_id=context.request_id,
-                )
-            try:
-                payload = json.loads(response.body)
-                return response_model.model_validate(payload)
-            except (json.JSONDecodeError, ValidationError) as exc:
-                raise MCPContractError(
-                    "MCP_CONTRACT_ERROR",
-                    "MCP provider returned an invalid discovery contract",
-                    request_id=context.request_id,
-                ) from exc
-
-        raise MCPUnavailableError(
-            "MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id
-        )
-
-    def post_json(
-        self,
-        path: str,
-        payload: BaseModel,
-        response_model: type[BaseModel],
-        context: DiscoveryRequestContext,
+    async def _call_tool(
+        self, name: str, arguments: dict[str, Any], response_model: type[BaseModel], context: DiscoveryRequestContext
     ) -> BaseModel:
-        self._validate_path(path)
-        headers = {**self._headers(context), "Content-Type": "application/json"}
-        body = json.dumps(payload.model_dump(mode="json"), separators=(",", ":")).encode()
-        attempts = self.max_retries + 1
-        for attempt in range(attempts):
+        for attempt in range(self.max_retries + 1):
             try:
-                response = self.transport.request(
-                    url=f"{self.server_url}{path}",
-                    headers=headers,
-                    timeout=self.timeout_seconds,
-                    method="POST",
-                    body=body,
-                )
-            except TimeoutError as exc:
-                if attempt + 1 < attempts:
+                async with Client(self._server, read_timeout_seconds=self.timeout_seconds) as client:
+                    self.server_info = client.server_info
+                    self.server_capabilities = client.server_capabilities
+                    self.protocol_version = client.protocol_version
+                    result = await client.call_tool(name, arguments)
+                    if result.is_error:
+                        code = _provider_error_code(result.content)
+                        raise MCPProviderError(
+                            code, "MCP provider rejected the request", request_id=context.request_id
+                        )
+                    payload = result.structured_content
+                    if payload is None:
+                        raise MCPContractError(
+                            "MCP_CONTRACT_ERROR", "MCP provider returned no structured result", request_id=context.request_id
+                        )
+                    # MCP structured output wraps top-level arrays in a
+                    # `result` object; preserve the typed RootModel contract
+                    # used by HRDataGateway at this boundary.
+                    if isinstance(payload, dict) and set(payload) == {"result"}:
+                        payload = payload["result"]
+                    try:
+                        return response_model.model_validate(payload)
+                    except ValidationError as exc:
+                        raise MCPContractError(
+                            "MCP_CONTRACT_ERROR", "MCP provider returned an invalid structured contract", request_id=context.request_id
+                        ) from exc
+            except MCPClientError as exc:
+                if exc.retryable and attempt < self.max_retries:
                     continue
-                raise MCPTimeoutError(
-                    "MCP_TIMEOUT",
-                    "MCP provider timed out",
-                    request_id=context.request_id,
-                    retryable=True,
-                ) from exc
-            except (URLError, OSError) as exc:
-                if attempt + 1 < attempts:
+                raise
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                if attempt < self.max_retries:
                     continue
-                raise MCPUnavailableError(
-                    "MCP_UNAVAILABLE",
-                    "MCP provider is unavailable",
-                    request_id=context.request_id,
-                    retryable=True,
-                ) from exc
-            if response.status_code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
-                time.sleep(0.01)
-                continue
-            echoed_request_id = response.headers.get("X-Request-ID")
-            if echoed_request_id and echoed_request_id != context.request_id:
-                raise MCPContractError(
-                    "MCP_CONTRACT_ERROR",
-                    "MCP provider returned an unexpected correlation identifier",
-                    request_id=context.request_id,
-                )
-            if response.status_code in {401, 403}:
-                raise MCPProviderError(
-                    "MCP_AUTHORIZATION_ERROR",
-                    "MCP provider denied the requested scope",
-                    request_id=context.request_id,
-                )
-            if response.status_code >= 400:
-                raise MCPProviderError(
-                    "MCP_PROVIDER_ERROR",
-                    "MCP provider rejected the request",
-                    request_id=context.request_id,
-                    retryable=response.status_code in {429, 500, 502, 503, 504},
-                )
-            self._check_response_size(response.body, context)
+                raise MCPTimeoutError("MCP_TIMEOUT", "MCP provider timed out", request_id=context.request_id, retryable=True) from exc
+            except (OSError, ConnectionError) as exc:
+                if attempt < self.max_retries:
+                    continue
+                raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id, retryable=True) from exc
+            except Exception as exc:
+                if attempt < self.max_retries:
+                    continue
+                raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id, retryable=True) from exc
+        raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id)
+
+    def _run(self, coroutine: Any, context: DiscoveryRequestContext) -> BaseModel:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        result: Future[BaseModel] = Future()
+
+        def runner() -> None:
             try:
-                return response_model.model_validate(json.loads(response.body))
-            except (json.JSONDecodeError, ValidationError) as exc:
-                raise MCPContractError(
-                    "MCP_CONTRACT_ERROR",
-                    "MCP provider returned an invalid query contract",
-                    request_id=context.request_id,
-                ) from exc
-        raise MCPUnavailableError(
-            "MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id
-        )
+                result.set_result(asyncio.run(coroutine))
+            except BaseException as exc:
+                result.set_exception(exc)
 
-    @staticmethod
-    def _headers(context: DiscoveryRequestContext) -> dict[str, str]:
-        security = context.security
-        headers = {
-            "Accept": "application/json",
-            "X-Request-ID": context.request_id,
-            "X-Correlation-ID": context.request_id,
-            "X-Security-Scopes": ",".join(security.scopes),
-        }
-        if security.actor_id:
-            headers["X-Actor-ID"] = security.actor_id
-        if security.role:
-            headers["X-Role"] = security.role
-        return headers
+        threading.Thread(target=runner, daemon=True).start()
+        try:
+            return result.result(timeout=self.timeout_seconds + 5)
+        except TimeoutError as exc:
+            raise MCPTimeoutError("MCP_TIMEOUT", "MCP provider timed out", request_id=context.request_id, retryable=True) from exc
 
-    @staticmethod
-    def _validate_path(path: str) -> None:
-        if not path.startswith("/") or "://" in path or "\\" in path:
-            raise ValueError("MCP path must be a relative HTTP path")
 
-    def _check_response_size(self, body: bytes, context: DiscoveryRequestContext) -> None:
-        if len(body) > self.max_response_bytes:
-            raise MCPContractError(
-                "MCP_RESPONSE_TOO_LARGE",
-                "MCP provider response exceeded the configured size limit",
-                request_id=context.request_id,
-            )
+def _provider_error_code(content: list[Any]) -> str:
+    known = {
+        "INVALID_CONCEPTUAL_QUERY",
+        "UNSUPPORTED_ENTITY",
+        "UNSUPPORTED_FIELD",
+        "UNSUPPORTED_RELATIONSHIP",
+        "AUTHORIZATION_DENIED",
+        "QUERY_VALIDATION_FAILED",
+        "QUERY_TIMEOUT",
+        "SOURCE_UNAVAILABLE",
+        "EXECUTION_FAILED",
+        "CATALOG_CHANGED",
+    }
+    text = " ".join(item.text for item in content if isinstance(item, TextContent))
+    return next((code for code in known if code in text), "MCP_PROVIDER_ERROR")

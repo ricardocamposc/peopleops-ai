@@ -12,6 +12,7 @@ import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import create_engine, inspect
 
 Sensitivity = Literal["public", "internal", "confidential", "restricted"]
 SemanticRole = Literal[
@@ -93,6 +94,64 @@ class CatalogMetadata(BaseModel):
     capabilities: list[CapabilityMetadata]
     entities: list[EntityMetadata]
     relationships: list[RelationshipMetadata]
+    physical_tables: list[dict[str, object]] = Field(default_factory=list)
+
+
+def build_catalog_from_database(database_url: str, base_catalog: CatalogMetadata) -> CatalogMetadata:
+    """Compose semantic mappings with metadata introspected from the live source.
+
+    The base catalog is provider configuration (business names and semantic IDs).
+    Table/column existence, types, nullability, keys and indexes are read from
+    PostgreSQL at runtime and never inferred by PeopleOps.
+    """
+    engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        inspector = inspect(engine)
+        table_names = set(inspector.get_table_names())
+        physical_tables: list[dict[str, object]] = []
+        entities: list[EntityMetadata] = []
+        for entity in base_catalog.entities:
+            if entity.physical_source not in table_names:
+                raise RuntimeError(f"mapped source table is unavailable: {entity.physical_source}")
+            columns = {item["name"]: item for item in inspector.get_columns(entity.physical_source)}
+            primary_keys = set(inspector.get_pk_constraint(entity.physical_source).get("constrained_columns") or [])
+            foreign_keys = {
+                column
+                for item in inspector.get_foreign_keys(entity.physical_source)
+                for column in (item.get("constrained_columns") or [])
+            }
+            indexes = [
+                {"name": item.get("name"), "columns": item.get("column_names") or [], "unique": bool(item.get("unique"))}
+                for item in inspector.get_indexes(entity.physical_source)
+            ]
+            fields: list[FieldMetadata] = []
+            for field in entity.fields:
+                physical_column = field.physical_source.rsplit(".", 1)[-1]
+                column = columns.get(physical_column)
+                if column is None:
+                    raise RuntimeError(f"mapped source column is unavailable: {field.physical_source}")
+                fields.append(
+                    field.model_copy(
+                        update={
+                            "data_type": str(column["type"]),
+                            "nullable": bool(column.get("nullable", field.nullable)),
+                            "is_primary_key": physical_column in primary_keys,
+                            "is_foreign_key": physical_column in foreign_keys,
+                        }
+                    )
+                )
+            entities.append(entity.model_copy(update={"fields": fields}))
+            physical_tables.append(
+                {"name": entity.physical_source, "columns": list(columns), "indexes": indexes}
+            )
+        provisional = base_catalog.model_copy(update={"entities": entities, "physical_tables": physical_tables})
+        canonical = provisional.model_dump(mode="json", exclude={"fingerprint"})
+        fingerprint = hashlib.sha256(
+            json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return provisional.model_copy(update={"fingerprint": fingerprint})
+    finally:
+        engine.dispose()
 
 
 def _field(

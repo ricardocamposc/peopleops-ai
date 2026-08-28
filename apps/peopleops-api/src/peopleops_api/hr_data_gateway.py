@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import TypeVar
-from urllib.parse import quote
 
 from pydantic import RootModel
 
@@ -26,67 +25,71 @@ class HRDataGateway:
     def discover_catalog(
         self, *, request_id: str, security: SecurityContext | None = None
     ) -> DiscoveryCatalog:
-        return self._client.get_json(
-            "/discovery/catalog",
-            DiscoveryCatalog,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "discover_catalog", _context_arguments(context), DiscoveryCatalog, context
         )
 
     def discover_capabilities(
         self, *, request_id: str, security: SecurityContext | None = None
     ) -> list[DiscoveryCapability]:
-        return self._client.get_json(
-            "/discovery/capabilities",
-            _CapabilitiesResponse,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "discover_capabilities", _context_arguments(context), _CapabilitiesResponse, context
         ).root
 
     def discover_entities(
         self, *, request_id: str, security: SecurityContext | None = None
     ) -> list[DiscoveryEntity]:
-        return self._client.get_json(
-            "/discovery/entities",
-            _EntitiesResponse,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "discover_entities", _context_arguments(context), _EntitiesResponse, context
         ).root
 
     def describe_entity(
         self, entity_id: str, *, request_id: str, security: SecurityContext | None = None
     ) -> DiscoveryEntity:
-        return self._client.get_json(
-            f"/discovery/entities/{quote(entity_id, safe='')}",
-            DiscoveryEntity,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "describe_entity", {**_context_arguments(context), "entity_id": entity_id}, DiscoveryEntity, context
         )
 
     def discover_relationships(
         self, *, request_id: str, security: SecurityContext | None = None
     ) -> list[DiscoveryRelationship]:
-        return self._client.get_json(
-            "/discovery/relationships",
-            _RelationshipsResponse,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "discover_relationships", _context_arguments(context), _RelationshipsResponse, context
         ).root
 
     def validate_query(
         self, query: ConceptualQuery, *, request_id: str, security: SecurityContext | None = None
     ) -> QueryValidation:
-        return self._client.post_json(
-            "/query/validate",
-            query,
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "validate_conceptual_query",
+            {**_context_arguments(context), "query": query.model_dump(mode="json")},
             QueryValidation,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+            context,
         )
 
     def execute_query(
         self, query: ConceptualQuery, *, request_id: str, security: SecurityContext | None = None
     ) -> QueryResult:
-        return self._client.post_json(
-            "/query/execute",
-            query,
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "execute_conceptual_query",
+            {**_context_arguments(context), "query": query.model_dump(mode="json")},
             QueryResult,
-            DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext()),
+            context,
         )
+
+
+def _context_arguments(context: DiscoveryRequestContext) -> dict[str, object]:
+    return {
+        "request_id": context.request_id,
+        "security": context.security.model_dump(mode="json"),
+    }
 
 
 T = TypeVar("T")

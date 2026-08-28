@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import os
+import asyncio
+from mcp import Client
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -60,26 +62,23 @@ def main() -> int:
         "relationships": ["payroll_employee", "payroll_period"],
         "limit": 10,
     }
-    status, _ = request(
-        f"{mcp}/query/validate",
-        method="POST",
-        body=payroll_query,
-        headers={
-            "X-Request-ID": "slice18-smoke-payroll",
-            "X-Security-Scopes": "hr:read,hr:payroll",
-        },
-    )
-    if status != 200:
-        raise RuntimeError(f"MCP payroll validation returned HTTP {status}")
-    checks.append("MCP conceptual payroll validation")
+    async def validate_with_mcp() -> tuple[dict, dict, str]:
+        async with Client(f"{mcp}/mcp") as client:
+            valid = await client.call_tool(
+                "validate_conceptual_query",
+                {"query": payroll_query, "request_id": "slice18-smoke-payroll", "security": {"scopes": ["hr:read", "hr:payroll"]}},
+            )
+            denied = await client.call_tool(
+                "validate_conceptual_query",
+                {"query": payroll_query, "request_id": "slice18-smoke-denied", "security": {"scopes": ["hr:read"]}},
+            )
+            return valid.structured_content or {}, denied.structured_content or {}, client.protocol_version
 
-    status, denied = request(
-        f"{mcp}/query/validate",
-        method="POST",
-        body=payroll_query,
-        headers={"X-Request-ID": "slice18-smoke-denied", "X-Security-Scopes": "hr:read"},
-    )
-    if status != 200 or denied.get("valid") is not False:
+    valid, denied, protocol_version = asyncio.run(validate_with_mcp())
+    if not valid.get("valid"):
+        raise RuntimeError("MCP payroll conceptual validation failed")
+    checks.append("MCP conceptual payroll validation")
+    if denied.get("valid") is not False or not protocol_version:
         raise RuntimeError("MCP payroll authorization sanity check did not fail closed")
     checks.append("payroll scope denial")
 

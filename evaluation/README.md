@@ -117,3 +117,20 @@ Use `make baseline-policy-judge` only after a deterministic baseline exists
 and only for an authorized synthetic run. Its outputs are
 `predictions_judged.jsonl` and `metrics_judged.json`, separate from
 `predictions.jsonl` and `metrics.json`.
+
+## MCP boundary baseline
+
+The structured-data boundary is evaluated independently from Policy RAG and
+agent quality. It uses a dataset with expected values only, executes the real
+official MCP client against the Streamable HTTP endpoint, and writes a new
+timestamped run under `evaluation/runs/`:
+
+```bash
+make baseline-mcp
+```
+
+The run records the negotiated protocol, server information, capability and
+query results, normalized source failures, provider evidence and deterministic
+boundary metrics. It does not call REST discovery/query endpoints and does not
+persist observed values into the source dataset. Curated evidence belongs under
+`evaluation/baselines/mcp/regression-v1/` only after an explicit review.
