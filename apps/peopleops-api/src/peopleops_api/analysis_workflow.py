@@ -204,6 +204,11 @@ def _normalize_analysis_plan_payload(payload: Any) -> Any:
             continue
         planned_copy = dict(planned)
         query = dict(planned["query"])
+        # Some structured-output providers emit null for an optional-looking
+        # field even though the conceptual contract defines a safe default.
+        # This is structural normalization, not semantic query mutation.
+        if query.get("limit") is None:
+            query["limit"] = 100
         if "dimensions" not in query and "group_by" in query:
             query["dimensions"] = query.pop("group_by")
         # Sensitivity is part of SemanticRequest, not ConceptualQuery.
@@ -237,11 +242,6 @@ def _complete_plan_relationship_entities(
         return plan
     relationships = {item.relationship_id: item for item in catalog.relationships}
     known_entities = {item.entity_id for item in catalog.entities}
-    known_fields = {
-        f"{entity.entity_id}.{field.field_id}"
-        for entity in catalog.entities
-        for field in entity.fields
-    }
     entity_aliases = _catalog_entity_aliases(known_entities)
     for planned in plan.queries:
         for item in planned.query.entities:
@@ -255,10 +255,11 @@ def _complete_plan_relationship_entities(
             if known_entities
             else list(planned.query.entities)
         )
-        if known_entities:
-            entities = list(dict.fromkeys(item for item in entities if item in known_entities))
-        else:
-            entities = list(dict.fromkeys(entities))
+        # Preserve unknown identifiers so the provider validator can return
+        # structured feedback and the bounded replanner can correct the plan.
+        # Silently dropping them changes the meaning of the model's query and
+        # hides the first point of divergence from the audit trail.
+        entities = list(dict.fromkeys(entities))
         select = []
         metrics = list(planned.query.metrics)
         aliases: dict[str, str] = {}
@@ -279,49 +280,22 @@ def _complete_plan_relationship_entities(
             item.model_copy(update={"field": _resolve_field_reference(item.field, entity_aliases)})
             for item in select
         ]
-        if known_fields:
-            planned.query.select = [
-                item for item in planned.query.select if item.field in known_fields
-            ]
         planned.query.metrics = metrics
         for metric in planned.query.metrics:
             if metric.field:
                 metric.field = _resolve_field_reference(metric.field, entity_aliases)
-        if known_fields:
-            planned.query.metrics = [
-                item
-                for item in planned.query.metrics
-                if not item.field or item.field in known_fields
-            ]
-            planned.query.filters = [
-                item
-                for item in planned.query.filters
-                if _resolve_field_reference(item.field, entity_aliases) in known_fields
-            ]
         for item in planned.query.filters:
             item.field = _resolve_field_reference(item.field, entity_aliases)
         for item in planned.query.comparisons:
             item.left = _resolve_field_reference(item.left, entity_aliases)
             item.right = _resolve_field_reference(item.right, entity_aliases)
-        if known_fields:
-            planned.query.comparisons = [
-                item
-                for item in planned.query.comparisons
-                if item.left in known_fields and item.right in known_fields
-            ]
         planned.query.dimensions = [
             _resolve_field_reference(item, entity_aliases) for item in planned.query.dimensions
         ]
-        if known_fields:
-            planned.query.dimensions = [
-                item for item in planned.query.dimensions if item in known_fields
-            ]
         if planned.query.time_scope and planned.query.time_scope.field:
             planned.query.time_scope.field = _resolve_field_reference(
                 planned.query.time_scope.field, entity_aliases
             )
-            if known_fields and planned.query.time_scope.field not in known_fields:
-                planned.query.time_scope = None
         referenced_entities = _referenced_query_entities(planned.query)
         for entity_id in referenced_entities:
             if entity_id in known_entities and entity_id not in entities:
@@ -427,6 +401,73 @@ def _technical_alias(value: str) -> str:
 
     normalized = re.sub(r"[^A-Za-z0-9]+", "_", value).strip("_").lower()
     return normalized[:128] or "value"
+
+
+def _verify_structured_result(result: QueryResult) -> dict[str, Any]:
+    """Classify a provider result without interpreting business language.
+
+    This is a post-provider contract check, not a second SQL validator. It
+    makes the distinction between a valid empty result and an invalid or
+    unavailable execution explicit for synthesis and evaluation.
+    """
+
+    if not result.validation.valid:
+        return {"status": "INVALID", "errors": list(result.validation.errors)}
+    if not result.rows:
+        return {"status": "ZERO_ROWS", "row_count": 0}
+    return {"status": "VALID", "row_count": len(result.rows)}
+
+
+def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
+    """Serialize only provider-neutral identifiers for semantic refinement."""
+
+    payload = {
+        "capabilities": [
+            {"name": item.name, "entities": item.entities, "sensitivity": item.sensitivity}
+            for item in catalog.capabilities
+        ],
+        "entities": [
+            {
+                "entity_id": item.entity_id,
+                "fields": [field.field_id for field in item.fields],
+                "relationships": item.relationships,
+                "sensitivity": item.sensitivity,
+            }
+            for item in catalog.entities
+        ],
+        "relationships": [
+            {"relationship_id": item.relationship_id, "from_entity": item.from_entity, "to_entity": item.to_entity}
+            for item in catalog.relationships
+        ],
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
+def _semantic_needs_catalog_refinement(
+    semantic: SemanticRequest, catalog: DiscoveryCatalog
+) -> bool:
+    """Identify likely non-canonical identifiers without business-word routing."""
+
+    # The catalog is consulted only when the model has supplied identifiers to
+    # normalize. Empty identifiers remain the model's explicit classification;
+    # they are not guessed from the user's language.
+    capabilities = {item.name for item in catalog.capabilities}
+    entities = {item.entity_id for item in catalog.entities}
+    return any(value not in capabilities for value in semantic.required_capabilities) or any(
+        value not in entities for value in semantic.entities
+    )
+
+
+def _is_replannable_provider_error(error: MCPClientError) -> bool:
+    return error.code in {
+        "INVALID_CONCEPTUAL_QUERY",
+        "UNSUPPORTED_ENTITY",
+        "UNSUPPORTED_FIELD",
+        "UNSUPPORTED_RELATIONSHIP",
+        "QUERY_VALIDATION_FAILED",
+        "QUERY_VALIDATION_ERROR",
+        "CATALOG_CHANGED",
+    }
 
 
 class AnalysisState(TypedDict, total=False):
@@ -684,6 +725,27 @@ class AnalysisWorkflow:
             semantic.policy_filters = type(semantic.policy_filters)()
         if "payroll" in semantic.required_capabilities and not self.security.allows_payroll():
             raise AuthorizationError("payroll access requires the hr:payroll scope")
+        catalog = None
+        if semantic.requires_structured_data and not semantic.requires_policy:
+            catalog = self.gateway.discover_catalog(
+                request_id=str(state["interaction"].request_id), security=self.security
+            )
+            if _semantic_needs_catalog_refinement(semantic, catalog):
+                semantic = self.model.parse(
+                    purpose=(
+                        "Refine the typed semantic request using only the provider-neutral semantic "
+                        "catalog. Use canonical capability and entity identifiers; preserve intent "
+                        "and language. Do not output SQL or physical schema names."
+                    ),
+                    instructions=(
+                        f"Semantic request: {semantic.model_dump_json()}\n"
+                        f"Semantic catalog: {_semantic_catalog(catalog)}"
+                    ),
+                    output_model=SemanticRequest,
+                )
+                assert isinstance(semantic, SemanticRequest)
+                if semantic.required_capabilities:
+                    semantic.requires_structured_data = True
         interaction = state["interaction"]
         self._stage(
             state,
@@ -694,13 +756,18 @@ class AnalysisWorkflow:
                 "analysis_goal": semantic.goal,
             },
         )
-        return {"semantic_request": semantic, "interaction": interaction}
+        result: dict[str, Any] = {"semantic_request": semantic, "interaction": interaction}
+        if catalog is not None:
+            result["catalog"] = catalog
+        return result
 
     def _discover_catalog(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "discovery", "running")
-        catalog = self.gateway.discover_catalog(
-            request_id=str(state["interaction"].request_id), security=self.security
-        )
+        catalog = state.get("catalog")
+        if catalog is None:
+            catalog = self.gateway.discover_catalog(
+                request_id=str(state["interaction"].request_id), security=self.security
+            )
         self._stage(
             state,
             "discovery",
@@ -756,24 +823,32 @@ class AnalysisWorkflow:
         results: list[tuple[Any, QueryResult]] = []
         errors: list[str] = []
         for planned in state["plan"].queries:
-            validation = self.gateway.validate_query(
-                planned.query,
-                request_id=str(state["interaction"].request_id),
-                security=self.security,
-            )
+            try:
+                validation = self.gateway.validate_query(
+                    planned.query,
+                    request_id=str(state["interaction"].request_id),
+                    security=self.security,
+                )
+            except MCPClientError as exc:
+                if _is_replannable_provider_error(exc):
+                    errors.append(self._safe_error(exc))
+                    continue
+                raise
             if not validation.valid:
                 errors.extend(validation.errors)
                 continue
-            results.append(
-                (
-                    planned,
-                    self.gateway.execute_query(
+            try:
+                result = self.gateway.execute_query(
                         planned.query,
                         request_id=str(state["interaction"].request_id),
                         security=self.security,
-                    ),
                 )
-            )
+            except MCPClientError as exc:
+                if _is_replannable_provider_error(exc):
+                    errors.append(self._safe_error(exc))
+                    continue
+                raise
+            results.append((planned, result))
         if errors:
             self._stage(
                 state,
@@ -888,6 +963,7 @@ class AnalysisWorkflow:
                 "purpose": planned.purpose,
                 "query": planned.query.model_dump(mode="json"),
                 "result": result.model_dump(mode="json"),
+                "result_verification": _verify_structured_result(result),
             }
             for planned, result in state.get("results", [])
         ]
@@ -950,10 +1026,13 @@ class AnalysisWorkflow:
                 ),
             )
         evidence = state.get("evidence", [])
+        # A successful query with zero rows is still valid evidence. Treating
+        # an empty result as absent evidence previously conflated
+        # ``valid query + no matches`` with provider/validation failure.
         data_available = any(
-            item.get("result", {}).get("rows")
+            item.get("result_verification", {}).get("status") in {"VALID", "ZERO_ROWS"}
             for item in evidence
-            if item["type"] == "structured_data"
+            if item.get("type") == "structured_data"
         )
         policy_result = state.get("policy_result")
         policy_available = bool(state.get("policies"))

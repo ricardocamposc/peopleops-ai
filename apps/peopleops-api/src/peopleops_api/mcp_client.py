@@ -138,6 +138,8 @@ def _provider_error_code(content: list[Any]) -> str:
         "UNSUPPORTED_RELATIONSHIP",
         "AUTHORIZATION_DENIED",
         "QUERY_VALIDATION_FAILED",
+        "QUERY_VALIDATION_ERROR",
+        "QUERY_EXECUTION_ERROR",
         "QUERY_TIMEOUT",
         "SOURCE_UNAVAILABLE",
         "EXECUTION_FAILED",

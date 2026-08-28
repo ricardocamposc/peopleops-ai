@@ -173,6 +173,11 @@ Physical HRIS query generation, physical query validation, EXPLAIN/dry-run and
 database execution belong exclusively to the MCP/provider side. `peopleops-api`
 must never implement or bypass those responsibilities.
 
+Structured HR analysis evaluations must use ground-truth-only cases under
+`evaluation/cases/`; observed results belong in timestamped `evaluation/runs/`
+artifacts. Never add question-specific routing, business-language keyword
+rules, or physical HRIS details to PeopleOps to improve an evaluation score.
+
 Never put physical table/column mappings in PeopleOps prompts.
 
 ### 4.4 Policy RAG belongs to PeopleOps

@@ -4,7 +4,13 @@ import pytest
 from mcp import Client
 
 from peopleops_api.hr_data_gateway import HRDataGateway
-from peopleops_api.mcp_client import MCPClient, MCPProviderError, MCPTimeoutError, MCPUnavailableError
+from peopleops_api.mcp_client import (
+    MCPClient,
+    MCPProviderError,
+    MCPTimeoutError,
+    MCPUnavailableError,
+    _provider_error_code,
+)
 from peopleops_api.mcp_contracts import DiscoveryRequestContext, SecurityContext
 from peopleops_api.query_contracts import ConceptualQuery, QuerySelect
 
@@ -73,3 +79,10 @@ def test_mcp_client_never_exposes_a_physical_sql_operation() -> None:
     names = asyncio.run(check())
     assert "execute_sql" not in names
     assert "execute_conceptual_query" in names
+
+
+def test_query_validation_error_is_preserved_as_provider_feedback() -> None:
+    from mcp.types import TextContent
+
+    assert _provider_error_code([TextContent(type="text", text="QUERY_VALIDATION_ERROR")]) == "QUERY_VALIDATION_ERROR"
+    assert _provider_error_code([TextContent(type="text", text="QUERY_EXECUTION_ERROR")]) == "QUERY_EXECUTION_ERROR"

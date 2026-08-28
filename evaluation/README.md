@@ -141,3 +141,32 @@ as `expected_failure_handling_accuracy`. The baseline also runs a provider-side
 read-only probe covering write statements and verifies that the synthetic HRIS
 data remains unchanged. Schema independence remains `N/A` until a real second
 provider/schema is deployed.
+
+## Structured HR analysis baseline
+
+Dynamic structured-data analysis is evaluated separately from the MCP
+boundary. The source datasets contain ground truth only; runtime observations
+are written to timestamped working runs:
+
+```bash
+make baseline-structured-hr
+make baseline-structured-hr-holdout
+```
+
+These targets call the real PeopleOps API, which uses `HRDataGateway`, the
+official MCP client, the Reference MCP Server and the synthetic HRIS. They
+capture the semantic request, plan, conceptual queries, provider-neutral
+results, evidence, final response and failure layer per case. A valid query
+with zero rows is evaluated separately from an invalid query or unavailable
+source. `evaluation/runs/` is operational history and remains gitignored.
+
+After reviewing a complete synthetic run, publish it explicitly:
+
+```bash
+make publish-structured-hr-baseline \
+  STRUCTURED_HR_RUN_DIR=evaluation/runs/<run> \
+  STRUCTURED_HR_BASELINE_NAME=regression-v1
+```
+
+Publication refuses incomplete runs and never overwrites an existing curated
+baseline.

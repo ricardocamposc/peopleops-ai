@@ -3,7 +3,7 @@ from datetime import date
 from uuid import uuid4
 
 from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
-from peopleops_api.analysis_workflow import AnalysisWorkflow
+from peopleops_api.analysis_workflow import AnalysisWorkflow, _complete_plan_relationship_entities
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QuerySelect, QueryValidation
@@ -203,6 +203,7 @@ def test_empty_structured_result_is_insufficient_data(db_session):
                 goal="active employees", required_capabilities=["workforce"], entities=["employee"]
             ),
             _plan(),
+            StructuredAnswer(answer="No employees matched the requested criteria."),
         ]
     )
     interaction = _interaction()
@@ -211,8 +212,79 @@ def test_empty_structured_result_is_insufficient_data(db_session):
     result = AnalysisWorkflow(
         session=db_session, gateway=FakeGateway(empty=True), model=model, security=SecurityContext()
     ).run(interaction)
-    assert result.status == "insufficient_data"
-    assert result.response["warnings"]
+    assert result.status == "completed"
+    assert "No employees matched" in result.response["answer"]
+    assert result.evidence[0]["result_verification"]["status"] == "ZERO_ROWS"
+
+
+def test_plan_preserves_unknown_fields_for_provider_feedback(db_session):
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="unknown field",
+        queries=[
+            {
+                "purpose": "test provider validation",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[QuerySelect(field="employee.not_in_catalog")],
+                ),
+            }
+        ],
+    )
+
+    normalized = _complete_plan_relationship_entities(plan, build_catalog())
+
+    assert normalized.queries[0].query.select[0].field == "employee.not_in_catalog"
+
+
+def test_noncanonical_semantic_identifiers_are_refined_from_safe_catalog(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active people", required_capabilities=["people analytics"], entities=["people"]
+            ),
+            SemanticRequest(
+                goal="active people", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.semantic_request["required_capabilities"] == ["workforce"]
+    assert result.semantic_request["entities"] == ["employee"]
+
+
+def test_valid_zero_rows_are_not_classified_as_missing_evidence(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="No records matched the requested criteria."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(empty=True), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.response["status"] == "completed"
+    assert result.evidence[0]["result_verification"] == {"status": "ZERO_ROWS", "row_count": 0}
 
 
 def test_combined_workflow_preserves_fact_policy_and_inference_provenance(db_session):

@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 
 help:
-	@printf '%s\n' 'Available targets: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline-policy-judge baseline-judge inspect-policy-run smoke health clean'
+	@printf '%s\n' 'Available targets: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline-policy-judge baseline-judge baseline-structured-hr baseline-structured-hr-holdout publish-structured-hr-baseline inspect-policy-run smoke health clean'
 
 infra:
 	$(MAKE) -C apps infra
@@ -75,6 +75,15 @@ baseline-combined:
 
 baseline-all: baseline-policy-rag baseline-hris-mcp baseline-combined
 
+baseline-structured-hr:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/structured_hr_baseline.py --dataset "$(abspath evaluation/cases/structured_hr_analysis_v2.jsonl)" --output-dir "$(abspath $(if $(STRUCTURED_HR_OUTPUT_DIR),$(STRUCTURED_HR_OUTPUT_DIR),evaluation/runs/structured-hr-$(shell date +%Y%m%d-%H%M%S)))" --base-url "$(if $(PEOPLEOPS_API_URL),$(PEOPLEOPS_API_URL),http://127.0.0.1:$${API_PORT:-8000})"
+
+baseline-structured-hr-holdout:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/structured_hr_baseline.py --dataset "$(abspath evaluation/cases/structured_hr_holdout_v1.jsonl)" --output-dir "$(abspath $(if $(STRUCTURED_HR_HOLDOUT_OUTPUT_DIR),$(STRUCTURED_HR_HOLDOUT_OUTPUT_DIR),evaluation/runs/structured-hr-holdout-$(shell date +%Y%m%d-%H%M%S)))" --base-url "$(if $(PEOPLEOPS_API_URL),$(PEOPLEOPS_API_URL),http://127.0.0.1:$${API_PORT:-8000})"
+
+publish-structured-hr-baseline:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/publish_structured_baseline.py --run-dir "$(STRUCTURED_HR_RUN_DIR)" --baseline-name "$(STRUCTURED_HR_BASELINE_NAME)"
+
 baseline-policy-judge:
 	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/judge_policy_baseline.py --predictions $${POLICY_PREDICTIONS:-evaluation/runs/baseline-local/predictions.jsonl} --output-dir $${POLICY_BASELINE_OUTPUT_DIR:-evaluation/runs/baseline-local} --allow-synthetic-data
 
@@ -145,4 +154,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-validation baseline-policy-rag-holdout baseline-policy-rag-holdout-v2 publish-policy-baseline publish-mcp-baseline baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean
+.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-validation baseline-policy-rag-holdout baseline-policy-rag-holdout-v2 publish-policy-baseline publish-mcp-baseline baseline-hris-mcp baseline-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge baseline-structured-hr baseline-structured-hr-holdout publish-structured-hr-baseline inspect-policy-run demo-setup smoke health clean
