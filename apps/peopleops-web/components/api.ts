@@ -29,6 +29,7 @@ export function statusLabel(status: string) {
   const labels: Record<string, string> = {
     queued: "En cola", running: "Procesando", completed: "Disponible", failed: "Fallido",
     pending: "Pendiente", approve: "Aprobado", reject: "Rechazado", needs_information: "Falta información",
+    active: "Vigente", processing: "Procesando", superseded: "Reemplazado", inactive: "No vigente",
   };
   return labels[status] ?? status.replaceAll("_", " ");
 }

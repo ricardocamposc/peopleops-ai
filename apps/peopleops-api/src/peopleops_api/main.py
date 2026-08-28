@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from peopleops_api.analysis_workflow import AnalysisWorkflow, OpenAIStructuredModel
 from peopleops_api.config import get_settings
 from peopleops_api.db import get_db
+from peopleops_api.evidence_verifier import PolicyEvidenceVerifier
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_client import MCPClient
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
@@ -159,6 +160,18 @@ def register_analysis(
         ),
         security=_security_context(request),
         policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
+        evidence_verifier=(
+            PolicyEvidenceVerifier(
+                OpenAIStructuredModel(
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_model,
+                    timeout_seconds=settings.openai_timeout_seconds,
+                    max_retries=settings.openai_max_retries,
+                )
+            )
+            if settings.openai_api_key
+            else None
+        ),
     )
     interaction = workflow.run(interaction)
     return AnalysisRead.model_validate(interaction)
