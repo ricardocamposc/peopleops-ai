@@ -107,15 +107,23 @@ frontend uses npm, bundled with Node.js.
 cp .env.example .env
 cp apps/peopleops-web/.env.example apps/peopleops-web/.env.local
 make build
-make up
-make demo-setup
-make health
+make infra
+make migrate
+make migrate-hris
+make seed-hris
+make generate-policy-pdfs
 make smoke
 make lint
 make test
 make evaluate
 make down
 ```
+
+The local development workflow does not start the API, web or Reference MCP
+Server in Docker. Start each application directly in its own terminal with
+`make api`, `make mcp` and `make web`; `make run` is the convenience target
+that starts only the databases and then runs the API locally. `make up-all`
+is available when the complete Compose stack is explicitly required.
 
 The default host ports are web `3000`, API `8000`, Reference MCP Server
 `8001`, PeopleOps PostgreSQL `5436` and Synthetic HRIS PostgreSQL `5437`.
@@ -128,6 +136,11 @@ Synthetic HRIS settings, and the web receives only the public API URL.
 `make demo-setup` applies migrations and loads disposable Schema A and Schema
 B fixtures. Live analysis requires `OPENAI_API_KEY` in the environment; the
 deterministic evaluation and smoke paths do not require a key.
+
+The synthetic policy PDFs are generated with `make generate-policy-pdfs` in
+`policies/generated/`. To intentionally remove the current policy corpus before
+reloading it, use `make clear-policy-records`; this deletes only policy
+documents and their cascaded versions, chunks and ingestion jobs.
 
 ## What the MVP demonstrates
 
@@ -702,8 +715,16 @@ Expected high-level flow:
 ``` bash
 cp .env.example .env
 
-# Build/start the required services.
-docker compose up --build
+# Start only the database services in Docker.
+make infra
+
+# Prepare schemas and synthetic fixtures.
+make migrate migrate-hris seed-hris
+
+# In separate terminals, run the applications locally.
+make api
+make mcp
+make web
 
 # Run the repository test suite.
 # The exact canonical command will be documented once Slice 00 establishes it.
