@@ -1,0 +1,12 @@
+{
+  "schema_version": "peopleops.hris_mcp.baseline.v1",
+  "dataset_version": "hris_mcp_mvp_v1",
+  "metrics": {
+    "structured_data": 1.0,
+    "hitl": 1.0
+  },
+  "thresholds": {
+    "structured_data": 1.0,
+    "hitl": 1.0
+  }
+}
