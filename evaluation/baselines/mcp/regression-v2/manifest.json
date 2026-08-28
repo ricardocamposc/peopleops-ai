@@ -1,0 +1,68 @@
+{
+  "alternate_url": "",
+  "artifact_contract": [
+    "manifest.json",
+    "dataset.jsonl",
+    "predictions.jsonl",
+    "evidence.jsonl",
+    "metrics.json",
+    "report.md"
+  ],
+  "base_url": "http://127.0.0.1:8001",
+  "case_count": 12,
+  "dataset": "evaluation/cases/mcp_boundary_v1.jsonl",
+  "execution": "real_mcp_boundary",
+  "git_commit": "b0f2e46e1b6a7896a56a6b6411a43b83c7ea6ee9",
+  "handshake_metric": {
+    "eligible_case_count": 11,
+    "excluded_cases": [
+      "source-unavailable-001"
+    ],
+    "exclusion_reason": "the case intentionally targets an unavailable provider",
+    "successful_case_count": 11
+  },
+  "mcp_sdk": "mcp 2.1.1",
+  "read_only_probe": {
+    "application_validation": true,
+    "database_level_read_only": true,
+    "database_unchanged": true,
+    "passed": true,
+    "statements": [
+      {
+        "rejected": true,
+        "statement": "INSERT INTO employee (employee_code) VALUES ('MUTATION')"
+      },
+      {
+        "rejected": true,
+        "statement": "UPDATE employee SET status = 'inactive'"
+      },
+      {
+        "rejected": true,
+        "statement": "DELETE FROM employee"
+      },
+      {
+        "rejected": true,
+        "statement": "DROP TABLE employee"
+      },
+      {
+        "rejected": true,
+        "statement": "ALTER TABLE employee ADD COLUMN unsafe text"
+      },
+      {
+        "rejected": true,
+        "statement": "CREATE TABLE unsafe (id integer)"
+      },
+      {
+        "rejected": true,
+        "statement": "TRUNCATE employee"
+      },
+      {
+        "rejected": true,
+        "statement": "SELECT 1; UPDATE employee SET status = 'inactive'"
+      }
+    ]
+  },
+  "run_id": "mcp-regression-v2-final",
+  "timestamp": "2026-08-28T20:52:03.384113+00:00",
+  "transport": "streamable_http"
+}
