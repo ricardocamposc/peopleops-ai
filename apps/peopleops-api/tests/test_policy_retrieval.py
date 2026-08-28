@@ -116,6 +116,25 @@ def test_retrieval_applies_metadata_and_returns_verified_provenance(db_session) 
     assert evidence.score >= 0.5
 
 
+def test_retrieval_scenario_is_repeatable_after_rollback(db_session) -> None:
+    for _ in range(2):
+        add_policy(
+            db_session,
+            key="repeatable-policy",
+            version="1",
+            start=date(2026, 1, 1),
+            end=None,
+            text="Repeatable requests require manager approval.",
+        )
+        result = PolicyKnowledgeProvider(db_session, DeterministicEmbedding()).retrieve(
+            "Repeatable requests require manager approval",
+            as_of=date(2026, 6, 1),
+        )
+        assert result.status == PolicyRetrievalStatus.COMPLETED
+        assert result.evidence[0].version == "1"
+        db_session.rollback()
+
+
 def test_retrieval_selects_historical_effective_version(db_session) -> None:
     add_policy(
         db_session,
