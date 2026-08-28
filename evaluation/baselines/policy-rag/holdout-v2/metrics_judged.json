@@ -1,0 +1,10 @@
+{
+  "case_count": 24,
+  "answerable_case_count": 18,
+  "abstention_case_count": 6,
+  "llm_groundedness_answerable": 0.6388888888888888,
+  "llm_relevance_answerable": 0.6499999999999999,
+  "llm_reasoning_quality_answerable": 0.6444444444444444,
+  "llm_abstention_quality": 1.0,
+  "model": "gpt-4o-mini"
+}
