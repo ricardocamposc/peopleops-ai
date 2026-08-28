@@ -66,6 +66,21 @@ higher-level document.
 If a real contradiction cannot be resolved from the repository, **stop
 and report it**. Do not silently choose the easier interpretation.
 
+### Production readiness backlog
+
+Before declaring a feature, slice, pilot or deployment production-ready, read
+`docs/PRODUCTION-READINESS-BACKLOG.md`.
+
+Any newly discovered issue that does not block the current portfolio/MVP but
+must be addressed before real client deployment MUST be recorded there. Do not
+remove an item merely because a workaround exists. An item may only be closed
+as `VALIDATED` when its acceptance criteria are demonstrably satisfied with
+proportional evidence.
+
+The repository is currently **production-oriented, not production-ready**.
+Before any real client implementation, review the backlog's Production Gate
+and Controlled Pilot Gate.
+
 ## 3. Work one slice at a time
 
 The implementation roadmap is intentionally incremental.
