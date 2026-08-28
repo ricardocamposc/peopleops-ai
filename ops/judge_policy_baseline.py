@@ -14,6 +14,7 @@ class JudgeResult(BaseModel):
     groundedness: float = Field(ge=0, le=1)
     relevance: float = Field(ge=0, le=1)
     policy_reasoning_quality: float = Field(ge=0, le=1)
+    abstention_quality: float = Field(ge=0, le=1)
     reason: str = Field(min_length=1, max_length=1000)
 
 
@@ -56,7 +57,10 @@ def main() -> None:
                     "role": "system",
                     "content": (
                         "Judge a synthetic HR policy answer only against the supplied evidence. "
-                        "Do not reward unsupported claims or citations. Return scores from 0 to 1."
+                        "Do not reward unsupported claims or citations. For an expected answerable "
+                        "case, score groundedness, relevance, and policy reasoning quality. For an "
+                        "expected non-answerable case, score abstention quality: whether the answer "
+                        "appropriately declines unsupported claims. Return scores from 0 to 1."
                     ),
                 },
                 {
@@ -67,6 +71,8 @@ def main() -> None:
                             "answer": prediction.get("answer"),
                             "evidence": prediction.get("evidence", []),
                             "status": prediction.get("status"),
+                            "expected_answerable": prediction.get("expected_answerable"),
+                            "expected_behavior": prediction.get("expected_behavior"),
                         },
                         ensure_ascii=False,
                     ),
@@ -82,14 +88,32 @@ def main() -> None:
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in judged), encoding="utf-8"
     )
     count = len(judged)
+    answerable = [item for item in judged if item.get("expected_answerable") is True]
+    abstentions = [item for item in judged if item.get("expected_answerable") is False]
+
+    def average(items: list[dict], field: str) -> float | None:
+        return sum(item["llm_judge"][field] for item in items) / len(items) if items else None
+
     metrics = {
         "case_count": count,
-        "llm_groundedness": sum(item["llm_judge"]["groundedness"] for item in judged) / count,
-        "llm_relevance": sum(item["llm_judge"]["relevance"] for item in judged) / count,
-        "llm_policy_reasoning_quality": sum(item["llm_judge"]["policy_reasoning_quality"] for item in judged) / count,
+        "answerable_case_count": len(answerable),
+        "abstention_case_count": len(abstentions),
+        "llm_groundedness_answerable": average(answerable, "groundedness"),
+        "llm_relevance_answerable": average(answerable, "relevance"),
+        "llm_reasoning_quality_answerable": average(answerable, "policy_reasoning_quality"),
+        "llm_abstention_quality": average(abstentions, "abstention_quality"),
         "model": args.model,
     }
     (args.output_dir / "metrics_judged.json").write_text(json.dumps(metrics, indent=2) + "\n")
+    report = args.output_dir / "report.md"
+    if report.exists():
+        report.write_text(
+            report.read_text(encoding="utf-8")
+            + "\n## LLM judge\n\n"
+            + "\n".join(f"- `{key}`: {value}" for key, value in metrics.items())
+            + "\n",
+            encoding="utf-8",
+        )
     print(json.dumps(metrics, indent=2))
 
 

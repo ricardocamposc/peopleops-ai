@@ -8,7 +8,7 @@ support merely from retrieval rank.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +25,7 @@ class EvidenceVerification(BaseModel):
     citation_indexes: list[int] = Field(default_factory=list, max_length=20)
     reason: str = Field(min_length=1, max_length=1000)
     abstention: str | None = Field(default=None, max_length=2000)
+    semantic_verification_status: Literal["VERIFIED", "INSUFFICIENT", "NOT_PERFORMED"] = "VERIFIED"
 
 
 class PolicyEvidenceVerifier:
@@ -51,16 +52,19 @@ class PolicyEvidenceVerifier:
                 insufficient_evidence=True,
                 reason="No structurally valid policy evidence is available.",
                 abstention=None,
+                semantic_verification_status="INSUFFICIENT",
             )
         # External semantic verification is restricted to explicitly marked
         # synthetic corpus entries. Unmarked or real HR content never crosses
         # this boundary implicitly.
         if not all(evidence[index].get("synthetic") is True for index in structural_indexes):
             return EvidenceVerification(
-                answerable=True,
-                insufficient_evidence=False,
-                citation_indexes=structural_indexes,
-                reason="Semantic verification is disabled for unmarked policy content.",
+                answerable=False,
+                insufficient_evidence=True,
+                citation_indexes=[],
+                reason="Semantic verification was not performed for unmarked policy content.",
+                abstention="The policy evidence requires semantic verification before it can support an answer.",
+                semantic_verification_status="NOT_PERFORMED",
             )
 
         instructions = (
@@ -87,12 +91,16 @@ class PolicyEvidenceVerifier:
         )
         if not isinstance(result, EvidenceVerification):
             raise TypeError("evidence verifier returned an invalid structured result")
-        # A model can occasionally emit a contradictory negative decision
-        # (for example, a reason that says the evidence answers the question
-        # while answerable is false). Reconsider only that negative result;
-        # this avoids turning unsupported evidence into a citation while
-        # reducing false abstentions caused by structured-output drift.
-        if not result.answerable or result.insufficient_evidence:
+        # Retry only an internally contradictory structured result. A valid
+        # abstention is final; retrying all negatives biases the system toward
+        # answering unsupported questions.
+        contradictory = (
+            (not result.answerable and not result.insufficient_evidence)
+            or (result.answerable and result.insufficient_evidence)
+            or (not result.answerable and bool(result.citation_indexes))
+            or (result.answerable and not result.citation_indexes)
+        )
+        if contradictory:
             reconsidered = self.model.parse(
                 purpose=(
                     "Reconsider the evidence decision independently. Return only the typed "
@@ -118,6 +126,7 @@ class PolicyEvidenceVerifier:
                 "answerable": answerable,
                 "insufficient_evidence": not answerable,
                 "citation_indexes": indexes if answerable else [],
+                "semantic_verification_status": "VERIFIED" if answerable else "INSUFFICIENT",
             }
         )
 

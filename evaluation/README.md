@@ -56,6 +56,11 @@ historical dates, distractors and unsupported claims. Its output must use a
 new directory; it is not merged into the regression baseline and is not tuned
 to produce an artificial pass. After a deterministic run, judge it with:
 
+This file is retained as a validation/robustness and regression set. It has
+already been used during remediation cycles and must not be described as an
+unseen final evaluation. New unseen evaluations belong in a separately frozen
+dataset such as `policy_rag_holdout_v2.jsonl`.
+
 ```bash
 POLICY_PREDICTIONS=evaluation/runs/<holdout-run>/predictions.jsonl \
 POLICY_BASELINE_OUTPUT_DIR=evaluation/runs/<holdout-run> \
