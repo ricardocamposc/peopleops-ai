@@ -67,10 +67,17 @@ class PolicyEvidence:
         chunk_index: int,
         fragment: str,
         score: float,
+        document_type: str = "policy",
+        department: str | None = None,
+        confidentiality: str = "internal",
+        synthetic: bool = False,
     ) -> None:
         self.document_id = document_id
         self.document_key = document_key
         self.title = title
+        self.document_type = document_type
+        self.department = department
+        self.confidentiality = confidentiality
         self.policy_version_id = policy_version_id
         self.version = version
         self.effective_from = effective_from
@@ -82,12 +89,16 @@ class PolicyEvidence:
         self.fragment = fragment
         self.score = score
         self.verified = True
+        self.synthetic = synthetic
 
     def as_dict(self) -> dict[str, Any]:
         return {
             "document_id": str(self.document_id),
             "document_key": self.document_key,
             "title": self.title,
+            "document_type": self.document_type,
+            "department": self.department,
+            "confidentiality": self.confidentiality,
             "policy_version_id": str(self.policy_version_id),
             "version": self.version,
             "effective_from": self.effective_from.isoformat(),
@@ -99,6 +110,7 @@ class PolicyEvidence:
             "fragment": self.fragment,
             "score": self.score,
             "verified": self.verified,
+            "synthetic": self.synthetic,
         }
 
 
@@ -130,7 +142,7 @@ class PolicyKnowledgeProvider:
         session: Session,
         embedding_model: QueryEmbeddingModel,
         *,
-        minimum_score: float = 0.50,
+        minimum_score: float = 0.30,
     ) -> None:
         self.session = session
         self.embedding_model = embedding_model
@@ -158,9 +170,14 @@ class PolicyKnowledgeProvider:
                 reason="multiple applicable policy versions have the same effective date",
             )
         if not selected_versions:
+            future_match = self._has_future_match(as_of, filters)
             return PolicyRetrievalResult(
                 status=PolicyRetrievalStatus.POLICY_NOT_FOUND,
-                reason="no active policy version is applicable to the requested date",
+                reason=(
+                    "a matching policy exists but is not effective on the requested date"
+                    if future_match
+                    else "no active policy version is applicable to the requested date"
+                ),
             )
 
         query_bundle = QueryBundle(query_str=query)
@@ -189,6 +206,13 @@ class PolicyKnowledgeProvider:
                 reason="retrieved chunks did not meet the evidence verification threshold",
             )
         return PolicyRetrievalResult(status=PolicyRetrievalStatus.COMPLETED, evidence=evidence)
+
+    def _has_future_match(self, as_of: date, filters: PolicyRetrievalFilters | None) -> bool:
+        statement = self._base_versions(filters).where(
+            PolicyVersion.status == "active",
+            PolicyVersion.effective_from > as_of,
+        )
+        return self.session.execute(statement.limit(1)).first() is not None
 
     def _base_versions(self, filters: PolicyRetrievalFilters | None) -> Select[Any]:
         statement = select(PolicyVersion).options(joinedload(PolicyVersion.document))
@@ -255,6 +279,9 @@ class PolicyKnowledgeProvider:
             document_id=document.id,
             document_key=document.document_key,
             title=document.title,
+            document_type=document.document_type,
+            department=document.department,
+            confidentiality=document.confidentiality,
             policy_version_id=version.id,
             version=version.version,
             effective_from=version.effective_from,
@@ -265,4 +292,5 @@ class PolicyKnowledgeProvider:
             chunk_index=chunk.chunk_index,
             fragment=node.get_content(),
             score=score,
+            synthetic=version.metadata_.get("synthetic") is True,
         )

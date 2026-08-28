@@ -1,0 +1,260 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Length 1077 >>
+stream
+BT
+/F1 18 Tf
+48 770 Td
+(Payroll Change Procedure) Tj
+/F1 9 Tf
+0 -18 Td
+(Document key: synthetic-payroll) Tj
+0 -18 Td
+(Version: 1) Tj
+0 -18 Td
+(Effective from: 2025-01-01) Tj
+0 -18 Td
+(Department: People) Tj
+0 -18 Td
+(Confidentiality: internal) Tj
+0 -18 Td
+(Synthetic: true) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(01 Purpose and scope) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(This fictional procedure defines controls for employee payroll changes.) Tj
+0 -18 Td
+(It covers recurring compensation, one-time adjustments and bank changes.) Tj
+0 -18 Td
+(The procedure is a synthetic fixture for the PeopleOps AI demonstration.) Tj
+0 -18 Td
+(It is not legal advice and must not be used for an employment decision.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Process owner: Payroll Operations) Tj
+0 -18 Td
+(Control owner: People Operations) Tj
+0 -18 Td
+(System of record: the payroll system and its approval log) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Every change must have a source request, an authorized approval and an) Tj
+0 -18 Td
+(effective payroll period before it is included in a payroll run.) Tj
+0 -22 Td
+(Page 1 of 4) Tj
+ET
+endstream
+endobj
+3 0 obj
+<< /Type /Page /Parent 10 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R >> >> /Contents 2 0 R >>
+endobj
+4 0 obj
+<< /Length 1107 >>
+stream
+BT
+/F1 18 Tf
+48 770 Td
+(Payroll Change Procedure) Tj
+/F1 9 Tf
+0 -18 Td
+(Document key: synthetic-payroll) Tj
+0 -18 Td
+(Version: 1) Tj
+0 -18 Td
+(Effective from: 2025-01-01) Tj
+0 -18 Td
+(Department: People) Tj
+0 -18 Td
+(Confidentiality: internal) Tj
+0 -18 Td
+(Synthetic: true) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(02 Change intake and approval) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(A change request must identify the employee, change type and effective date.) Tj
+0 -18 Td
+(Payroll Operations validates the request against the employee record.) Tj
+0 -18 Td
+(The manager confirms the business reason for recurring compensation changes.) Tj
+0 -18 Td
+(People Operations confirms changes that affect employment conditions.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Bank account changes require an additional identity verification step.) Tj
+0 -18 Td
+(One-time payments require the approving cost center and payment reason.) Tj
+0 -18 Td
+(Requests received after the payroll cut-off move to the next eligible cycle.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(No payroll change is applied based only on an informal message or chat.) Tj
+0 -22 Td
+(Page 2 of 4) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 10 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 1128 >>
+stream
+BT
+/F1 18 Tf
+48 770 Td
+(Payroll Change Procedure) Tj
+/F1 9 Tf
+0 -18 Td
+(Document key: synthetic-payroll) Tj
+0 -18 Td
+(Version: 1) Tj
+0 -18 Td
+(Effective from: 2025-01-01) Tj
+0 -18 Td
+(Department: People) Tj
+0 -18 Td
+(Confidentiality: internal) Tj
+0 -18 Td
+(Synthetic: true) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(03 Validation and exception handling) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Payroll Operations checks required fields before submitting a change.) Tj
+0 -18 Td
+(The reviewer compares the effective date with the payroll calendar.) Tj
+0 -18 Td
+(Conflicting requests remain pending until the source of truth is confirmed.) Tj
+0 -18 Td
+(A rejected request includes a reason and may be resubmitted with corrections.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Required evidence for a completed change:) Tj
+0 -18 Td
+(- source request and request identifier;) Tj
+0 -18 Td
+(- approval identity and timestamp;) Tj
+0 -18 Td
+(- validated effective date and payroll period;) Tj
+0 -18 Td
+(- result of the payroll processing check.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(This procedure does not define career progression or promotion criteria.) Tj
+0 -22 Td
+(Page 3 of 4) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 10 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 1145 >>
+stream
+BT
+/F1 18 Tf
+48 770 Td
+(Payroll Change Procedure) Tj
+/F1 9 Tf
+0 -18 Td
+(Document key: synthetic-payroll) Tj
+0 -18 Td
+(Version: 1) Tj
+0 -18 Td
+(Effective from: 2025-01-01) Tj
+0 -18 Td
+(Department: People) Tj
+0 -18 Td
+(Confidentiality: internal) Tj
+0 -18 Td
+(Synthetic: true) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(04 Audit and related controls) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Payroll Operations retains the approval trail for the configured retention period.) Tj
+0 -18 Td
+(People Operations reviews exceptions and recurring failure patterns monthly.) Tj
+0 -18 Td
+(Access to payroll changes is restricted to authorized roles.) Tj
+0 -18 Td
+(A material discrepancy is escalated and corrected through a controlled rerun.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Related controls include vacation approvals, expense processing and HRIS access.) Tj
+0 -18 Td
+(Those controls are separate procedures and cannot be inferred here.) Tj
+0 -18 Td
+(If two approved sources conflict, Payroll Operations escalates the issue.) Tj
+0 -18 Td
+() Tj
+0 -18 Td
+(Document status: active) Tj
+0 -18 Td
+(Synthetic marker: synthetic=true) Tj
+0 -18 Td
+(End of procedure) Tj
+0 -22 Td
+(Page 4 of 4) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 10 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R >> >> /Contents 8 0 R >>
+endobj
+10 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R 9 0 R] /Count 4 >>
+endobj
+11 0 obj
+<< /Type /Catalog /Pages 10 0 R >>
+endobj
+12 0 obj
+<< /Title (Payroll Change Procedure) /Author (PeopleOps AI Synthetic Corpus) /Subject (Synthetic policy for Policy RAG evaluation) /Keywords (synthetic, policy, synthetic-payroll) >>
+endobj
+xref
+0 13
+0000000000 65535 f 
+0000000015 00000 n 
+0000000085 00000 n 
+0000001214 00000 n 
+0000001341 00000 n 
+0000002500 00000 n 
+0000002627 00000 n 
+0000003807 00000 n 
+0000003934 00000 n 
+0000005131 00000 n 
+0000005258 00000 n 
+0000005334 00000 n 
+0000005385 00000 n 
+trailer
+<< /Size 13 /Root 11 0 R /Info 12 0 R >>
+startxref
+5584
+%%EOF

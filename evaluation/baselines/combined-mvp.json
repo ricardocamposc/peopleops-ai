@@ -1,0 +1,12 @@
+{
+  "schema_version": "peopleops.combined.baseline.v1",
+  "dataset_version": "peopleops_combined_mvp_v1",
+  "metrics": {
+    "workflow": 1.0,
+    "hitl": 1.0
+  },
+  "thresholds": {
+    "workflow": 1.0,
+    "hitl": 1.0
+  }
+}

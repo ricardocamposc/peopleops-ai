@@ -13,3 +13,9 @@ button, textarea { font: inherit; } button { cursor: pointer; }
 @media (max-width: 850px) { .topbar { padding: 0 20px; }.sidebar { display: none; }.content { padding: 35px 20px; }.analysis-layout { grid-template-columns: 1fr; }.history-panel { order: -1; }.hero-orb { display: none; } }
 @media (max-width: 680px) { .page-hero, .policy-card__header, .version-row { align-items: stretch; flex-direction: column; }.page-hero .primary-button { width: 100%; }.toolbar, .decision-actions { flex-direction: column; }.toolbar select { max-width: none; }.form-grid { grid-template-columns: 1fr; }.full-width { grid-column: auto; }.version-actions { align-items: start; }.review-layout { grid-template-columns: 1fr; }.confirmation { position: static; max-width: none; margin-top: 18px; }.decision-actions .primary-button, .decision-actions .secondary-button, .decision-actions .danger-button { width: 100%; } }
 @media (max-width: 520px) { .hero h1 { font-size: 32px; }.form-footer { align-items: stretch; flex-direction: column; gap: 13px; }.primary-button { width: 100%; }.detail-column, .welcome-panel, .history-panel, .panel, .policy-card, .upload-panel { padding: 18px; }.detail-header { flex-direction: column; }.request-id { max-width: 100%; }.tabs { gap: 13px; overflow-x: auto; }.tab { white-space: nowrap; }.history-status { display: none; }.connection { display: none; } }
+
+/* Keep the navigation labels together and give icons a stable alignment. */
+.sidebar { box-sizing: border-box; width: 250px; min-width: 250px; }
+.nav-item { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.nav-item > span:first-child { display: inline-flex; width: 16px; flex: 0 0 16px; justify-content: center; margin: 0; }
+.nav-item > span:last-child { margin: 0; }

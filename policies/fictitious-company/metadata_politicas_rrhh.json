@@ -1,0 +1,242 @@
+[
+  {
+    "clave_documento": "hr-manual",
+    "titulo": "Manual de Recursos Humanos",
+    "version": "2026.1",
+    "tipo": "manual",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Gestión de Personas",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "recruitment-selection-policy",
+    "titulo": "Política de Contratación y Selección",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Atracción y Selección",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "onboarding-policy",
+    "titulo": "Política de Incorporación y Onboarding",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Employee Experience",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "working-hours-attendance-policy",
+    "titulo": "Política de Jornada, Asistencia y Ausencias",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Administración de Personal",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "vacation-policy",
+    "titulo": "Política de Vacaciones",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Administración de Personal",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "compensation-benefits-policy",
+    "titulo": "Política de Compensaciones y Beneficios",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Compensaciones",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "performance-development-policy",
+    "titulo": "Política de Desempeño y Desarrollo",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Desempeño y Desarrollo",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  },
+  {
+    "clave_documento": "conduct-ethics-policy",
+    "titulo": "Política de Conducta, Ética y No Discriminación",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "internal",
+    "metadata": {
+      "categoria": "Relaciones Laborales",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": true
+    }
+  },
+  {
+    "clave_documento": "harassment-prevention-policy",
+    "titulo": "Política de Prevención del Acoso y Violencia en el Trabajo",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "restricted",
+    "metadata": {
+      "categoria": "Relaciones Laborales",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": true
+    }
+  },
+  {
+    "clave_documento": "information-privacy-policy",
+    "titulo": "Política de Confidencialidad y Protección de Datos de Colaboradores",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "restricted",
+    "metadata": {
+      "categoria": "Privacidad y Seguridad",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": true
+    }
+  },
+  {
+    "clave_documento": "disciplinary-policy",
+    "titulo": "Política Disciplinaria",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "restricted",
+    "metadata": {
+      "categoria": "Relaciones Laborales",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": true
+    }
+  },
+  {
+    "clave_documento": "offboarding-policy",
+    "titulo": "Política de Desvinculación y Offboarding",
+    "version": "2026.1",
+    "tipo": "policy",
+    "vigente_desde": "01/01/2026",
+    "vigente_hasta": null,
+    "departamento": "People",
+    "confidencialidad": "restricted",
+    "metadata": {
+      "categoria": "Administración de Personal",
+      "responsable": "People / Recursos Humanos",
+      "estado": "vigente",
+      "frecuencia_revision": "anual_o_por_cambio_relevante",
+      "jurisdiccion": "Definir según país de operación",
+      "fuente_autoridad": "PDF corporativo vigente",
+      "audiencia": "Colaboradores y líderes según corresponda",
+      "requiere_aceptacion": false
+    }
+  }
+]

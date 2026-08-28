@@ -1,10 +1,73 @@
 .DEFAULT_GOAL := help
 
 help:
-	@printf '%s\n' 'Available targets: help install build up down restart ps logs lint format test test-unit test-integration evaluate demo-setup smoke health clean'
+	@printf '%s\n' 'Available targets: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline-policy-judge baseline-judge inspect-policy-run smoke health clean'
+
+infra:
+	$(MAKE) -C apps infra
+
+run:
+	$(MAKE) -C apps run
+
+api:
+	$(MAKE) -C apps api
+
+stop-apps:
+	docker compose stop peopleops-api peopleops-web reference-mcp-server
+
+mcp:
+	$(MAKE) -C apps mcp
+
+web:
+	$(MAKE) -C apps web
+
+migrate:
+	$(MAKE) -C apps migrate
+
+migrate-hris:
+	$(MAKE) -C apps migrate-hris
+
+seed-hris:
+	$(MAKE) -C apps seed-hris
+
+generate-policy-pdfs:
+	python3 ops/generate_policy_pdfs.py --output-dir policies/generated
+
+regenerate-fictitious-policy-pdfs:
+	python3 ops/regenerate_fictitious_policy_pdfs.py --corpus-dir policies/fictitious-company
+
+clear-policy-records:
+	$(MAKE) -C apps clear-policy-records
 
 evaluate:
 	poetry -C apps/peopleops-api run python ../../ops/release_evaluation.py
+
+baseline-policy:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python ../../ops/policy_rag_baseline.py --dataset "$(abspath $(if $(POLICY_DATASET),$(POLICY_DATASET),evaluation/cases/policy_rag_fictitious_company_v1.jsonl))" --output-dir "$(abspath $(if $(POLICY_BASELINE_OUTPUT_DIR),$(POLICY_BASELINE_OUTPUT_DIR),evaluation/runs/baseline-$(shell date +%Y%m%d-%H%M%S)))"
+
+baseline: baseline-policy
+
+baseline-policy-rag: baseline-policy
+
+baseline-policy-rag-holdout:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python ../../ops/policy_rag_baseline.py --dataset "$(abspath evaluation/cases/policy_rag_holdout_v1.jsonl)" --output-dir "$(abspath $(if $(POLICY_HOLDOUT_OUTPUT_DIR),$(POLICY_HOLDOUT_OUTPUT_DIR),evaluation/runs/holdout-$(shell date +%Y%m%d-%H%M%S)))"
+
+baseline-hris-mcp:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/hris_mcp_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(HRIS_BASELINE_OUTPUT_DIR),$(HRIS_BASELINE_OUTPUT_DIR),evaluation/runs/hris-mcp-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/hris-mcp-mvp.json)"
+
+baseline-combined:
+	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/peopleops_combined_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(COMBINED_BASELINE_OUTPUT_DIR),$(COMBINED_BASELINE_OUTPUT_DIR),evaluation/runs/combined-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/combined-mvp.json)"
+
+baseline-all: baseline-policy-rag baseline-hris-mcp baseline-combined
+
+baseline-policy-judge:
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/judge_policy_baseline.py --predictions $${POLICY_PREDICTIONS:-evaluation/runs/baseline-local/predictions.jsonl} --output-dir $${POLICY_BASELINE_OUTPUT_DIR:-evaluation/runs/baseline-local} --allow-synthetic-data
+
+baseline-judge: baseline-policy-judge
+
+inspect-policy-run:
+	@test -n "$(POLICY_RUN_ID)" || (printf '%s\n' 'POLICY_RUN_ID is required' >&2; exit 1)
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/inspect_policy_evaluation_run.py --run-id "$(POLICY_RUN_ID)" --output "$(if $(POLICY_RUN_OUTPUT),$(POLICY_RUN_OUTPUT),evaluation/runs/$(POLICY_RUN_ID)/database-evidence.json)"
 
 install:
 	poetry -C apps/peopleops-api install
@@ -14,7 +77,9 @@ install:
 build:
 	docker compose build
 
-up:
+up: infra
+
+up-all:
 	docker compose up -d
 
 down:
@@ -22,7 +87,7 @@ down:
 
 restart:
 	docker compose down
-	docker compose up -d
+	$(MAKE) infra
 
 ps:
 	docker compose ps
@@ -51,10 +116,7 @@ test-integration:
 	@docker compose config >/dev/null
 
 demo-setup:
-	@docker compose exec -T peopleops-api alembic upgrade head
-	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/seeds/seed.sql
-	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/alternate-schema/migration.sql
-	@docker compose exec -T synthetic-hris-db psql -U "$${SYNTHETIC_HRIS_DATABASE_USER:-synthetic_hris_app}" -d "$${SYNTHETIC_HRIS_DATABASE_NAME:-synthetic_hris}" < synthetic-hris/alternate-schema/seed.sql
+	$(MAKE) infra migrate migrate-hris seed-hris
 	@printf '%s\n' 'Demo databases ready. See docs/portfolio/DEMO-SCRIPT.md for policy upload and scenarios.'
 
 smoke:
@@ -68,4 +130,4 @@ health:
 clean:
 	docker compose down --volumes --remove-orphans
 
-.PHONY: help install build up down restart ps logs lint format test test-unit test-integration evaluate demo-setup smoke health clean
+.PHONY: help install build up up-all run api mcp web infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs clear-policy-records down restart ps logs lint format test test-unit test-integration evaluate baseline-policy-rag baseline-policy-rag-holdout baseline-hris-mcp baseline-combined baseline-all baseline-policy baseline baseline-policy-judge baseline-judge inspect-policy-run demo-setup smoke health clean

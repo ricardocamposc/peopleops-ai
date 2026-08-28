@@ -1202,3 +1202,24 @@ completion --- not feature count.**
 A smaller implementation that clearly proves the intended enterprise AI
 architecture is preferable to a larger implementation that weakens the
 boundaries or cannot be evaluated.
+
+## 27. Enterprise RAG reference alignment
+
+When auditing or extending Policy RAG, read
+`docs/enterprise-rag-alignment-audit.md` before modifying code. Reuse proven
+retrieval, evidence-verification and evaluation patterns from
+`ricardocamposc/enterprise-rag`, but preserve PeopleOps ownership of policies,
+LangGraph, MCP, HRIS, payroll, `AnalysisInteraction` and Human Review.
+
+Evaluation must follow this boundary:
+
+```text
+versioned expected dataset → real PeopleOps application → observed predictions
+→ deterministic evaluator → optional separate LLM judge
+```
+
+Never put observed values in evaluation cases, never silently ingest during a
+baseline, and never use an LLM judge as ground truth. External LLM evaluation
+is opt-in and restricted to explicitly synthetic, authorized data. Policy
+evidence must carry a synthetic marker before it can cross the semantic
+verification boundary.

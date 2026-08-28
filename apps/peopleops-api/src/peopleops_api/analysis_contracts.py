@@ -10,6 +10,25 @@ from pydantic import BaseModel, ConfigDict, Field
 from peopleops_api.query_contracts import ConceptualQuery
 
 
+class PolicyMetadataFilter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(min_length=1, max_length=128)
+    value: str = Field(max_length=1024)
+
+
+class PolicyFilterContract(BaseModel):
+    """Structured, provider-neutral policy filters compatible with strict schemas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    document_key: str | None = Field(default=None, max_length=255)
+    document_type: str | None = Field(default=None, max_length=100)
+    department: str | None = Field(default=None, max_length=255)
+    confidentiality: str | None = Field(default=None, max_length=64)
+    metadata: list[PolicyMetadataFilter] = Field(default_factory=list, max_length=16)
+
+
 class SemanticRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -23,7 +42,7 @@ class SemanticRequest(BaseModel):
     requires_policy: bool = False
     policy_query: str | None = Field(default=None, max_length=1000)
     policy_as_of: date | None = None
-    policy_filters: dict[str, Any] = Field(default_factory=dict)
+    policy_filters: PolicyFilterContract = Field(default_factory=PolicyFilterContract)
 
 
 class PlannedQuery(BaseModel):
@@ -38,8 +57,8 @@ class PolicyPlan(BaseModel):
 
     query: str = Field(min_length=1, max_length=1000)
     as_of: date
-    filters: dict[str, Any] = Field(default_factory=dict)
-    top_k: int = Field(default=5, ge=1, le=20)
+    filters: PolicyFilterContract = Field(default_factory=lambda: PolicyFilterContract())
+    top_k: int = Field(default=6, ge=1, le=20)
 
 
 class AnalysisPlan(BaseModel):
@@ -55,8 +74,11 @@ class StructuredAnswer(BaseModel):
 
     answer: str = Field(min_length=1, max_length=4000)
     key_findings: list[str] = Field(default_factory=list, max_length=12)
-    facts: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
-    policies: list[dict[str, Any]] = Field(default_factory=list, max_length=24)
+    # These are replaced with deterministic evidence after model parsing. Any
+    # keeps the persisted evidence contract flexible without an open object in
+    # the provider-facing Structured Outputs schema.
+    facts: list[Any] = Field(default_factory=list, max_length=24)
+    policies: list[Any] = Field(default_factory=list, max_length=24)
     inference: list[str] = Field(default_factory=list, max_length=12)
     status: Literal[
         "completed",

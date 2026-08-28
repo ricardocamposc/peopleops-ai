@@ -1,0 +1,30 @@
+{
+  "generated_at": "2026-08-27T22:53:59.982773+00:00",
+  "synthetic": true,
+  "documents": [
+    {
+      "document_key": "synthetic-vacation",
+      "title": "Vacation and Leave Policy",
+      "version": "1",
+      "effective_from": "2025-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "source": "policies/synthetic/vacation-policy-v1.md",
+      "filename": "policies/generated/synthetic-vacation-v1.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "synthetic-payroll",
+      "title": "Payroll Change Procedure",
+      "version": "1",
+      "effective_from": "2025-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "source": "policies/synthetic/payroll-procedure-v1.md",
+      "filename": "policies/generated/synthetic-payroll-v1.pdf",
+      "pages": 4,
+      "synthetic": true
+    }
+  ]
+}
