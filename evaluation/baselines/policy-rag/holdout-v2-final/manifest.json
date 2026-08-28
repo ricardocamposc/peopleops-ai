@@ -1,0 +1,29 @@
+{
+  "run_id": "99c49669-8edc-4b95-a59b-eac15716fbe4",
+  "git_commit": "63f5845b4520ccb1a4e2edc356cf33e930c761a1",
+  "timestamp": "2026-08-28T17:25:57.389695+00:00",
+  "dataset": "/Users/ricardocamposc/Projects/peopleops-ai/evaluation/cases/policy_rag_holdout_v2.jsonl",
+  "dataset_case_count": 24,
+  "base_url": "http://localhost:8000",
+  "request_timeout_seconds": 180.0,
+  "execution": "real_peopleops_api",
+  "openai_model": "gpt-4o-mini",
+  "embedding_model": "text-embedding-3-small",
+  "embedding_dimension": 1536,
+  "retrieval_top_k": 6,
+  "retrieval_minimum_score": 0.3,
+  "policy_non_synthetic_mode": "insufficient",
+  "judge_model": null,
+  "artifact_contract": {
+    "manifest": "manifest.json",
+    "dataset": "dataset.jsonl",
+    "predictions": "predictions.jsonl",
+    "evidence": "evidence.jsonl",
+    "metrics": "metrics.json",
+    "report": "report.md",
+    "optional": [
+      "metrics_judged.json",
+      "predictions_judged.jsonl"
+    ]
+  }
+}
