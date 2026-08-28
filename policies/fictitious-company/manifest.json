@@ -1,0 +1,138 @@
+{
+  "generated_at": "2026-08-28T10:49:46.873460+00:00",
+  "synthetic": true,
+  "documents": [
+    {
+      "document_key": "hr-manual",
+      "title": "Manual de Recursos Humanos",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/hr-manual.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "recruitment-selection-policy",
+      "title": "Política de Contratación y Selección",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/recruitment-selection-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "onboarding-policy",
+      "title": "Política de Incorporación y Onboarding",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/onboarding-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "working-hours-attendance-policy",
+      "title": "Política de Jornada, Asistencia y Ausencias",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/working-hours-attendance-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "vacation-policy",
+      "title": "Política de Vacaciones",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/vacation-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "compensation-benefits-policy",
+      "title": "Política de Compensaciones y Beneficios",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/compensation-benefits-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "performance-development-policy",
+      "title": "Política de Desempeño y Desarrollo",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/performance-development-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "conduct-ethics-policy",
+      "title": "Política de Conducta, Ética y No Discriminación",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "internal",
+      "filename": "policies/fictitious-company/conduct-ethics-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "harassment-prevention-policy",
+      "title": "Política de Prevención del Acoso y Violencia en el Trabajo",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "restricted",
+      "filename": "policies/fictitious-company/harassment-prevention-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "information-privacy-policy",
+      "title": "Política de Confidencialidad y Protección de Datos de Colaboradores",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "restricted",
+      "filename": "policies/fictitious-company/information-privacy-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "disciplinary-policy",
+      "title": "Política Disciplinaria",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "restricted",
+      "filename": "policies/fictitious-company/disciplinary-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    },
+    {
+      "document_key": "offboarding-policy",
+      "title": "Política de Desvinculación y Offboarding",
+      "version": "2026.1",
+      "effective_from": "2026-01-01",
+      "department": "People",
+      "confidentiality": "restricted",
+      "filename": "policies/fictitious-company/offboarding-policy.pdf",
+      "pages": 4,
+      "synthetic": true
+    }
+  ]
+}
