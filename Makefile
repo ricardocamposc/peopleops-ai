@@ -68,7 +68,7 @@ baseline-mcp:
 	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/mcp_boundary_baseline.py --dataset "$(abspath evaluation/cases/mcp_boundary_v1.jsonl)" --output-dir "$(abspath $(if $(MCP_BASELINE_OUTPUT_DIR),$(MCP_BASELINE_OUTPUT_DIR),evaluation/runs/mcp-$(shell date +%Y%m%d-%H%M%S)))" --base-url "$(if $(MCP_BASE_URL),$(MCP_BASE_URL),http://127.0.0.1:$${MCP_PORT:-8001})" --alternate-url "$(MCP_ALTERNATE_URL)"
 
 publish-mcp-baseline:
-	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/publish_mcp_baseline.py --run-dir "$(MCP_RUN_DIR)" --baseline-name "$(MCP_BASELINE_NAME)"
+	PYTHONPATH=apps/peopleops-api/src poetry -C apps/peopleops-api run python ../../ops/publish_mcp_baseline.py --run-dir "$(MCP_RUN_DIR)" --baseline-name "$(MCP_BASELINE_NAME)" --baselines-dir "$(abspath evaluation/baselines/mcp)"
 
 baseline-combined:
 	PYTHONPATH=src poetry -C apps/peopleops-api run python -m peopleops_api.evaluation_runner --dataset "$(abspath evaluation/cases/peopleops_combined_mvp_v1.jsonl)" --output-dir "$(abspath $(if $(COMBINED_BASELINE_OUTPUT_DIR),$(COMBINED_BASELINE_OUTPUT_DIR),evaluation/runs/combined-$(shell date +%Y%m%d-%H%M%S)))" --baseline "$(abspath evaluation/baselines/combined-mvp.json)"
