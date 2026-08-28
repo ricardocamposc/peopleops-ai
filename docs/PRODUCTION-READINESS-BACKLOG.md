@@ -335,9 +335,11 @@ Why it matters: The current MCP boundary is synthetic/reference-only and has
 not been validated against a real client HRIS.
 
 Current evidence: the reference implementation now uses the official MCP SDK
-and Streamable HTTP with the synthetic HRIS. Real client integration,
-authentication, mTLS/OAuth, network policy and client-specific mapping remain
-unvalidated.
+and Streamable HTTP with the synthetic HRIS. The final synthetic validation
+also demonstrated provider-side SQL rejection, PostgreSQL transaction-level
+read-only enforcement and unchanged data after attempted writes. Real client
+integration, authentication, mTLS/OAuth, network policy and client-specific
+mapping remain unvalidated.
 
 Risk if unresolved: Unauthorized data access, schema mismatch, unsafe writes or
 silent integration failures.
@@ -350,8 +352,10 @@ Acceptance criteria: Client-approved integration test, read-only proof,
 authorization tests, outage tests, audit evidence and no direct PeopleOps to
 HRIS fallback.
 
-Validation evidence: N/A — must be reviewed after the ERP AI Analyst →
-PeopleOps architecture remediation.
+Validation evidence: `evaluation/baselines/mcp/regression-v2/` records the
+synthetic boundary evidence. It does not close this production item; it must
+still be reviewed after the ERP AI Analyst → PeopleOps architecture
+remediation and against a real client source.
 
 Related files: `apps/reference-mcp-server/`,
 `apps/peopleops-api/src/peopleops_api/mcp_client.py`.

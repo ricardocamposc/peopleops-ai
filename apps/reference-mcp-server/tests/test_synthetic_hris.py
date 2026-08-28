@@ -140,6 +140,28 @@ def test_payroll_checks_are_true_for_seeded_rows(migrated_database) -> None:
             "WHERE net_amount <> gross_amount - deduction_amount"
         )
         assert cursor.fetchone()[0] == 0
+
+
+def test_database_read_only_transaction_rejects_writes_and_preserves_rows(migrated_database) -> None:
+    _seed(migrated_database)
+    with migrated_database.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM employee")
+        before = cursor.fetchone()[0]
+    migrated_database.rollback()
+
+    try:
+        with migrated_database.transaction():
+            migrated_database.execute("SET LOCAL transaction_read_only = on")
+            with migrated_database.cursor() as cursor:
+                cursor.execute("UPDATE employee SET status = 'inactive'")
+    except psycopg.errors.ReadOnlySqlTransaction:
+        pass
+    else:
+        raise AssertionError("database must reject writes in a read-only transaction")
+
+    with migrated_database.cursor() as cursor:
+        cursor.execute("SELECT count(*) FROM employee")
+        assert cursor.fetchone()[0] == before
         cursor.execute(
             "SELECT count(*) FROM vacation_balance "
             "WHERE available_days <> earned_days - used_days - scheduled_days"

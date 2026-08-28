@@ -13,6 +13,8 @@ from typing import Any
 
 from mcp import Client
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _request_args(case: dict[str, Any]) -> dict[str, Any]:
     return {
@@ -100,15 +102,21 @@ async def run(args: argparse.Namespace) -> None:
     for case in cases:
         observed = await run_case(args.base_url, case, args.alternate_url)
         predictions.append({"id": case["id"], "expected": case["expected"], "observed": observed, **evaluate(case, observed)})
+    handshake_cases = [item for item in predictions if item["id"] != "source-unavailable-001"]
+    expected_failure_cases = [item for item in predictions if item["id"] == "source-unavailable-001"]
+    read_only_probe = _run_read_only_probe()
     metrics = {
-        "handshake_success_rate": sum(bool(item["observed"].get("protocol_version")) for item in predictions) / len(predictions),
+        "handshake_success_rate": sum(
+            bool(item["observed"].get("protocol_version")) for item in handshake_cases
+        ) / len(handshake_cases),
         "capability_discovery_success_rate": sum(item["passed"] is True for item in predictions if item["id"] in {"discovery-001", "capabilities-001"}) / 2,
         "query_validation_accuracy": _metric(predictions, {"valid-query-001", "invalid-entity-001", "invalid-field-001", "relationship-001", "aggregation-001", "time-filter-001", "authorization-001"}),
         "execution_success_rate": _metric(predictions, {"zero-rows-001"}),
         "error_normalization_accuracy": _metric(predictions, {"source-unavailable-001"}),
         "schema_independence_accuracy": _metric(predictions, {"schema-independence-001"}),
         "provider_evidence_validity": _metric(predictions, {"zero-rows-001"}),
-        "read_only_enforcement": "N/A",
+        "read_only_enforcement": 1.0 if read_only_probe.get("passed") else 0.0,
+        "expected_failure_handling_accuracy": _metric(predictions, {"source-unavailable-001"}),
     }
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
@@ -117,10 +125,47 @@ async def run(args: argparse.Namespace) -> None:
     (output / "evidence.jsonl").write_text("".join(json.dumps({"id": item["id"], "observed": item["observed"], "checks": item["checks"]}, sort_keys=True) + "\n" for item in predictions), encoding="utf-8")
     (output / "metrics.json").write_text(json.dumps({"cases": predictions, "summary": metrics}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    manifest = {"run_id": output.name, "git_commit": sha, "timestamp": datetime.now(UTC).isoformat(), "dataset": str(args.dataset), "case_count": len(cases), "execution": "real_peopleops_api" if args.execution == "real_peopleops_api" else args.execution, "mcp_sdk": "mcp 2.1.1", "transport": "streamable_http", "base_url": args.base_url, "alternate_url": args.alternate_url, "artifact_contract": ["manifest.json", "dataset.jsonl", "predictions.jsonl", "evidence.jsonl", "metrics.json", "report.md"]}
+    manifest = {
+        "run_id": output.name,
+        "git_commit": sha,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "dataset": str(args.dataset.resolve().relative_to(REPO_ROOT)),
+        "case_count": len(cases),
+        "execution": "real_peopleops_api" if args.execution == "real_peopleops_api" else args.execution,
+        "mcp_sdk": "mcp 2.1.1",
+        "transport": "streamable_http",
+        "base_url": args.base_url,
+        "alternate_url": args.alternate_url,
+        "handshake_metric": {
+            "eligible_case_count": len(handshake_cases),
+            "successful_case_count": sum(
+                bool(item["observed"].get("protocol_version")) for item in handshake_cases
+            ),
+            "excluded_cases": [item["id"] for item in expected_failure_cases],
+            "exclusion_reason": "the case intentionally targets an unavailable provider",
+        },
+        "read_only_probe": read_only_probe,
+        "artifact_contract": ["manifest.json", "dataset.jsonl", "predictions.jsonl", "evidence.jsonl", "metrics.json", "report.md"],
+    }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     failed = [item for item in predictions if item["passed"] is False]
-    report = ["# MCP boundary evaluation", "", f"Run: `{output.name}`", f"Cases: {len(cases)}", "", "## Metrics", ""]
+    report = [
+        "# MCP boundary evaluation",
+        "",
+        f"Run: `{output.name}`",
+        f"Cases: {len(cases)}",
+        "",
+        "## Metric definitions",
+        "",
+        f"- `handshake_success_rate`: {len(handshake_cases)} eligible cases; "
+        f"{sum(bool(item['observed'].get('protocol_version')) for item in handshake_cases)} successful. "
+        "The intentionally unavailable-provider case is excluded from this denominator.",
+        "- `expected_failure_handling_accuracy`: the unavailable-provider case remains evaluated separately.",
+        "- `read_only_enforcement`: provider-side SQL validation plus PostgreSQL read-only transaction probe.",
+        "",
+        "## Metrics",
+        "",
+    ]
     report.extend(f"- `{key}`: {value}" for key, value in metrics.items())
     report.extend(["", "## Failed cases", ""])
     report.extend(f"- `{item['id']}`: failed_layer=`{_failed_layer(item)}`" for item in failed)
@@ -131,6 +176,31 @@ async def run(args: argparse.Namespace) -> None:
 def _metric(predictions: list[dict[str, Any]], ids: set[str]) -> float | str:
     selected = [item for item in predictions if item["id"] in ids and item["passed"] is not None]
     return sum(item["passed"] is True for item in selected) / len(selected) if selected else "N/A"
+
+
+def _run_read_only_probe() -> dict[str, Any]:
+    command = [
+        "poetry",
+        "-C",
+        "apps/reference-mcp-server",
+        "run",
+        "python",
+        "../../ops/mcp_read_only_probe.py",
+    ]
+    try:
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = str(REPO_ROOT / "apps" / "reference-mcp-server" / "src")
+        completed = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            env=environment,
+        )
+        return json.loads(completed.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        return {"passed": False, "probe_error": type(exc).__name__}
 
 
 def _failed_layer(item: dict[str, Any]) -> str:

@@ -1,5 +1,7 @@
 from datetime import date
 
+import pytest
+
 from reference_mcp_server.discovery import build_catalog
 from reference_mcp_server.execution import (
     PhysicalQuery,
@@ -64,7 +66,7 @@ def test_translate_join_aggregate_is_parameterized_and_allowlisted() -> None:
     assert "LIMIT 10" in physical.sql
 
 
-def test_malformed_reference_and_write_like_physical_query_are_rejected_safely() -> None:
+def test_malformed_reference_is_rejected_safely() -> None:
     invalid = ConceptualQuery.model_construct(
         entities=["employee"], select=[QuerySelect(field="not-a-reference")], limit=1
     )
@@ -72,12 +74,26 @@ def test_malformed_reference_and_write_like_physical_query_are_rejected_safely()
     assert validation.valid is False
     assert "invalid field reference" in validation.errors[0]
 
-    try:
-        validate_physical_query(PhysicalQuery("UPDATE employee SET status = 'x'", (), []))
-    except QueryExecutionError as error:
-        assert error.code == "PHYSICAL_QUERY_INVALID"
-    else:
-        raise AssertionError("write SQL must be rejected")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO employee (employee_code) VALUES ('MUTATION')",
+        "UPDATE employee SET status = 'inactive'",
+        "DELETE FROM employee",
+        "DROP TABLE employee",
+        "ALTER TABLE employee ADD COLUMN unsafe text",
+        "CREATE TABLE unsafe (id integer)",
+        "TRUNCATE employee",
+        "SELECT 1; UPDATE employee SET status = 'inactive'",
+        "SELECT 1 /* bypass */; DELETE FROM employee",
+    ],
+)
+def test_physical_write_and_bypass_statements_are_rejected(statement: str) -> None:
+    with pytest.raises(QueryExecutionError, match="non-read-only") as exc_info:
+        validate_physical_query(PhysicalQuery(statement, (), []))
+    assert exc_info.value.code == "PHYSICAL_QUERY_INVALID"
 
 
 def test_validation_rejects_oversized_limit_and_restricted_scope() -> None:

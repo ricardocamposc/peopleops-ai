@@ -134,3 +134,10 @@ query results, normalized source failures, provider evidence and deterministic
 boundary metrics. It does not call REST discovery/query endpoints and does not
 persist observed values into the source dataset. Curated evidence belongs under
 `evaluation/baselines/mcp/regression-v1/` only after an explicit review.
+
+The handshake metric includes only cases where the MCP provider is expected to
+be available. The intentional source-unavailable case is evaluated separately
+as `expected_failure_handling_accuracy`. The baseline also runs a provider-side
+read-only probe covering write statements and verifies that the synthetic HRIS
+data remains unchanged. Schema independence remains `N/A` until a real second
+provider/schema is deployed.
