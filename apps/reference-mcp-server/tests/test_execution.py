@@ -66,6 +66,81 @@ def test_translate_join_aggregate_is_parameterized_and_allowlisted() -> None:
     assert "LIMIT 10" in physical.sql
 
 
+def test_aggregate_groups_all_selected_non_metric_fields() -> None:
+    query = ConceptualQuery(
+        entities=["department", "employee", "overtime"],
+        select=[
+            QuerySelect(field="department.id", alias="department_id"),
+            QuerySelect(field="department.name", alias="Department Name"),
+        ],
+        metrics=[QueryMetric(field="overtime.approved_minutes", function="sum", alias="Total Approved Overtime")],
+        relationships=["employee_department", "overtime_employee"],
+        dimensions=["department.name"],
+        order_by=[],
+        limit=10,
+    )
+    physical = translate_query(query, CATALOG)
+    assert '"Department Name"' in physical.sql
+    assert '"Total Approved Overtime"' in physical.sql
+    assert 'GROUP BY t0."id", t0."name"' in physical.sql
+
+
+def test_output_aliases_are_quoted_without_rejecting_valid_labels() -> None:
+    query = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.employee_code", alias="Employee code")],
+        metrics=[QueryMetric(field="employee.id", function="count", alias="Employee count")],
+        limit=10,
+    )
+    physical = translate_query(query, CATALOG)
+    assert 'AS "Employee code"' in physical.sql
+    assert 'AS "Employee count"' in physical.sql
+
+
+def test_duplicate_projection_labels_are_rejected_before_sql_execution() -> None:
+    query = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.id", alias="value")],
+        metrics=[QueryMetric(field="employee.id", function="count", alias="value")],
+        limit=10,
+    )
+    validation = validate_query(query, CATALOG, [])
+    assert validation.valid is False
+    assert "aliases must be unique" in validation.errors[0]
+
+
+def test_order_by_uses_generated_metric_label_when_alias_is_omitted() -> None:
+    query = ConceptualQuery(
+        entities=["employee"],
+        metrics=[QueryMetric(field="employee.id", function="count")],
+        order_by=[{"reference": "count_id", "direction": "desc"}],
+        limit=10,
+    )
+    physical = translate_query(query, CATALOG)
+    assert 'ORDER BY "count_id" DESC' in physical.sql
+
+
+def test_join_planner_defers_disconnected_relationships_until_reachable() -> None:
+    query = ConceptualQuery(
+        entities=["overtime", "department", "employee", "position"],
+        select=[QuerySelect(field="department.name", alias="Department Name")],
+        metrics=[QueryMetric(field="overtime.approved_minutes", function="sum", alias="Overtime")],
+        filters=[QueryFilter(field="overtime.status", operator="eq", value="approved")],
+        relationships=[
+            "overtime_employee",
+            "position_department",
+            "employee_department",
+            "employee_position",
+        ],
+        dimensions=["department.name"],
+        limit=10,
+    )
+    physical = translate_query(query, CATALOG)
+    assert 'JOIN "employee"' in physical.sql
+    assert 'JOIN "department"' in physical.sql
+    assert 'JOIN "position"' in physical.sql
+
+
 def test_malformed_reference_is_rejected_safely() -> None:
     invalid = ConceptualQuery.model_construct(
         entities=["employee"], select=[QuerySelect(field="not-a-reference")], limit=1

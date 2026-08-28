@@ -53,6 +53,11 @@ def validate_query(
         errors.append("entities must be unique")
     if len(set(query.relationships)) != len(query.relationships):
         errors.append("relationships must be unique")
+    projection_labels = [
+        item.alias or item.field.rsplit(".", 1)[-1] for item in query.select
+    ] + [metric.alias or metric.field or metric.function for metric in query.metrics]
+    if len(set(projection_labels)) != len(projection_labels):
+        errors.append("select and metric aliases must be unique")
     for relation_id in query.relationships:
         relation = relations.get(relation_id)
         if relation is None:
@@ -67,7 +72,7 @@ def validate_query(
     refs += [metric.field for metric in query.metrics if metric.field]
     refs += [item.field for item in query.filters]
     refs += [item.left for item in query.comparisons] + [item.right for item in query.comparisons]
-    metric_labels = {metric.alias or metric.field or metric.function for metric in query.metrics}
+    metric_labels = {_metric_label(metric) for metric in query.metrics}
     refs += [item.reference for item in query.order_by if item.reference not in metric_labels]
     refs += query.dimensions
     if query.time_scope:
@@ -166,21 +171,35 @@ def translate_query(query: ConceptualQuery, catalog: CatalogMetadata) -> Physica
     )
     joins: list[str] = []
     joined_entities = {query.entities[0]}
-    for relation_id in query.relationships:
-        relation = relations[relation_id]
-        joins.append(_join_sql(relation, entities, aliases, joined_entities))
+    pending_relationships = [relations[relation_id] for relation_id in query.relationships]
+    while pending_relationships:
+        progress = False
+        remaining: list[RelationshipMetadata] = []
+        for relation in pending_relationships:
+            join = _join_sql(relation, entities, aliases, joined_entities)
+            if join is None:
+                remaining.append(relation)
+                continue
+            if join:
+                joins.append(join)
+            progress = True
+        if not progress:
+            raise QueryExecutionError(
+                "QUERY_VALIDATION_ERROR", "relationships do not form a connected join path"
+            )
+        pending_relationships = remaining
     params: list[Any] = []
     projections: list[str] = []
     columns: list[str] = []
     for item in query.select:
         expression, label = _field_sql(item.field, entities, aliases)
         label = item.alias or label
-        projections.append(f"{expression} AS {_identifier(label)}")
+        projections.append(f"{expression} AS {_output_identifier(label)}")
         columns.append(label)
     for metric in query.metrics:
         expression, field_label = _metric_sql(metric, entities, aliases)
-        label = metric.alias or f"{metric.function}_{field_label}"
-        projections.append(f"{expression} AS {_identifier(label)}")
+        label = _metric_label(metric, field_label)
+        projections.append(f"{expression} AS {_output_identifier(label)}")
         columns.append(label)
     predicates: list[str] = []
     for item in query.filters:
@@ -191,9 +210,13 @@ def translate_query(query: ConceptualQuery, catalog: CatalogMetadata) -> Physica
         left, _ = _field_sql(comparison.left, entities, aliases)
         right, _ = _field_sql(comparison.right, entities, aliases)
         predicates.append(f"{left} {_comparison_operator(comparison.operator)} {right}")
-    group_refs = query.dimensions or [item.field for item in query.select]
-    if query.metrics and not query.dimensions:
-        group_refs = [item.field for item in query.select]
+    # Every non-aggregate projection must be grouped.  Dimensions are an
+    # additional grouping contract, not a replacement for selected fields.
+    # Omitting a selected field produces a valid-looking query that PostgreSQL
+    # correctly rejects with a GROUP BY error.
+    group_refs = list(dict.fromkeys(
+        [item.field for item in query.select] + list(query.dimensions)
+    ))
     group_by = (
         " GROUP BY " + ", ".join(_field_sql(ref, entities, aliases)[0] for ref in group_refs)
         if query.metrics and group_refs
@@ -317,6 +340,13 @@ def _identifier(value: str) -> str:
     return f'"{value}"'
 
 
+def _output_identifier(value: str) -> str:
+    """Quote a model-provided output label without treating it as SQL."""
+    if not value or len(value) > 128 or "\x00" in value:
+        raise QueryExecutionError("QUERY_VALIDATION_ERROR", "invalid output alias")
+    return '"' + value.replace('"', '""') + '"'
+
+
 def _field_sql(
     reference: str, entities: dict[str, EntityMetadata], aliases: dict[str, str]
 ) -> tuple[str, str]:
@@ -340,6 +370,14 @@ def _metric_sql(
     return f"{metric.function.upper()}({field_sql})", label
 
 
+def _metric_label(metric: QueryMetric, field_label: str | None = None) -> str:
+    if metric.alias:
+        return metric.alias
+    if metric.field:
+        return f"{metric.function}_{field_label or metric.field.rsplit('.', 1)[-1]}"
+    return "rows"
+
+
 def _filter_sql(
     item: Any, entities: dict[str, EntityMetadata], aliases: dict[str, str], params: list[Any]
 ) -> str:
@@ -360,7 +398,7 @@ def _join_sql(
     entities: dict[str, EntityMetadata],
     aliases: dict[str, str],
     joined_entities: set[str],
-) -> str:
+) -> str | None:
     parts = re.fullmatch(
         r"([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)",
         relation.physical_mapping,
@@ -373,6 +411,8 @@ def _join_sql(
         raise QueryExecutionError(
             "QUERY_VALIDATION_ERROR", "relationship mapping is outside selected entities"
         )
+    if relation.from_entity not in joined_entities and relation.to_entity not in joined_entities:
+        return None
     if relation.to_entity not in joined_entities:
         join_entity = relation.to_entity
     elif relation.from_entity not in joined_entities:
@@ -419,9 +459,9 @@ def _order_sql(
     aliases: dict[str, str],
 ) -> str:
     if any(
-        (metric.alias or metric.field or metric.function) == reference for metric in query.metrics
+        _metric_label(metric) == reference for metric in query.metrics
     ):
-        return _identifier(reference)
+        return _output_identifier(reference)
     return _field_sql(reference, entities, aliases)[0]
 
 
