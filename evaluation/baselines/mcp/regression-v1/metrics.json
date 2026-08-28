@@ -1,0 +1,2301 @@
+{
+  "cases": [
+    {
+      "checks": {
+        "catalog": true,
+        "required_entities": true
+      },
+      "expected": {
+        "catalog": true,
+        "required_entities": [
+          "employee",
+          "payroll",
+          "overtime"
+        ],
+        "status": "success"
+      },
+      "id": "discovery-001",
+      "observed": {
+        "catalog": {
+          "capabilities": [
+            {
+              "description": "Employee identity and employment structure.",
+              "entities": [
+                "employee",
+                "department",
+                "position"
+              ],
+              "name": "workforce",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Contracts and contract dates.",
+              "entities": [
+                "contract"
+              ],
+              "name": "employment",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Attendance records and incidents.",
+              "entities": [
+                "attendance",
+                "attendance_incident"
+              ],
+              "name": "attendance",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Approved overtime records.",
+              "entities": [
+                "overtime"
+              ],
+              "name": "overtime",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Vacation balances, vacation requests and leave.",
+              "entities": [
+                "vacation_balance",
+                "vacation_request",
+                "leave_request"
+              ],
+              "name": "time_off",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Payroll periods, totals and concepts.",
+              "entities": [
+                "payroll_period",
+                "payroll",
+                "payroll_concept",
+                "payroll_item"
+              ],
+              "name": "payroll",
+              "sensitivity": "restricted",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            }
+          ],
+          "catalog_version": "2026.08",
+          "entities": [
+            {
+              "business_name": "Employee",
+              "description": "Person employed by the organization.",
+              "entity_id": "employee",
+              "fields": [
+                {
+                  "business_name": "Employee record identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "employee.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee code",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Business identifier used to reference an employee.",
+                  "field_id": "employee_code",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.employee_code",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "First name",
+                  "data_type": "VARCHAR(80)",
+                  "description": "Employee given name.",
+                  "field_id": "first_name",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.first_name",
+                  "semantic_role": "dimension",
+                  "sensitivity": "confidential",
+                  "unit": null
+                },
+                {
+                  "business_name": "Last name",
+                  "data_type": "VARCHAR(80)",
+                  "description": "Employee family name.",
+                  "field_id": "last_name",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.last_name",
+                  "semantic_role": "dimension",
+                  "sensitivity": "confidential",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employment status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current employment status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Hire date",
+                  "data_type": "DATE",
+                  "description": "Date employment began.",
+                  "field_id": "hire_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.hire_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Department reference",
+                  "data_type": "INTEGER",
+                  "description": "Reference to the organizational department.",
+                  "field_id": "department_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.department_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Position reference",
+                  "data_type": "INTEGER",
+                  "description": "Reference to the employee position.",
+                  "field_id": "position_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee.position_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "employee",
+              "relationships": [
+                "employee_department",
+                "employee_position"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "hire_date"
+              ]
+            },
+            {
+              "business_name": "Department",
+              "description": "Organizational department and cost center.",
+              "entity_id": "department",
+              "fields": [
+                {
+                  "business_name": "Department identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "department.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Department code",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Business department code.",
+                  "field_id": "code",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "department.code",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Department name",
+                  "data_type": "VARCHAR(120)",
+                  "description": "Display name of the department.",
+                  "field_id": "name",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "department.name",
+                  "semantic_role": "dimension",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Cost center",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Financial cost center assigned to the department.",
+                  "field_id": "cost_center",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "department.cost_center",
+                  "semantic_role": "dimension",
+                  "sensitivity": "confidential",
+                  "unit": null
+                }
+              ],
+              "physical_source": "department",
+              "relationships": [],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": []
+            },
+            {
+              "business_name": "Position",
+              "description": "Organizational position held by an employee.",
+              "entity_id": "position",
+              "fields": [
+                {
+                  "business_name": "Position identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "position.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Position code",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Business position code.",
+                  "field_id": "code",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "position.code",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Position name",
+                  "data_type": "VARCHAR(120)",
+                  "description": "Display name of the position.",
+                  "field_id": "name",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "position.name",
+                  "semantic_role": "dimension",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Department reference",
+                  "data_type": "INTEGER",
+                  "description": "Owning department reference.",
+                  "field_id": "department_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "position.department_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "position",
+              "relationships": [
+                "position_department"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": []
+            },
+            {
+              "business_name": "Employment contract",
+              "description": "Contract terms and end dates for an employee.",
+              "entity_id": "contract",
+              "fields": [
+                {
+                  "business_name": "Contract identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "contract.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "contract.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Contract type",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Classification of the employment contract.",
+                  "field_id": "contract_type",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "contract.contract_type",
+                  "semantic_role": "dimension",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Start date",
+                  "data_type": "DATE",
+                  "description": "Contract effective start date.",
+                  "field_id": "start_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "contract.start_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "End date",
+                  "data_type": "DATE",
+                  "description": "Contractual end date, if applicable.",
+                  "field_id": "end_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": true,
+                  "physical_source": "contract.end_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Contract status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current contract status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "contract.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "contract",
+              "relationships": [
+                "contract_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "start_date",
+                "end_date"
+              ]
+            },
+            {
+              "business_name": "Attendance record",
+              "description": "Daily scheduled, worked and incident minutes.",
+              "entity_id": "attendance",
+              "fields": [
+                {
+                  "business_name": "Attendance record identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "attendance_record.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Work date",
+                  "data_type": "DATE",
+                  "description": "Date to which attendance applies.",
+                  "field_id": "work_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.work_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Attendance status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Daily attendance status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Scheduled minutes",
+                  "data_type": "INTEGER",
+                  "description": "Minutes scheduled for the work date.",
+                  "field_id": "scheduled_minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.scheduled_minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                },
+                {
+                  "business_name": "Worked minutes",
+                  "data_type": "INTEGER",
+                  "description": "Minutes worked on the work date.",
+                  "field_id": "worked_minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.worked_minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                },
+                {
+                  "business_name": "Late minutes",
+                  "data_type": "INTEGER",
+                  "description": "Minutes recorded as late.",
+                  "field_id": "late_minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.late_minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                },
+                {
+                  "business_name": "Absence minutes",
+                  "data_type": "INTEGER",
+                  "description": "Minutes recorded as absent.",
+                  "field_id": "absence_minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_record.absence_minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                }
+              ],
+              "physical_source": "attendance_record",
+              "relationships": [
+                "attendance_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "work_date"
+              ]
+            },
+            {
+              "business_name": "Attendance incident",
+              "description": "Recorded attendance incident for an employee.",
+              "entity_id": "attendance_incident",
+              "fields": [
+                {
+                  "business_name": "Incident identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Incident date",
+                  "data_type": "DATE",
+                  "description": "Date of the incident.",
+                  "field_id": "incident_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.incident_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Incident type",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Classification of the incident.",
+                  "field_id": "incident_type",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.incident_type",
+                  "semantic_role": "dimension",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Incident minutes",
+                  "data_type": "INTEGER",
+                  "description": "Minutes associated with the incident.",
+                  "field_id": "minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                },
+                {
+                  "business_name": "Incident status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current incident status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "attendance_incident.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "attendance_incident",
+              "relationships": [
+                "attendance_incident_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "incident_date"
+              ]
+            },
+            {
+              "business_name": "Overtime record",
+              "description": "Approved overtime worked by an employee.",
+              "entity_id": "overtime",
+              "fields": [
+                {
+                  "business_name": "Overtime record identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "overtime_record.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "overtime_record.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Overtime date",
+                  "data_type": "DATE",
+                  "description": "Date overtime was worked.",
+                  "field_id": "work_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "overtime_record.work_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Approved overtime",
+                  "data_type": "INTEGER",
+                  "description": "Approved overtime duration.",
+                  "field_id": "approved_minutes",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "overtime_record.approved_minutes",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "minutes"
+                },
+                {
+                  "business_name": "Overtime status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current approval or processing status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "overtime_record.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "overtime_record",
+              "relationships": [
+                "overtime_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "work_date"
+              ]
+            },
+            {
+              "business_name": "Vacation balance",
+              "description": "Annual earned, used and available vacation days.",
+              "entity_id": "vacation_balance",
+              "fields": [
+                {
+                  "business_name": "Balance identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Balance year",
+                  "data_type": "INTEGER",
+                  "description": "Calendar year of the balance.",
+                  "field_id": "period_year",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.period_year",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Earned vacation days",
+                  "data_type": "NUMERIC(6, 2)",
+                  "description": "Days earned in the balance period.",
+                  "field_id": "earned_days",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.earned_days",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "days"
+                },
+                {
+                  "business_name": "Used vacation days",
+                  "data_type": "NUMERIC(6, 2)",
+                  "description": "Days already used.",
+                  "field_id": "used_days",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.used_days",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "days"
+                },
+                {
+                  "business_name": "Scheduled vacation days",
+                  "data_type": "NUMERIC(6, 2)",
+                  "description": "Days reserved by approved or scheduled requests.",
+                  "field_id": "scheduled_days",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.scheduled_days",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "days"
+                },
+                {
+                  "business_name": "Available vacation days",
+                  "data_type": "NUMERIC(6, 2)",
+                  "description": "Days remaining after used and scheduled days.",
+                  "field_id": "available_days",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_balance.available_days",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "days"
+                }
+              ],
+              "physical_source": "vacation_balance",
+              "relationships": [
+                "vacation_balance_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": []
+            },
+            {
+              "business_name": "Vacation request",
+              "description": "Requested vacation period and approval status.",
+              "entity_id": "vacation_request",
+              "fields": [
+                {
+                  "business_name": "Vacation request identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "vacation_request.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Vacation start date",
+                  "data_type": "DATE",
+                  "description": "Requested period start.",
+                  "field_id": "start_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.start_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Vacation end date",
+                  "data_type": "DATE",
+                  "description": "Requested period end.",
+                  "field_id": "end_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.end_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Requested vacation days",
+                  "data_type": "NUMERIC(6, 2)",
+                  "description": "Number of requested days.",
+                  "field_id": "requested_days",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.requested_days",
+                  "semantic_role": "quantity",
+                  "sensitivity": "internal",
+                  "unit": "days"
+                },
+                {
+                  "business_name": "Vacation request status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current request status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Request creation time",
+                  "data_type": "TIMESTAMP",
+                  "description": "Time the request was created.",
+                  "field_id": "created_at",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "vacation_request.created_at",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "vacation_request",
+              "relationships": [
+                "vacation_request_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "start_date",
+                "end_date",
+                "created_at"
+              ]
+            },
+            {
+              "business_name": "Leave request",
+              "description": "Leave period, type and status for an employee.",
+              "entity_id": "leave_request",
+              "fields": [
+                {
+                  "business_name": "Leave request identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "leave_request.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "leave_request.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Leave type",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Classification of leave.",
+                  "field_id": "leave_type",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "leave_request.leave_type",
+                  "semantic_role": "dimension",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Leave start date",
+                  "data_type": "DATE",
+                  "description": "Leave period start.",
+                  "field_id": "start_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "leave_request.start_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Leave end date",
+                  "data_type": "DATE",
+                  "description": "Leave period end.",
+                  "field_id": "end_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "leave_request.end_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Leave status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current leave request status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "leave_request.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "leave_request",
+              "relationships": [
+                "leave_request_employee"
+              ],
+              "sensitivity": "internal",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "start_date",
+                "end_date"
+              ]
+            },
+            {
+              "business_name": "Payroll period",
+              "description": "Period and payment date for a payroll run.",
+              "entity_id": "payroll_period",
+              "fields": [
+                {
+                  "business_name": "Payroll period identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "payroll_period.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payroll period code",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Business payroll period code.",
+                  "field_id": "code",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_period.code",
+                  "semantic_role": "identifier",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Period start date",
+                  "data_type": "DATE",
+                  "description": "Payroll coverage start.",
+                  "field_id": "start_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_period.start_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Period end date",
+                  "data_type": "DATE",
+                  "description": "Payroll coverage end.",
+                  "field_id": "end_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_period.end_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payment date",
+                  "data_type": "DATE",
+                  "description": "Date payroll is paid.",
+                  "field_id": "payment_date",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_period.payment_date",
+                  "semantic_role": "date",
+                  "sensitivity": "internal",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payroll period status",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Current processing status.",
+                  "field_id": "status",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_period.status",
+                  "semantic_role": "status",
+                  "sensitivity": "internal",
+                  "unit": null
+                }
+              ],
+              "physical_source": "payroll_period",
+              "relationships": [],
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": [
+                "start_date",
+                "end_date",
+                "payment_date"
+              ]
+            },
+            {
+              "business_name": "Employee payroll",
+              "description": "Employee payroll totals for a payroll period.",
+              "entity_id": "payroll",
+              "fields": [
+                {
+                  "business_name": "Payroll record identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Employee reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee.",
+                  "field_id": "employee_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.employee_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payroll period reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced payroll period.",
+                  "field_id": "payroll_period_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.payroll_period_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Gross pay",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Gross payroll amount before deductions.",
+                  "field_id": "gross_amount",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.gross_amount",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Deductions",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Total deductions from gross pay.",
+                  "field_id": "deduction_amount",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.deduction_amount",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Net pay",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Amount paid after deductions.",
+                  "field_id": "net_amount",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.net_amount",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Employer cost",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Total employer cost for the payroll record.",
+                  "field_id": "employer_cost",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.employer_cost",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Payroll cost center",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Cost center charged for payroll.",
+                  "field_id": "cost_center",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "employee_payroll.cost_center",
+                  "semantic_role": "dimension",
+                  "sensitivity": "restricted",
+                  "unit": null
+                }
+              ],
+              "physical_source": "employee_payroll",
+              "relationships": [
+                "payroll_employee",
+                "payroll_period"
+              ],
+              "sensitivity": "restricted",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": []
+            },
+            {
+              "business_name": "Payroll concept",
+              "description": "Definition of a payroll earning or deduction concept.",
+              "entity_id": "payroll_concept",
+              "fields": [
+                {
+                  "business_name": "Concept identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "payroll_concept.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Concept code",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Business payroll concept code.",
+                  "field_id": "code",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_concept.code",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Concept name",
+                  "data_type": "VARCHAR(120)",
+                  "description": "Display name of the concept.",
+                  "field_id": "name",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_concept.name",
+                  "semantic_role": "dimension",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Concept type",
+                  "data_type": "VARCHAR(32)",
+                  "description": "Earning or deduction classification.",
+                  "field_id": "concept_type",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_concept.concept_type",
+                  "semantic_role": "dimension",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Taxable flag",
+                  "data_type": "BOOLEAN",
+                  "description": "Whether the concept is taxable.",
+                  "field_id": "taxable",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_concept.taxable",
+                  "semantic_role": "status",
+                  "sensitivity": "restricted",
+                  "unit": null
+                }
+              ],
+              "physical_source": "payroll_concept",
+              "relationships": [],
+              "sensitivity": "restricted",
+              "supported_operations": [
+                "read"
+              ],
+              "temporal_fields": []
+            },
+            {
+              "business_name": "Payroll item",
+              "description": "Payroll concept amount included in an employee payroll record.",
+              "entity_id": "payroll_item",
+              "fields": [
+                {
+                  "business_name": "Payroll item identifier",
+                  "data_type": "INTEGER",
+                  "description": "Stable source identifier.",
+                  "field_id": "id",
+                  "is_foreign_key": false,
+                  "is_primary_key": true,
+                  "nullable": false,
+                  "physical_source": "payroll_item.id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payroll record reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced employee payroll record.",
+                  "field_id": "employee_payroll_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_item.employee_payroll_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Payroll concept reference",
+                  "data_type": "INTEGER",
+                  "description": "Referenced payroll concept.",
+                  "field_id": "payroll_concept_id",
+                  "is_foreign_key": true,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_item.payroll_concept_id",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Concept quantity",
+                  "data_type": "NUMERIC(10, 2)",
+                  "description": "Quantity associated with the concept.",
+                  "field_id": "quantity",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_item.quantity",
+                  "semantic_role": "quantity",
+                  "sensitivity": "restricted",
+                  "unit": null
+                },
+                {
+                  "business_name": "Concept rate",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Rate applied to the concept quantity.",
+                  "field_id": "rate",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_item.rate",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Concept amount",
+                  "data_type": "NUMERIC(12, 2)",
+                  "description": "Calculated amount for the concept.",
+                  "field_id": "amount",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": false,
+                  "physical_source": "payroll_item.amount",
+                  "semantic_role": "amount",
+                  "sensitivity": "restricted",
+                  "unit": "currency"
+                },
+                {
+                  "business_name": "Source reference",
+                  "data_type": "VARCHAR(64)",
+                  "description": "Reference supplied by the payroll source.",
+                  "field_id": "source_reference",
+                  "is_foreign_key": false,
+                  "is_primary_key": false,
+                  "nullable": true,
+                  "physical_source": "payroll_item.source_reference",
+                  "semantic_role": "identifier",
+                  "sensitivity": "restricted",
+                  "unit": null
+                }
+              ],
+              "physical_source": "payroll_item",
+              "relationships": [
+                "payroll_item_payroll",
+                "payroll_item_concept"
+              ],
+              "sensitivity": "restricted",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ],
+              "temporal_fields": []
+            }
+          ],
+          "fingerprint": "9faaaffa6f9cf8f216482b0c48f2bf483688c7e66f6017b80f8a01852263df24",
+          "physical_tables": [
+            {
+              "columns": [
+                "id",
+                "employee_code",
+                "first_name",
+                "last_name",
+                "status",
+                "hire_date",
+                "department_id",
+                "position_id"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "employee_code"
+                  ],
+                  "name": "employee_employee_code_key",
+                  "unique": true
+                }
+              ],
+              "name": "employee"
+            },
+            {
+              "columns": [
+                "id",
+                "code",
+                "name",
+                "cost_center"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "code"
+                  ],
+                  "name": "department_code_key",
+                  "unique": true
+                }
+              ],
+              "name": "department"
+            },
+            {
+              "columns": [
+                "id",
+                "code",
+                "name",
+                "department_id"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "code"
+                  ],
+                  "name": "position_code_key",
+                  "unique": true
+                }
+              ],
+              "name": "position"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "contract_type",
+                "start_date",
+                "end_date",
+                "status"
+              ],
+              "indexes": [],
+              "name": "contract"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "work_date",
+                "status",
+                "scheduled_minutes",
+                "worked_minutes",
+                "late_minutes",
+                "absence_minutes"
+              ],
+              "indexes": [],
+              "name": "attendance_record"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "incident_date",
+                "incident_type",
+                "minutes",
+                "status"
+              ],
+              "indexes": [],
+              "name": "attendance_incident"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "work_date",
+                "approved_minutes",
+                "status"
+              ],
+              "indexes": [],
+              "name": "overtime_record"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "period_year",
+                "earned_days",
+                "used_days",
+                "scheduled_days",
+                "available_days"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "employee_id",
+                    "period_year"
+                  ],
+                  "name": "uq_vacation_balance_period",
+                  "unique": true
+                }
+              ],
+              "name": "vacation_balance"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "start_date",
+                "end_date",
+                "requested_days",
+                "status",
+                "created_at"
+              ],
+              "indexes": [],
+              "name": "vacation_request"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "leave_type",
+                "start_date",
+                "end_date",
+                "status"
+              ],
+              "indexes": [],
+              "name": "leave_request"
+            },
+            {
+              "columns": [
+                "id",
+                "code",
+                "start_date",
+                "end_date",
+                "payment_date",
+                "status"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "code"
+                  ],
+                  "name": "payroll_period_code_key",
+                  "unique": true
+                }
+              ],
+              "name": "payroll_period"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_id",
+                "payroll_period_id",
+                "gross_amount",
+                "deduction_amount",
+                "net_amount",
+                "employer_cost",
+                "cost_center"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "employee_id",
+                    "payroll_period_id"
+                  ],
+                  "name": "uq_employee_payroll_period",
+                  "unique": true
+                }
+              ],
+              "name": "employee_payroll"
+            },
+            {
+              "columns": [
+                "id",
+                "code",
+                "name",
+                "concept_type",
+                "taxable"
+              ],
+              "indexes": [
+                {
+                  "columns": [
+                    "code"
+                  ],
+                  "name": "payroll_concept_code_key",
+                  "unique": true
+                }
+              ],
+              "name": "payroll_concept"
+            },
+            {
+              "columns": [
+                "id",
+                "employee_payroll_id",
+                "payroll_concept_id",
+                "quantity",
+                "rate",
+                "amount",
+                "source_reference"
+              ],
+              "indexes": [],
+              "name": "payroll_item"
+            }
+          ],
+          "provider_type": "reference_synthetic_hris",
+          "relationships": [
+            {
+              "from_entity": "employee",
+              "join_semantics": "Employee belongs to one department.",
+              "physical_mapping": "employee.department_id = department.id",
+              "relationship_id": "employee_department",
+              "relationship_type": "many_to_one",
+              "to_entity": "department"
+            },
+            {
+              "from_entity": "employee",
+              "join_semantics": "Employee holds one position.",
+              "physical_mapping": "employee.position_id = position.id",
+              "relationship_id": "employee_position",
+              "relationship_type": "many_to_one",
+              "to_entity": "position"
+            },
+            {
+              "from_entity": "position",
+              "join_semantics": "Position belongs to one department.",
+              "physical_mapping": "position.department_id = department.id",
+              "relationship_id": "position_department",
+              "relationship_type": "many_to_one",
+              "to_entity": "department"
+            },
+            {
+              "from_entity": "contract",
+              "join_semantics": "Contract belongs to one employee.",
+              "physical_mapping": "contract.employee_id = employee.id",
+              "relationship_id": "contract_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "attendance",
+              "join_semantics": "Attendance belongs to one employee.",
+              "physical_mapping": "attendance_record.employee_id = employee.id",
+              "relationship_id": "attendance_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "attendance_incident",
+              "join_semantics": "Incident belongs to one employee.",
+              "physical_mapping": "attendance_incident.employee_id = employee.id",
+              "relationship_id": "attendance_incident_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "overtime",
+              "join_semantics": "Overtime belongs to one employee.",
+              "physical_mapping": "overtime_record.employee_id = employee.id",
+              "relationship_id": "overtime_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "vacation_balance",
+              "join_semantics": "Balance belongs to one employee.",
+              "physical_mapping": "vacation_balance.employee_id = employee.id",
+              "relationship_id": "vacation_balance_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "vacation_request",
+              "join_semantics": "Request belongs to one employee.",
+              "physical_mapping": "vacation_request.employee_id = employee.id",
+              "relationship_id": "vacation_request_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "leave_request",
+              "join_semantics": "Leave belongs to one employee.",
+              "physical_mapping": "leave_request.employee_id = employee.id",
+              "relationship_id": "leave_request_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "payroll",
+              "join_semantics": "Payroll belongs to one employee.",
+              "physical_mapping": "employee_payroll.employee_id = employee.id",
+              "relationship_id": "payroll_employee",
+              "relationship_type": "many_to_one",
+              "to_entity": "employee"
+            },
+            {
+              "from_entity": "payroll",
+              "join_semantics": "Payroll belongs to one period.",
+              "physical_mapping": "employee_payroll.payroll_period_id = payroll_period.id",
+              "relationship_id": "payroll_period",
+              "relationship_type": "many_to_one",
+              "to_entity": "payroll_period"
+            },
+            {
+              "from_entity": "payroll_item",
+              "join_semantics": "Item belongs to one payroll record.",
+              "physical_mapping": "payroll_item.employee_payroll_id = employee_payroll.id",
+              "relationship_id": "payroll_item_payroll",
+              "relationship_type": "many_to_one",
+              "to_entity": "payroll"
+            },
+            {
+              "from_entity": "payroll_item",
+              "join_semantics": "Item uses one payroll concept.",
+              "physical_mapping": "payroll_item.payroll_concept_id = payroll_concept.id",
+              "relationship_id": "payroll_item_concept",
+              "relationship_type": "many_to_one",
+              "to_entity": "payroll_concept"
+            }
+          ]
+        },
+        "protocol_version": "2026-07-28",
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success"
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "capabilities": true
+      },
+      "expected": {
+        "required_capabilities": [
+          "workforce",
+          "payroll"
+        ],
+        "status": "success"
+      },
+      "id": "capabilities-001",
+      "observed": {
+        "capabilities": {
+          "result": [
+            {
+              "description": "Employee identity and employment structure.",
+              "entities": [
+                "employee",
+                "department",
+                "position"
+              ],
+              "name": "workforce",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Contracts and contract dates.",
+              "entities": [
+                "contract"
+              ],
+              "name": "employment",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Attendance records and incidents.",
+              "entities": [
+                "attendance",
+                "attendance_incident"
+              ],
+              "name": "attendance",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Approved overtime records.",
+              "entities": [
+                "overtime"
+              ],
+              "name": "overtime",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Vacation balances, vacation requests and leave.",
+              "entities": [
+                "vacation_balance",
+                "vacation_request",
+                "leave_request"
+              ],
+              "name": "time_off",
+              "sensitivity": "confidential",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            },
+            {
+              "description": "Payroll periods, totals and concepts.",
+              "entities": [
+                "payroll_period",
+                "payroll",
+                "payroll_concept",
+                "payroll_item"
+              ],
+              "name": "payroll",
+              "sensitivity": "restricted",
+              "supported_operations": [
+                "read",
+                "aggregate"
+              ]
+            }
+          ]
+        },
+        "protocol_version": "2026-07-28",
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success"
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": true
+      },
+      "id": "valid-query-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [],
+          "query_hash": "27fd0e37ab9211362d210e3ccd59453c2e9447b01702b887bd71e2185d3a90c3",
+          "request_id": "mcp-eval-valid-query-001",
+          "valid": true,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": false
+      },
+      "id": "invalid-entity-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [
+            "unknown entity: unknown_entity",
+            "reference is not in selected entities: unknown_entity.id"
+          ],
+          "query_hash": "3c742fe27ee215eaaac81f0a7a80f88f27e6e19edc3ccfea43d91aa063b9e0ba",
+          "request_id": "mcp-eval-invalid-entity-001",
+          "valid": false,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": false
+      },
+      "id": "invalid-field-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [
+            "unknown field: employee.unknown_field"
+          ],
+          "query_hash": "aba586d2162a9cc35ce6947974b3360e5815b7deee8b40d8b2f5c2e3fcd49a15",
+          "request_id": "mcp-eval-invalid-field-001",
+          "valid": false,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": true
+      },
+      "id": "relationship-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [],
+          "query_hash": "7a51c5aebd548ec4b7daf7303d9274ed7aa8399e745a1ff461e6c04b5cc23953",
+          "request_id": "mcp-eval-relationship-001",
+          "valid": true,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": true
+      },
+      "id": "aggregation-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [],
+          "query_hash": "9aee8a0e900c6652d81596c347572d320a8deb59b5f86924e48c25f2165c491c",
+          "request_id": "mcp-eval-aggregation-001",
+          "valid": true,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "valid": true
+      },
+      "expected": {
+        "status": "success",
+        "valid": true
+      },
+      "id": "time-filter-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [],
+          "query_hash": "9a1e784c411332b00fae7fee5e5e277db9c826fe13330089ca6ddf492fd6f1ac",
+          "request_id": "mcp-eval-time-filter-001",
+          "valid": true,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "error_contains": true,
+        "valid": true
+      },
+      "expected": {
+        "error_contains": "hr:payroll",
+        "status": "success",
+        "valid": false
+      },
+      "id": "authorization-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "catalog_version": "2026.08",
+          "errors": [
+            "authorization scope hr:payroll is required for restricted data"
+          ],
+          "query_hash": "660a7e710019c5451913e6cd1b23a7ef29935c9b99d6fe307c15050b1257a215",
+          "request_id": "mcp-eval-authorization-001",
+          "valid": false,
+          "warnings": []
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "row_count": true,
+        "valid": true
+      },
+      "expected": {
+        "row_count": 0,
+        "status": "success",
+        "valid": true
+      },
+      "id": "zero-rows-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "result": {
+          "columns": [
+            "employee_code"
+          ],
+          "evidence": {
+            "catalog_version": "2026.08",
+            "entities": [
+              "employee"
+            ],
+            "fields": [
+              "employee.employee_code"
+            ],
+            "metrics": [],
+            "provider": "reference_synthetic_hris",
+            "query_hash": "635184b493375cd78e8ecfe76c1b6d45fc8a7c35cb99ee6918ff4b330f2a0ee3",
+            "request_id": "mcp-eval-zero-rows-001",
+            "result_reference": "mcp://reference_synthetic_hris/query/635184b493375cd78e8ecfe76c1b6d45fc8a7c35cb99ee6918ff4b330f2a0ee3",
+            "row_count": 0,
+            "time_scope": null
+          },
+          "request_id": "mcp-eval-zero-rows-001",
+          "rows": [],
+          "validation": {
+            "catalog_version": "2026.08",
+            "errors": [],
+            "query_hash": "635184b493375cd78e8ecfe76c1b6d45fc8a7c35cb99ee6918ff4b330f2a0ee3",
+            "request_id": "mcp-eval-zero-rows-001",
+            "valid": true,
+            "warnings": []
+          }
+        },
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "success",
+        "tool_error": false
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "status": true
+      },
+      "expected": {
+        "status": "source_unavailable"
+      },
+      "id": "source-unavailable-001",
+      "observed": {
+        "error_type": "ExceptionGroup",
+        "status": "source_unavailable"
+      },
+      "passed": true
+    },
+    {
+      "checks": {
+        "schema_independence": null
+      },
+      "expected": {
+        "same_provider_contract": true,
+        "status": "success"
+      },
+      "id": "schema-independence-001",
+      "observed": {
+        "protocol_version": "2026-07-28",
+        "server_info": {
+          "description": null,
+          "icons": null,
+          "name": "reference-mcp-server",
+          "title": "Reference MCP Server",
+          "version": "0.1.0",
+          "website_url": null
+        },
+        "status": "not_applicable"
+      },
+      "passed": null
+    }
+  ],
+  "summary": {
+    "capability_discovery_success_rate": 1.0,
+    "error_normalization_accuracy": 1.0,
+    "execution_success_rate": 1.0,
+    "handshake_success_rate": 0.9166666666666666,
+    "provider_evidence_validity": 1.0,
+    "query_validation_accuracy": 1.0,
+    "read_only_enforcement": "N/A",
+    "schema_independence_accuracy": "N/A"
+  }
+}

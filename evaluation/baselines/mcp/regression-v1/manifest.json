@@ -1,0 +1,20 @@
+{
+  "alternate_url": "",
+  "artifact_contract": [
+    "manifest.json",
+    "dataset.jsonl",
+    "predictions.jsonl",
+    "evidence.jsonl",
+    "metrics.json",
+    "report.md"
+  ],
+  "base_url": "http://127.0.0.1:8001",
+  "case_count": 12,
+  "dataset": "/Users/ricardocamposc/Projects/peopleops-ai/evaluation/cases/mcp_boundary_v1.jsonl",
+  "execution": "real_mcp_boundary",
+  "git_commit": "da3c28db71aa9d9671283cd6336b55b8cf15f329",
+  "mcp_sdk": "mcp 2.1.1",
+  "run_id": "mcp-final-20260828-v2",
+  "timestamp": "2026-08-28T20:19:44.939831+00:00",
+  "transport": "streamable_http"
+}
