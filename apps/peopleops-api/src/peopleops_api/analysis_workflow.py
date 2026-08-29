@@ -1066,7 +1066,11 @@ class AnalysisWorkflow:
 
     @staticmethod
     def _after_understanding(state: AnalysisState) -> str:
-        return "discover" if state["semantic_request"].requires_structured_data else "plan"
+        semantic = state["semantic_request"]
+        structured_temporal_request = (
+            not semantic.requires_policy and semantic.temporal_intent is not None
+        )
+        return "discover" if semantic.requires_structured_data or structured_temporal_request else "plan"
 
     @staticmethod
     def _after_planning(state: AnalysisState) -> str:
@@ -1123,6 +1127,13 @@ class AnalysisWorkflow:
         elif not semantic.requires_policy and semantic.entities:
             # Entity-bearing non-policy questions are data questions even when
             # the provider omits both the capability list and routing flag.
+            semantic.requires_structured_data = True
+        elif not semantic.requires_policy and semantic.temporal_intent is not None:
+            # A resolved temporal intent is itself evidence that the question
+            # targets a temporal HRIS fact.  Do not let an incomplete model
+            # classification bypass discovery/planning and silently become an
+            # insufficient-data answer.  This is a routing invariant, not a
+            # language- or domain-specific keyword rule.
             semantic.requires_structured_data = True
         if request_metadata.get("evaluation_policy_only") is True:
             # Re-assert the caller scope after model-derived routing rules.

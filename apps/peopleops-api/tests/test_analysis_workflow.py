@@ -707,6 +707,19 @@ def test_catalog_preflight_accepts_only_discovered_qualified_fields():
     assert any("UNQUALIFIED_FIELD" in error for error in _catalog_conceptual_validation_errors(unqualified, catalog))
 
 
+def test_temporal_non_policy_request_routes_to_structured_workflow():
+    semantic = SemanticRequest(
+        goal="Retrieve overtime for the requested period",
+        temporal_intent={"kind": "explicit_month_year", "month": 1, "year": 2026},
+        required_capabilities=[],
+        entities=[],
+        requires_structured_data=False,
+        requires_policy=False,
+    )
+
+    assert AnalysisWorkflow._after_understanding({"semantic_request": semantic}) == "discover"
+
+
 def test_catalog_grounding_rejects_noncanonical_semantic_identifiers():
     from reference_mcp_server.discovery import build_catalog
 
