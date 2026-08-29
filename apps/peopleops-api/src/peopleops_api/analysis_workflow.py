@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from time import monotonic
@@ -717,17 +718,7 @@ class AnalysisWorkflow:
             semantic.requires_structured_data = False
             semantic.required_capabilities = []
             semantic.policy_filters = type(semantic.policy_filters)()
-        trace = state.get("evaluation_trace")
-        if trace is not None:
-            requires_payroll = "payroll" in semantic.required_capabilities
-            trace["authorization"] = {
-                "required": requires_payroll,
-                "granted": not requires_payroll or self.security.allows_payroll(),
-                "decision": "denied" if requires_payroll and not self.security.allows_payroll() else "granted",
-                "scope_present": self.security.allows_payroll(),
-            }
-            state["interaction"].evaluation_trace = trace
-            self.session.commit()
+        trace = deepcopy(state.get("evaluation_trace"))
         # A policy-only request must not be routed through the HRIS planner.
         # This avoids inventing structured entities for questions whose source
         # of truth is the policy corpus.
@@ -747,8 +738,6 @@ class AnalysisWorkflow:
             semantic.requires_structured_data = False
             semantic.required_capabilities = []
             semantic.policy_filters = type(semantic.policy_filters)()
-        if "payroll" in semantic.required_capabilities and not self.security.allows_payroll():
-            raise AuthorizationError("payroll access requires the hr:payroll scope")
         catalog = None
         if semantic.requires_structured_data and not semantic.requires_policy:
             catalog = self.gateway.discover_catalog(
@@ -770,6 +759,18 @@ class AnalysisWorkflow:
                 assert isinstance(semantic, SemanticRequest)
                 if semantic.required_capabilities:
                     semantic.requires_structured_data = True
+        if trace is not None:
+            requires_payroll = "payroll" in semantic.required_capabilities
+            trace["authorization"] = {
+                "required": requires_payroll,
+                "granted": not requires_payroll or self.security.allows_payroll(),
+                "decision": "denied" if requires_payroll and not self.security.allows_payroll() else "granted",
+                "scope_present": self.security.allows_payroll(),
+            }
+            state["interaction"].evaluation_trace = trace
+            self.session.commit()
+        if "payroll" in semantic.required_capabilities and not self.security.allows_payroll():
+            raise AuthorizationError("payroll access requires the hr:payroll scope")
         interaction = state["interaction"]
         self._stage(
             state,
@@ -781,6 +782,8 @@ class AnalysisWorkflow:
             },
         )
         result: dict[str, Any] = {"semantic_request": semantic, "interaction": interaction}
+        if trace is not None:
+            result["evaluation_trace"] = trace
         if catalog is not None:
             result["catalog"] = catalog
         return result
@@ -801,7 +804,11 @@ class AnalysisWorkflow:
                 "provider_catalog_version": catalog.catalog_version,
             },
         )
-        return {"catalog": catalog, "interaction": state["interaction"]}
+        return {
+            "catalog": catalog,
+            "interaction": state["interaction"],
+            "evaluation_trace": deepcopy(state.get("evaluation_trace")),
+        }
 
     def _plan_queries(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "planning", "running")
@@ -818,7 +825,12 @@ class AnalysisWorkflow:
             self._stage(
                 state, "planning", "completed", snapshots={"query_plan": plan.model_dump(mode="json")}
             )
-            return {"plan": plan, "interaction": state["interaction"], "query_errors": []}
+            return {
+                "plan": plan,
+                "interaction": state["interaction"],
+                "query_errors": [],
+                "evaluation_trace": deepcopy(state.get("evaluation_trace")),
+            }
         feedback = "; ".join(state.get("query_errors", []))
         catalog = state.get("catalog")
         plan = self.model.parse(
@@ -841,25 +853,36 @@ class AnalysisWorkflow:
         self._stage(
             state, "planning", "completed", snapshots={"query_plan": plan.model_dump(mode="json")}
         )
-        if state.get("evaluation_trace") is not None:
-            attempts = state["evaluation_trace"].setdefault("planning_attempts", [])
+        trace = deepcopy(state.get("evaluation_trace"))
+        if trace is not None:
+            attempts = trace.setdefault("planning_attempts", [])
+            trace["replan_count"] = max(state.get("replan_count", 0), len(attempts)) - 1
             attempts.append({
                 "attempt_number": len(attempts) + 1,
-                "conceptual_queries": [item.query.model_dump(mode="json") for item in plan.queries],
+                "conceptual_queries": [
+                    {"query_index": index, "logical_query_role": _logical_query_role(item.purpose), "query": item.query.model_dump(mode="json")}
+                    for index, item in enumerate(plan.queries)
+                ],
                 "provider_feedback": list(state.get("query_errors", [])),
             })
-            state["interaction"].evaluation_trace = state["evaluation_trace"]
+            state["interaction"].evaluation_trace = trace
             self.session.commit()
-        return {"plan": plan, "interaction": state["interaction"], "query_errors": []}
+        return {
+            "plan": plan,
+            "interaction": state["interaction"],
+            "query_errors": [],
+            "evaluation_trace": trace,
+        }
 
     def _execute_queries(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "query_execution", "running")
         results: list[tuple[Any, QueryResult]] = []
         errors: list[str] = []
-        trace = state.get("evaluation_trace")
-        for planned in state["plan"].queries:
+        trace = deepcopy(state.get("evaluation_trace"))
+        attempt_number = len((trace or {}).get("planning_attempts") or []) or 1
+        for query_index, planned in enumerate(state["plan"].queries):
             query_dump = planned.query.model_dump(mode="json")
-            validation_record = {"query": query_dump, "attempted": True, "accepted": False, "errors": []}
+            validation_record = {"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "accepted": False, "errors": []}
             try:
                 validation = self.gateway.validate_query(
                     planned.query,
@@ -891,16 +914,20 @@ class AnalysisWorkflow:
                 )
             except MCPClientError as exc:
                 if trace is not None:
-                    trace.setdefault("provider_executions", []).append({"query": query_dump, "attempted": True, "success": False, "error_code": exc.code, "error": self._safe_error(exc)})
+                    trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "success": False, "error_code": exc.code, "error": self._safe_error(exc)})
                 if _is_replannable_provider_error(exc):
                     errors.append(self._safe_error(exc))
                     continue
                 raise
             results.append((planned, result))
             if trace is not None:
-                trace.setdefault("provider_executions", []).append({"query": query_dump, "attempted": True, "success": True, "result_verification_status": _verify_structured_result(result).get("status"), "row_count": len(result.rows)})
+                trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "success": True, "result_verification_status": _verify_structured_result(result).get("status"), "row_count": len(result.rows)})
+        next_replan_count = state.get("replan_count", 0)
         if trace is not None:
-            trace["replan_count"] = state.get("replan_count", 0)
+            trace["replan_count"] = max(
+                next_replan_count,
+                max(0, len(trace.get("planning_attempts", [])) - 1),
+            )
             trace["final_validation_status"] = "rejected" if errors else "accepted"
             state["interaction"].evaluation_trace = trace
         if errors:
@@ -915,8 +942,9 @@ class AnalysisWorkflow:
         return {
             "results": results,
             "query_errors": errors,
-            "replan_count": state.get("replan_count", 0),
+            "replan_count": next_replan_count,
             "interaction": state["interaction"],
+            "evaluation_trace": trace,
         }
 
     def _after_execution(self, state: AnalysisState) -> str:
@@ -1241,6 +1269,16 @@ def _assert_supported_numbers(
                 and number not in requested_numbers
             ):
                 raise OpenAIModelError("structured response contained an unsupported numeric claim")
+
+
+def _logical_query_role(purpose: str) -> str | None:
+    """Return a structural comparison role without inspecting user wording."""
+    normalized = purpose.casefold()
+    if "current" in normalized:
+        return "current"
+    if "previous" in normalized:
+        return "previous"
+    return None
 
 
 def _policy_filters(values: dict[str, Any] | PolicyFilterContract) -> Any:

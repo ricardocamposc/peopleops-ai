@@ -316,9 +316,11 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
         "unnecessary_query_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
         "replan_success_rate": _metric(records, "replan_success"),
     }
+    validated_code_sha = _git_commit()
     manifest = {
         "run_id": run_id,
-        "git_commit": _git_commit(),
+        "git_commit": validated_code_sha,
+        "validated_code_sha": validated_code_sha,
         "timestamp": datetime.now(UTC).isoformat(),
         "dataset": str(dataset.resolve().relative_to(ROOT)),
         "dataset_case_count": len(cases),
@@ -330,8 +332,8 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
         "mcp_server": "reference-mcp-server",
         "catalog_version": "captured per response",
         "max_replans": int(os.getenv("MAX_REPLANS", "1")),
-        "max_planning_attempts": 2,
-        "max_execution_attempts": 2,
+        "max_planning_attempts": int(os.getenv("MAX_REPLANS", "1")) + 1,
+        "max_execution_attempts": int(os.getenv("MAX_REPLANS", "1")) + 1,
         "artifact_contract": ["manifest.json", "dataset.jsonl", "predictions.jsonl", "evidence.jsonl", "metrics.json", "report.md"],
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

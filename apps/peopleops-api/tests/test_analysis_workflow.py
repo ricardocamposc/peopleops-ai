@@ -5,7 +5,7 @@ from uuid import uuid4
 from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
 from peopleops_api.analysis_workflow import AnalysisWorkflow, _complete_plan_relationship_entities
 from peopleops_api.mcp_contracts import SecurityContext
-from peopleops_api.models import AnalysisInteraction
+from peopleops_api.models import AnalysisInteraction, Conversation
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QuerySelect, QueryValidation
 from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrievalStatus
 
@@ -71,9 +71,15 @@ class FakePolicyProvider:
         return self.result
 
 
-def _interaction():
+def _interaction(*, question="Which employees are active?", evaluation=True):
+    conversation = (
+        Conversation(metadata_={"evaluation_structured_hr": True}) if evaluation else None
+    )
     return AnalysisInteraction(
-        request_id=uuid4(), question="Which employees are active?", stage_history=[]
+        request_id=uuid4(),
+        question=question,
+        stage_history=[],
+        conversation=conversation,
     )
 
 
@@ -144,6 +150,174 @@ def test_workflow_uses_typed_model_gateway_and_persists_observable_stages(db_ses
         "synthesis",
     }
     assert "chain" not in str(result.response).lower()
+
+
+def test_evaluation_trace_correlates_happy_path_plan_validation_and_execution(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    trace = result.evaluation_trace
+    assert len(trace["planning_attempts"]) == 1
+    assert len(trace["planning_attempts"][0]["conceptual_queries"]) == 1
+    assert trace["provider_validations"][0]["accepted"] is True
+    assert trace["provider_executions"][0]["success"] is True
+    assert trace["provider_validations"][0]["query"] == trace["provider_executions"][0]["query"]
+    assert trace["provider_validations"][0]["query"] == trace["planning_attempts"][0]["conceptual_queries"][0]["query"]
+
+
+def test_evaluation_trace_keeps_validation_rejection_out_of_execution(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    gateway = FakeGateway(invalid_first=True)
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=gateway,
+        model=model,
+        security=SecurityContext(),
+        max_replans=0,
+    ).run(interaction)
+
+    assert result.status == "insufficient_data"
+    assert result.evaluation_trace["provider_validations"][0]["accepted"] is False
+    assert result.evaluation_trace["provider_executions"] == []
+    assert gateway.execution_calls == 0
+
+
+def test_evaluation_trace_records_replanning_attempts_and_feedback(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(invalid_first=True),
+        model=model,
+        security=SecurityContext(),
+    ).run(interaction)
+
+    trace = result.evaluation_trace
+    assert len(trace["planning_attempts"]) == 2
+    assert trace["planning_attempts"][1]["provider_feedback"] == ["invalid proposed query"]
+    assert trace["provider_validations"][0]["accepted"] is False
+    assert trace["provider_validations"][1]["accepted"] is True
+    assert trace["provider_executions"][0]["attempt_number"] == 2
+    assert trace["replan_count"] == 1
+
+
+def test_evaluation_trace_persists_authorization_decision(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="payroll totals", required_capabilities=["payroll"], entities=["payroll"]
+            )
+        ]
+    )
+    interaction = _interaction(question="What are the payroll totals?")
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+    ).run(interaction)
+
+    assert result.status == "failed"
+    assert result.evaluation_trace["authorization"] == {
+        "required": True,
+        "granted": False,
+        "decision": "denied",
+        "scope_present": False,
+    }
+
+
+def test_evaluation_trace_records_independent_period_queries(db_session):
+    period_plan = AnalysisPlan(
+        goal="compare workforce periods",
+        queries=[
+            {"purpose": "current period", "query": _plan().queries[0].query},
+            {"purpose": "previous period", "query": _plan().queries[0].query},
+        ],
+    )
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="compare workforce periods",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+            ),
+            period_plan,
+            StructuredAnswer(answer="The periods were compared."),
+        ]
+    )
+    interaction = _interaction(question="Compare this period with the previous period.")
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    trace = result.evaluation_trace
+    assert [item["logical_query_role"] for item in trace["planning_attempts"][0]["conceptual_queries"]] == [
+        "current",
+        "previous",
+    ]
+    assert len(trace["provider_validations"]) == 2
+    assert len(trace["provider_executions"]) == 2
+    assert {item["query_index"] for item in trace["provider_executions"]} == {0, 1}
+
+
+def test_evaluation_trace_marks_zero_row_execution_as_valid(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="No records matched the requested criteria."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(empty=True), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.evaluation_trace["provider_executions"][0]["success"] is True
+    assert result.evaluation_trace["provider_executions"][0]["result_verification_status"] == "ZERO_ROWS"
 
 
 def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
