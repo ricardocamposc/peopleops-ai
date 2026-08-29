@@ -19,9 +19,23 @@ from peopleops_api.query_contracts import QuerySelect
 class ReviewModel:
     outputs: list[object]
     model_name: str = "fake-review-model"
+    _last_by_type: dict[type[object], object] | None = None
 
     def parse(self, *, purpose, instructions, output_model):
-        output = self.outputs.pop(0)
+        if self._last_by_type is None:
+            self._last_by_type = {}
+        index = next(
+            (index for index, candidate in enumerate(self.outputs)
+             if isinstance(candidate, output_model)),
+            None,
+        )
+        if index is None:
+            output = self._last_by_type.get(output_model)
+            if output is None:
+                raise AssertionError(f"no fake output for {output_model.__name__}")
+        else:
+            output = self.outputs.pop(index)
+            self._last_by_type[output_model] = output
         assert isinstance(output, output_model)
         return output
 

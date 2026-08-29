@@ -3,7 +3,12 @@ from datetime import date
 from uuid import uuid4
 
 from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
-from peopleops_api.analysis_workflow import AnalysisWorkflow, _complete_plan_relationship_entities
+from peopleops_api.analysis_workflow import (
+    AnalysisWorkflow,
+    _catalog_conceptual_validation_errors,
+    _complete_plan_relationship_entities,
+    _semantic_catalog_errors,
+)
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction, Conversation
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QuerySelect, QueryValidation
@@ -14,9 +19,28 @@ from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrieva
 class FakeModel:
     outputs: list[object]
     model_name: str = "fake-structured-model"
+    _last_by_type: dict[type[object], object] | None = None
 
     def parse(self, *, purpose, instructions, output_model):
-        output = self.outputs.pop(0)
+        # The production workflow performs a second, catalog-grounded
+        # SemanticRequest pass before planning. Keep these unit fixtures
+        # compatible with the older one-pass setup without changing the
+        # workflow contract: only consume the next queued artifact when it is
+        # for the requested typed output.
+        if self._last_by_type is None:
+            self._last_by_type = {}
+        index = next(
+            (index for index, candidate in enumerate(self.outputs)
+             if isinstance(candidate, output_model)),
+            None,
+        )
+        if index is None:
+            output = self._last_by_type.get(output_model)
+            if output is None:
+                raise AssertionError(f"no fake output for {output_model.__name__}")
+        else:
+            output = self.outputs.pop(index)
+            self._last_by_type[output_model] = output
         assert isinstance(output, output_model)
         return output
 
@@ -410,6 +434,104 @@ def test_plan_preserves_unknown_fields_for_provider_feedback(db_session):
     normalized = _complete_plan_relationship_entities(plan, build_catalog())
 
     assert normalized.queries[0].query.select[0].field == "employee.not_in_catalog"
+
+
+def test_catalog_preflight_accepts_only_discovered_qualified_fields():
+    from reference_mcp_server.discovery import build_catalog
+
+    catalog = build_catalog()
+    valid = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.employee_code")],
+    )
+    invalid = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.not_in_catalog")],
+    )
+    unqualified = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee_code")],
+    )
+
+    assert _catalog_conceptual_validation_errors(valid, catalog) == []
+    assert any("UNKNOWN_FIELD" in error for error in _catalog_conceptual_validation_errors(invalid, catalog))
+    assert any("UNQUALIFIED_FIELD" in error for error in _catalog_conceptual_validation_errors(unqualified, catalog))
+
+
+def test_catalog_grounding_rejects_noncanonical_semantic_identifiers():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="payroll",
+        required_capabilities=["payroll data access"],
+        entities=["salary_history"],
+        requires_structured_data=True,
+    )
+    errors = _semantic_catalog_errors(semantic, build_catalog())
+
+    assert "UNKNOWN_CAPABILITY: payroll data access" in errors
+    assert "UNKNOWN_ENTITY: salary_history" in errors
+
+
+def test_catalog_preflight_rejects_malformed_period_comparison_shape():
+    from reference_mcp_server.discovery import build_catalog
+
+    query = ConceptualQuery.model_validate(
+        {
+            "entities": ["payroll_period"],
+            "metrics": [{"function": "count"}],
+            "time_scope": {
+                "type": "date_range",
+                "field": "payroll_period.start_date",
+                "start": "2025-01-01",
+                "end": "2025-01-31",
+                "current": {"type": "payroll_period", "value": "2025-01"},
+            },
+        }
+    )
+
+    assert any(
+        "INVALID_TIME_SCOPE" in error
+        for error in _catalog_conceptual_validation_errors(query, build_catalog())
+    )
+
+
+def test_invalid_catalog_plan_is_replanned_before_provider_call(db_session):
+    invalid_plan = AnalysisPlan(
+        goal="active employees",
+        queries=[
+            {
+                "purpose": "invalid field",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[QuerySelect(field="employee.not_in_catalog")],
+                ),
+            }
+        ],
+    )
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            invalid_plan,
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    gateway = FakeGateway()
+    result = AnalysisWorkflow(
+        session=db_session, gateway=gateway, model=model, security=SecurityContext()
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert gateway.validation_calls == 1
+    assert gateway.execution_calls == 1
+    assert result.evaluation_trace["catalog_preflight"][0]["accepted"] is False
+    assert result.evaluation_trace["planning_attempts"][1]["provider_feedback"]
 
 
 def test_noncanonical_semantic_identifiers_are_refined_from_safe_catalog(db_session):

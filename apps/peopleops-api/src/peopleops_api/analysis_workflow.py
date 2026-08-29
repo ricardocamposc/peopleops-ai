@@ -514,6 +514,7 @@ def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
         "capabilities": [
             {
                 "name": item.name,
+                "description": item.description,
                 "entities": item.entities,
                 "operations": item.supported_operations,
                 "sensitivity": item.sensitivity,
@@ -523,9 +524,13 @@ def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
         "entities": [
             {
                 "entity_id": item.entity_id,
+                "business_name": item.business_name,
+                "description": item.description,
                 "fields": [
                     {
                         "reference": f"{item.entity_id}.{field.field_id}",
+                        "business_name": field.business_name,
+                        "description": field.description,
                         "type": field.data_type,
                         "semantic_role": field.semantic_role,
                         "nullable": field.nullable,
@@ -550,16 +555,113 @@ def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
 def _semantic_needs_catalog_refinement(
     semantic: SemanticRequest, catalog: DiscoveryCatalog
 ) -> bool:
-    """Identify likely non-canonical identifiers without business-word routing."""
+    """Always ground structured understanding in the discovered catalog.
 
-    # The catalog is consulted only when the model has supplied identifiers to
-    # normalize. Empty identifiers remain the model's explicit classification;
-    # they are not guessed from the user's language.
+    A first-pass model can choose an identifier that is syntactically valid but
+    semantically wrong (for example, a real capability that is not the one
+    supported by the question). Checking only unknown identifiers therefore
+    misses the important failure mode. The second pass is still provider
+    neutral: it receives semantic metadata, never physical mappings.
+    """
+
+    del semantic, catalog
+    return True
+
+
+def _semantic_catalog_errors(semantic: SemanticRequest, catalog: DiscoveryCatalog) -> list[str]:
+    """Return non-canonical semantic identifiers emitted by a model pass."""
+
     capabilities = {item.name for item in catalog.capabilities}
     entities = {item.entity_id for item in catalog.entities}
-    return any(value not in capabilities for value in semantic.required_capabilities) or any(
-        value not in entities for value in semantic.entities
+    errors = [
+        f"UNKNOWN_CAPABILITY: {value}"
+        for value in semantic.required_capabilities
+        if value not in capabilities
+    ]
+    errors.extend(
+        f"UNKNOWN_ENTITY: {value}"
+        for value in semantic.entities
+        if value not in entities
     )
+    return errors
+
+
+def _catalog_conceptual_validation_errors(
+    query: Any, catalog: DiscoveryCatalog | None
+) -> list[str]:
+    """Validate conceptual identifiers against the discovered MCP catalog.
+
+    This is deliberately a narrow preflight. It validates only the
+    provider-neutral contract and never inspects physical tables, SQL, or
+    database metadata. MCP remains the authoritative validation boundary.
+    """
+
+    if catalog is None:
+        return []
+    known_entities = {entity.entity_id for entity in catalog.entities}
+    known_fields = {
+        f"{entity.entity_id}.{field.field_id}"
+        for entity in catalog.entities
+        for field in entity.fields
+    }
+    known_relationships = {item.relationship_id for item in catalog.relationships}
+    errors: list[str] = []
+
+    for entity in query.entities:
+        if entity not in known_entities:
+            errors.append(f"UNKNOWN_ENTITY: {entity}")
+
+    field_references: list[tuple[str, str]] = []
+    field_references.extend(("select", item.field) for item in query.select)
+    field_references.extend(
+        ("metric", item.field) for item in query.metrics if item.field is not None
+    )
+    field_references.extend(("filter", item.field) for item in query.filters)
+    field_references.extend(("dimension", item) for item in query.dimensions)
+    field_references.extend(
+        ("time_scope", query.time_scope.field)
+        for _ in [0]
+        if query.time_scope is not None and query.time_scope.field is not None
+    )
+    field_references.extend(
+        ("comparison", reference)
+        for comparison in query.comparisons
+        for reference in (comparison.left, comparison.right)
+    )
+    for location, reference in field_references:
+        if "." not in reference:
+            errors.append(f"UNQUALIFIED_FIELD: {location}:{reference}")
+        elif reference not in known_fields:
+            errors.append(f"UNKNOWN_FIELD: {location}:{reference}")
+
+    for relationship in query.relationships:
+        if relationship not in known_relationships:
+            errors.append(f"INVALID_RELATIONSHIP: {relationship}")
+
+    period = query.time_scope
+    if period is not None and period.type != "period_comparison" and (period.current or period.previous):
+        errors.append("INVALID_TIME_SCOPE: current/previous require period_comparison")
+    for item in query.filters:
+        if isinstance(item.value, str) and any(
+            item.value.startswith(f"{entity}.") for entity in known_entities
+        ):
+            errors.append(f"INVALID_FILTER: {item.field} value must be a literal, not a field reference")
+        if item.operator in {"in", "not_in"} and isinstance(item.value, list):
+            if any(isinstance(value, str) and value in known_fields for value in item.value):
+                errors.append(f"INVALID_FILTER: {item.field} membership values must be scalar values")
+
+    # Order references may be either a canonical field or a generated metric
+    # alias. Aliases are checked against the query's own metrics, while fields
+    # remain catalog-bound.
+    metric_aliases = {
+        metric.alias
+        for metric in query.metrics
+        if metric.alias
+    }
+    for order in query.order_by:
+        if order.reference not in metric_aliases and order.reference not in known_fields:
+            errors.append(f"UNKNOWN_ORDER_REFERENCE: {order.reference}")
+    return errors
 
 
 def _is_replannable_provider_error(error: MCPClientError) -> bool:
@@ -836,21 +938,39 @@ class AnalysisWorkflow:
                 request_id=str(state["interaction"].request_id), security=self.security
             )
             if _semantic_needs_catalog_refinement(semantic, catalog):
-                semantic = self.model.parse(
-                    purpose=(
-                        "Refine the typed semantic request using only the provider-neutral semantic "
-                        "catalog. Use canonical capability and entity identifiers; preserve intent "
-                        "and language. Do not output SQL or physical schema names."
-                    ),
-                    instructions=(
-                        f"Semantic request: {semantic.model_dump_json()}\n"
-                        f"Semantic catalog: {_semantic_catalog(catalog)}"
-                    ),
-                    output_model=SemanticRequest,
-                )
-                assert isinstance(semantic, SemanticRequest)
-                if semantic.required_capabilities:
-                    semantic.requires_structured_data = True
+                refinement_feedback = ""
+                for _ in range(2):
+                    semantic = self.model.parse(
+                        purpose=(
+                            "Refine the typed semantic request using only the provider-neutral semantic "
+                            "catalog. This is a canonicalization pass, not a keyword router: preserve "
+                            "the user's analytical or policy intent and language, select only capabilities "
+                            "and entities that are semantically supported by the catalog, and do not turn "
+                            "every noun in the question into an entity. Use the catalog descriptions and "
+                            "field semantics to resolve the user's concepts. Copy capability and entity "
+                            "identifiers exactly; never paraphrase an identifier. Do not output SQL or "
+                            "physical schema names. If the requested analysis is unsupported, preserve "
+                            "the intent and leave unsupported structured identifiers unselected rather "
+                            "than inventing a capability or entity."
+                        ),
+                        instructions=(
+                            f"Semantic request: {semantic.model_dump_json()}\n"
+                            f"Semantic catalog: {_semantic_catalog(catalog)}\n"
+                            f"Catalog grounding feedback: {refinement_feedback or 'none'}"
+                        ),
+                        output_model=SemanticRequest,
+                    )
+                    assert isinstance(semantic, SemanticRequest)
+                    refinement_errors = _semantic_catalog_errors(semantic, catalog)
+                    if not refinement_errors:
+                        break
+                    refinement_feedback = "; ".join(refinement_errors)
+                else:
+                    raise OpenAIModelError("semantic request did not match the discovered catalog")
+                # The refinement model is allowed to correct identifiers, but
+                # it must not silently change a request that already entered
+                # the structured-data path into a policy-only request.
+                semantic.requires_structured_data = True
         if trace is not None:
             requires_payroll = "payroll" in semantic.required_capabilities
             trace["authorization"] = {
@@ -940,11 +1060,22 @@ class AnalysisWorkflow:
                 "in the form entity.field (for example employee.employee_code). Never emit a bare "
                 "field name, and never infer or invent a reference. For grouping or aggregation "
                 "dimensions, use the field named dimensions; never use group_by or introduce "
-                "fields outside the provided schema. If the catalog does not support the requested "
+                "fields outside the provided schema. If the user asks to compare two periods, emit "
+                "two independent PlannedQuery entries for current and previous periods, each with "
+                "its own complete time_scope and logical_role, or one fully populated "
+                "period_comparison that the application expands into those queries. Prefer the two "
+                "explicit entries when the nested form would be ambiguous. Never represent a "
+                "comparison as one date range spanning both periods or as current AND previous "
+                "predicates. Use payroll_period for explicit payroll period values, ensure every "
+                "period contains its required non-empty value; for an explicit period use its exact "
+                "semantic period identifier as value rather than inventing a date range; and never attach current/previous to "
+                "a date_range. Do not put literal dates in QueryComparison.right because that field "
+                "is a conceptual field reference. If the catalog does not support the requested "
                 "operation, return no query rather than changing the user's intent."
             ),
             instructions=(
                 f"Semantic request: {state['semantic_request'].model_dump_json()}\n"
+                f"Original user question: {state['question']}\n"
                 f"Provider-neutral semantic catalog: {catalog_context}\n"
                 f"Previous plan (if any): {previous_plan.model_dump_json() if previous_plan else 'none'}\n"
                 f"Structured provider validation feedback (if any): {feedback or 'none'}"
@@ -986,6 +1117,19 @@ class AnalysisWorkflow:
         attempt_number = len((trace or {}).get("planning_attempts") or []) or 1
         for query_index, planned in enumerate(state["plan"].queries):
             query_dump = planned.query.model_dump(mode="json")
+            preflight_errors = _catalog_conceptual_validation_errors(planned.query, state.get("catalog"))
+            if preflight_errors:
+                if trace is not None:
+                    trace.setdefault("catalog_preflight", []).append({
+                        "attempt_number": attempt_number,
+                        "query_index": query_index,
+                        "logical_query_role": _logical_query_role(planned),
+                        "query": query_dump,
+                        "accepted": False,
+                        "errors": preflight_errors,
+                    })
+                errors.extend(preflight_errors)
+                continue
             validation_record = {"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned), "query": query_dump, "attempted": True, "accepted": False, "errors": []}
             try:
                 validation = self.gateway.validate_query(
