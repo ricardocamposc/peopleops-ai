@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -43,23 +44,28 @@ def _load_cases(path: Path) -> list[dict]:
     return cases
 
 
-def _query_parts(response: dict) -> tuple[set[str], set[str], set[str], set[str]]:
+def _query_parts(response: dict) -> dict[str, object]:
     semantic = response.get("semantic_request") or {}
-    plan = response.get("query_plan") or {}
+    plan = response.get("query_plan") or response.get("analysis_plan") or {}
     entities = set(semantic.get("entities") or [])
     capabilities = set(semantic.get("required_capabilities") or [])
-    metrics: set[str] = set()
+    metric_functions: set[str] = set()
+    metric_fields: set[str] = set()
     dimensions: set[str] = set()
+    queries: list[dict] = []
     for planned in plan.get("queries") or []:
         query = planned.get("query") or {}
+        queries.append(query)
         entities.update(query.get("entities") or [])
         dimensions.update(query.get("dimensions") or [])
         for metric in query.get("metrics") or []:
             if metric.get("function"):
-                metrics.add(str(metric["function"]))
-            if metric.get("alias"):
-                metrics.add(str(metric["alias"]))
-    return entities, capabilities, metrics, dimensions
+                metric_functions.add(str(metric["function"]))
+            if metric.get("field"):
+                metric_fields.add(str(metric["field"]))
+    return {"entities": entities, "capabilities": capabilities,
+            "metric_functions": metric_functions, "metric_fields": metric_fields,
+            "dimensions": dimensions, "queries": queries}
 
 
 def _set_recall(expected: list[str], observed: set[str]) -> float | None:
@@ -68,23 +74,46 @@ def _set_recall(expected: list[str], observed: set[str]) -> float | None:
     return len(set(expected) & observed) / len(set(expected))
 
 
+def _observed_time_scopes(queries: list[dict]) -> set[str]:
+    values: set[str] = set()
+    for query in queries:
+        scope = query.get("time_scope") or {}
+        if scope.get("type") == "payroll_period" and scope.get("value"):
+            values.add(str(scope["value"]))
+        elif scope.get("type"):
+            values.add(str(scope["type"]))
+    return values
+
+
 def _evaluate(case: dict, response: dict) -> dict:
-    entities, capabilities, metrics, dimensions = _query_parts(response)
+    parts = _query_parts(response)
     expected_answerable = case.get("expected_answerable")
     observed_answerable = response.get("status") in {"completed", "pending_human_review"}
     semantic = response.get("semantic_request") or {}
     expected_caps = set(case.get("expected_capabilities") or [])
     expected_entities = set(case.get("expected_entities") or [])
-    expected_metrics = set(case.get("expected_metrics") or [])
+    legacy_metrics = set(case.get("expected_metrics") or [])
+    expected_functions = set(case.get("expected_metric_functions") or []) | legacy_metrics.intersection({"count", "sum", "avg", "min", "max"})
+    expected_fields = set(case.get("expected_metric_fields") or [])
+    expected_fields.update(metric for metric in legacy_metrics if metric not in {"count", "sum", "avg", "min", "max"})
+    expected_dimensions = set(case.get("expected_dimensions") or [])
+    provider = [item for item in response.get("evidence") or [] if item.get("type") == "structured_data"]
+    provider_statuses = [(item.get("result_verification") or {}).get("status") for item in provider]
+    provider_valid = bool(provider) and all(status in {"VALID", "ZERO_ROWS"} for status in provider_statuses)
+    plan_generated = bool(parts["queries"])
     checks = {
-        "capability_selection": expected_caps <= capabilities if expected_caps else None,
-        "entity_recall": expected_entities <= entities if expected_entities else None,
-        "metric_recall": expected_metrics <= metrics if expected_metrics else None,
+        "capability_selection": expected_caps <= parts["capabilities"] if expected_caps else None,
+        "entity_recall": expected_entities <= parts["entities"] if expected_entities else None,
+        "metric_function_recall": expected_functions <= parts["metric_functions"] if expected_functions else None,
+        "metric_field_recall": expected_fields <= parts["metric_fields"] if expected_fields else None,
+        "dimension_accuracy": expected_dimensions <= parts["dimensions"] if expected_dimensions else None,
         "answerability": (
             observed_answerable is expected_answerable if expected_answerable is not None else None
         ),
-        "plan_validity": bool(response.get("query_plan")) if expected_caps else None,
-        "execution_success": response.get("status") in {"completed", "pending_human_review"},
+        "plan_generated": plan_generated if expected_caps else None,
+        "conceptual_query_validity": provider_valid if plan_generated else None,
+        "workflow_execution_success": response.get("status") != "failed",
+        "provider_execution_success": provider_valid if expected_answerable is not False else None,
         "zero_result": (
             any(
                 item.get("result_verification", {}).get("status") == "ZERO_ROWS"
@@ -92,6 +121,11 @@ def _evaluate(case: dict, response: dict) -> dict:
             )
             if case.get("expected_zero_rows")
             else None
+        ),
+        "evidence_validity": provider_valid if provider else None,
+        "time_scope": (
+            case.get("expected_time_scope") in _observed_time_scopes(parts["queries"])
+            if case.get("expected_time_scope") else None
         ),
     }
     return {
@@ -115,13 +149,17 @@ def _evaluate(case: dict, response: dict) -> dict:
         "checks": checks,
         "diagnostics": {
             "expected_entities": sorted(expected_entities),
-            "observed_entities": sorted(entities),
+            "observed_entities": sorted(parts["entities"]),
             "expected_capabilities": sorted(expected_caps),
-            "observed_capabilities": sorted(capabilities),
-            "expected_metrics": sorted(expected_metrics),
-            "observed_metrics": sorted(metrics),
-            "expected_dimensions": case.get("expected_dimensions", []),
-            "observed_dimensions": sorted(dimensions),
+            "observed_capabilities": sorted(parts["capabilities"]),
+            "expected_metric_functions": sorted(expected_functions),
+            "observed_metric_functions": sorted(parts["metric_functions"]),
+            "expected_metric_fields": sorted(expected_fields),
+            "observed_metric_fields": sorted(parts["metric_fields"]),
+            "expected_dimensions": sorted(expected_dimensions),
+            "observed_dimensions": sorted(parts["dimensions"]),
+            "provider_validation": provider_valid if provider else None,
+            "provider_execution": provider_valid if provider else None,
             "failed_layer": _failed_layer(case, response, checks),
         },
     }
@@ -133,9 +171,12 @@ def _failed_layer(case: dict, response: dict, checks: dict) -> str | None:
     for name, layer in (
         ("capability_selection", "understanding"),
         ("entity_recall", "planning"),
-        ("metric_recall", "planning"),
-        ("plan_validity", "conceptual_validation"),
-        ("execution_success", "execution"),
+        ("metric_function_recall", "planning"),
+        ("metric_field_recall", "planning"),
+        ("dimension_accuracy", "planning"),
+        ("plan_generated", "planning"),
+        ("conceptual_query_validity", "provider_validation"),
+        ("provider_execution_success", "execution"),
         ("zero_result", "result_verification"),
         ("answerability", "synthesis"),
     ):
@@ -184,15 +225,18 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
     metrics = {
         "semantic_goal_accuracy": "N/A",
         "capability_selection_accuracy": _rate(records, "capability_selection"),
-        "plan_validity": _rate(records, "plan_validity"),
-        "conceptual_query_validity": _rate(records, "plan_validity"),
+        "plan_generated_rate": _rate(records, "plan_generated"),
+        "conceptual_query_validity": _rate(records, "conceptual_query_validity"),
         "expected_entity_recall": _average_recall(records, "expected_entities", "observed_entities"),
-        "expected_metric_recall": _average_recall(records, "expected_metrics", "observed_metrics"),
+        "expected_metric_function_recall": _average_recall(records, "expected_metric_functions", "observed_metric_functions"),
+        "expected_metric_field_recall": _average_recall(records, "expected_metric_fields", "observed_metric_fields"),
+        "dimension_accuracy": _rate(records, "dimension_accuracy"),
         "filter_accuracy": "N/A",
-        "time_scope_accuracy": "N/A",
-        "execution_success_rate": _rate(records, "execution_success"),
+        "time_scope_accuracy": _rate(records, "time_scope"),
+        "workflow_execution_success_rate": _rate(records, "workflow_execution_success"),
+        "provider_query_execution_success_rate": _rate(records, "provider_execution_success"),
         "zero_result_accuracy": _rate(records, "zero_result"),
-        "evidence_validity": _evidence_rate(records),
+        "evidence_validity": _rate(records, "evidence_validity"),
         "numeric_fact_accuracy": "N/A",
         "unsupported_quantitative_claim_rate": "N/A",
         "answerability_accuracy": _rate(records, "answerability"),
@@ -206,14 +250,16 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
         "timestamp": datetime.now(UTC).isoformat(),
         "dataset": str(dataset.resolve().relative_to(ROOT)),
         "dataset_case_count": len(cases),
+        "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
         "base_url": base_url,
         "execution": "real_peopleops_mcp_hris",
         "openai_model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "mcp_sdk": "mcp 2.1.1",
         "mcp_server": "reference-mcp-server",
         "catalog_version": "captured per response",
-        "max_planning_attempts": 1,
-        "max_execution_attempts": 1,
+        "max_replans": int(os.getenv("MAX_REPLANS", "1")),
+        "max_planning_attempts": 2,
+        "max_execution_attempts": 2,
         "artifact_contract": ["manifest.json", "dataset.jsonl", "predictions.jsonl", "evidence.jsonl", "metrics.json", "report.md"],
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

@@ -109,6 +109,18 @@ def test_duplicate_projection_labels_are_rejected_before_sql_execution() -> None
     assert "aliases must be unique" in validation.errors[0]
 
 
+def test_generated_metric_label_collides_with_select_alias() -> None:
+    query = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.name", alias="count_id")],
+        metrics=[QueryMetric(field="employee.id", function="count")],
+        limit=10,
+    )
+    validation = validate_query(query, CATALOG, [])
+    assert validation.valid is False
+    assert "aliases must be unique" in validation.errors[0]
+
+
 def test_order_by_uses_generated_metric_label_when_alias_is_omitted() -> None:
     query = ConceptualQuery(
         entities=["employee"],

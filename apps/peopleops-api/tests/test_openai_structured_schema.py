@@ -1,3 +1,5 @@
+import pytest
+
 from peopleops_api.analysis_contracts import AnalysisPlan, StructuredAnswer
 from peopleops_api.mcp_contracts import (
     DiscoveryCatalog,
@@ -44,7 +46,7 @@ def test_structured_decoder_accepts_trailing_provider_content():
     }
 
 
-def test_analysis_plan_removes_incomplete_optional_time_scope():
+def test_analysis_plan_preserves_incomplete_time_scope_for_validation():
     payload = {
         "goal": "overtime",
         "queries": [
@@ -59,7 +61,9 @@ def test_analysis_plan_removes_incomplete_optional_time_scope():
         ],
     }
     normalized = _normalize_analysis_plan_payload(payload)
-    assert "time_scope" not in normalized["queries"][0]["query"]
+    assert normalized["queries"][0]["query"]["time_scope"] == payload["queries"][0]["query"]["time_scope"]
+    with pytest.raises(ValueError, match="date_range requires"):
+        AnalysisPlan.model_validate(normalized)
 
 
 def test_analysis_plan_normalizes_group_by_to_canonical_dimensions():
@@ -75,6 +79,31 @@ def test_analysis_plan_normalizes_group_by_to_canonical_dimensions():
     normalized = _normalize_analysis_plan_payload(payload)
     assert normalized["queries"][0]["query"]["dimensions"] == ["department"]
     assert "group_by" not in normalized["queries"][0]["query"]
+
+
+def test_period_comparison_expands_into_independent_provider_queries():
+    from peopleops_api.analysis_workflow import _expand_period_comparison_plan
+
+    plan = AnalysisPlan.model_validate(
+        {
+            "goal": "compare payroll",
+            "queries": [{
+                "purpose": "comparison",
+                "query": {
+                    "entities": ["payroll"],
+                    "metrics": [{"function": "sum", "field": "payroll.net_amount"}],
+                    "time_scope": {
+                        "type": "period_comparison",
+                        "current": {"type": "payroll_period", "value": "2025-02"},
+                        "previous": {"type": "payroll_period", "value": "2025-01"},
+                    },
+                },
+            }],
+        }
+    )
+    expanded = _expand_period_comparison_plan(plan)
+    assert len(expanded.queries) == 2
+    assert [item.query.time_scope.value for item in expanded.queries] == ["2025-02", "2025-01"]
 
 
 def test_analysis_plan_adds_intermediate_relationship_entities():

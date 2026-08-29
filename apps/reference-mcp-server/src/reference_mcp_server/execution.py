@@ -55,7 +55,7 @@ def validate_query(
         errors.append("relationships must be unique")
     projection_labels = [
         item.alias or item.field.rsplit(".", 1)[-1] for item in query.select
-    ] + [metric.alias or metric.field or metric.function for metric in query.metrics]
+    ] + [_metric_label(metric) for metric in query.metrics]
     if len(set(projection_labels)) != len(projection_labels):
         errors.append("select and metric aliases must be unique")
     for relation_id in query.relationships:

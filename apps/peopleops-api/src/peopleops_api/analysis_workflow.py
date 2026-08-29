@@ -213,24 +213,35 @@ def _normalize_analysis_plan_payload(payload: Any) -> Any:
             query["dimensions"] = query.pop("group_by")
         # Sensitivity is part of SemanticRequest, not ConceptualQuery.
         query.pop("sensitivity", None)
-        time_scope = query.get("time_scope")
-        if isinstance(time_scope, dict):
-            scope_type = time_scope.get("type")
-            incomplete = (
-                scope_type == "date_range"
-                and not all(time_scope.get(key) for key in ("field", "start", "end"))
-            ) or (
-                scope_type == "payroll_period" and not time_scope.get("value")
-            ) or (
-                scope_type == "period_comparison"
-                and (not time_scope.get("current") or not time_scope.get("previous"))
-            )
-            if incomplete:
-                query.pop("time_scope")
         planned_copy["query"] = query
         normalized_queries.append(planned_copy)
     normalized["queries"] = normalized_queries
     return normalized
+
+
+def _expand_period_comparison_plan(plan: AnalysisPlan) -> AnalysisPlan:
+    """Turn a logical period comparison into independent provider queries.
+
+    A provider query has one time predicate. Keeping both predicates in one
+    SQL WHERE clause would change a comparison into an intersection, so the
+    composition belongs to the provider-neutral analysis plan.
+    """
+
+    expanded = []
+    changed = False
+    for planned in plan.queries:
+        period = planned.query.time_scope
+        if period is None or period.type != "period_comparison":
+            expanded.append(planned)
+            continue
+        changed = True
+        assert period.current is not None and period.previous is not None
+        for label, scope in (("current", period.current), ("previous", period.previous)):
+            query = planned.query.model_copy(update={"time_scope": scope})
+            expanded.append(
+                planned.model_copy(update={"purpose": f"{planned.purpose} ({label} period)", "query": query})
+            )
+    return plan.model_copy(update={"queries": expanded}) if changed else plan
 
 
 def _complete_plan_relationship_entities(
@@ -813,6 +824,7 @@ class AnalysisWorkflow:
         )
         assert isinstance(plan, AnalysisPlan)
         plan = _complete_plan_relationship_entities(plan, catalog)
+        plan = _expand_period_comparison_plan(plan)
         self._stage(
             state, "planning", "completed", snapshots={"query_plan": plan.model_dump(mode="json")}
         )
