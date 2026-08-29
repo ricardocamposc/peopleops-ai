@@ -8,7 +8,11 @@ ROOT = Path(__file__).parents[2].parents[0]
 ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(ROOT / "ops"))
 
-from structured_hr_baseline import _evaluate, _load_cases, _time_scope_matches  # noqa: E402
+from structured_hr_baseline import (  # noqa: E402
+    _evaluate,
+    _load_cases,
+    _time_scope_matches,
+)
 from publish_structured_baseline import publish  # noqa: E402
 
 
@@ -106,3 +110,94 @@ def test_metrics_are_structured_with_denominators() -> None:
     records = [{"checks": {"answerability": True}}, {"checks": {"answerability": False}}]
     metric = _metric(records, "answerability")
     assert metric == {"value": 0.5, "successes": 1, "eligible_cases": 2}
+
+
+def _response_with_validation(*, errors: list[str], catalog_valid: bool = False) -> dict:
+    return {
+        "status": "insufficient_data",
+        "semantic_request": {"required_capabilities": ["workforce"], "entities": ["employee"]},
+        "query_plan": {"queries": [{"query": {"entities": ["employee"], "select": [{"field": "employee.fake_field"}]}}]},
+        "evaluation_trace": {
+            "provider_validations": [{"accepted": False, "errors": errors, "catalog_valid": catalog_valid}],
+            "provider_executions": [],
+        },
+    }
+
+
+def test_invalid_planner_field_is_not_attributed_to_mcp() -> None:
+    record = _evaluate(
+        {"id": "invalid-field", "question": "q", "expected_answerable": True, "expected_capabilities": ["workforce"]},
+        _response_with_validation(errors=["unknown field: employee.fake_field"]),
+    )
+    assert record["diagnostics"]["failed_layer"] == "PEOPLEOPS_PLAN_DEFECT"
+
+
+def test_unknown_entity_and_relationship_are_planner_defects() -> None:
+    for error in ("unknown entity: turnover", "unknown relationship: employee_turnover"):
+        record = _evaluate(
+            {"id": "invalid-query", "question": "q", "expected_answerable": True, "expected_capabilities": ["workforce"]},
+            _response_with_validation(errors=[error]),
+        )
+        assert record["diagnostics"]["failed_layer"] == "PEOPLEOPS_PLAN_DEFECT"
+
+
+def test_catalog_valid_query_rejected_by_provider_is_mcp_defect() -> None:
+    record = _evaluate(
+        {"id": "provider-bug", "question": "q", "expected_answerable": True, "expected_capabilities": ["workforce"]},
+        _response_with_validation(errors=["provider rejected valid conceptual query"], catalog_valid=True),
+    )
+    assert record["diagnostics"]["failed_layer"] == "MCP_VALIDATION_DEFECT"
+
+
+def test_zero_rows_uses_authoritative_provider_execution_trace() -> None:
+    record = _evaluate(
+        {"id": "zero", "question": "q", "expected_answerable": True, "expected_zero_rows": True},
+        {
+            "status": "insufficient_data",
+            "semantic_request": {},
+            "evaluation_trace": {
+                "provider_validations": [{"accepted": True}],
+                "provider_executions": [{"success": True, "row_count": 0, "result_verification_status": "ZERO_ROWS"}],
+            },
+        },
+    )
+    assert record["checks"]["zero_result"] is True
+
+
+def test_zero_rows_is_false_when_rows_are_returned() -> None:
+    record = _evaluate(
+        {"id": "not-zero", "question": "q", "expected_answerable": True, "expected_zero_rows": True},
+        {
+            "status": "completed",
+            "semantic_request": {},
+            "evaluation_trace": {
+                "provider_validations": [{"accepted": True}],
+                "provider_executions": [{"success": True, "row_count": 2, "result_verification_status": "VALID"}],
+            },
+        },
+    )
+    assert record["checks"]["zero_result"] is False
+
+
+def test_authorization_denial_is_evaluated_when_trace_is_consistent() -> None:
+    record = _evaluate(
+        {"id": "denied", "question": "q", "expected_answerable": False, "expected_capabilities": ["payroll"], "expected_authorization": "denied"},
+        {
+            "status": "pending_human_review",
+            "semantic_request": {"required_capabilities": ["payroll"]},
+            "evaluation_trace": {"authorization": {"required": True, "scope_present": False, "decision": "denied"}},
+        },
+    )
+    assert record["checks"]["authorization"] is True
+
+
+def test_contradictory_historical_authorization_is_not_evaluable() -> None:
+    record = _evaluate(
+        {"id": "contradictory-auth", "question": "q", "expected_capabilities": ["payroll"], "expected_authorization": "denied"},
+        {
+            "status": "pending_human_review",
+            "semantic_request": {"required_capabilities": ["payroll"]},
+            "evaluation_trace": {"authorization": {"required": False, "scope_present": False, "decision": "granted"}},
+        },
+    )
+    assert record["checks"]["authorization"] is None

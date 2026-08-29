@@ -122,7 +122,16 @@ def _time_scope_matches(expected: dict | None, queries: list[dict], trace: dict 
 
 def _authorization_check(case: dict, trace: dict) -> bool | None:
     expected = case.get("expected_authorization")
-    return None if expected is None else trace.get("authorization", {}).get("decision") == expected
+    if expected is None:
+        return None
+    authorization = trace.get("authorization", {})
+    # A historical trace that says authorization was not required for a case
+    # whose contractual capability is restricted cannot prove the decision.
+    # Do not manufacture a pass/fail result from contradictory observability.
+    expected_required = "payroll" in (case.get("expected_capabilities") or [])
+    if expected_required and authorization.get("required") is not True:
+        return None
+    return authorization.get("decision") == expected
 
 
 def _replan_check(trace: dict) -> bool | None:
@@ -161,17 +170,10 @@ def _evaluate(case: dict, response: dict) -> dict:
             observed_answerable is expected_answerable if expected_answerable is not None else None
         ),
         "plan_generated": plan_generated if expected_caps else None,
-        "conceptual_query_validity": provider_valid if plan_generated else None,
+        "conceptual_query_validity": provider_valid if validations else None,
         "workflow_execution_success": response.get("status") != "failed",
         "provider_execution_success": provider_executed if executions else None,
-        "zero_result": (
-            any(
-                item.get("result_verification", {}).get("status") == "ZERO_ROWS"
-                for item in response.get("evidence") or []
-            )
-            if "expected_zero_rows" in case
-            else None
-        ),
+        "zero_result": _zero_result_check(case, trace),
         "evidence_validity": provider_valid if validations else None,
         "time_scope": _time_scope_matches(case.get("expected_time_scope"), parts["queries"], trace),
         "authorization": _authorization_check(case, trace),
@@ -210,9 +212,62 @@ def _evaluate(case: dict, response: dict) -> dict:
             "observed_dimensions": sorted(parts["dimensions"]),
             "provider_validation": validations,
             "provider_execution": executions,
+            "authorization": trace.get("authorization", {}),
+            "authorization_evaluable": checks["authorization"] is not None,
             "failed_layer": _failed_layer(case, response, checks),
         },
     }
+
+
+def _zero_result_check(case: dict, trace: dict) -> bool | None:
+    """Evaluate zero-row expectations from the provider execution trace."""
+
+    if "expected_zero_rows" not in case:
+        return None
+    executions = trace.get("provider_executions") or []
+    if not executions:
+        return False
+    successful = [item for item in executions if item.get("success") is True]
+    if not successful or len(successful) != len(executions):
+        return False
+    observed_zero = any(
+        item.get("result_verification_status") == "ZERO_ROWS"
+        and item.get("row_count") == 0
+        for item in successful
+    )
+    return observed_zero is bool(case["expected_zero_rows"])
+
+
+_PLAN_REJECTION_MARKERS = (
+    "unknown field",
+    "unknown entity",
+    "unknown relationship",
+    "unqualified field",
+    "invalid reference",
+    "reference is not in selected entities",
+    "alias",
+    "aggregation",
+    "filter",
+    "time scope",
+)
+
+
+def _validation_rejection_is_plan_defect(validations: list[dict]) -> bool:
+    """Return whether provider feedback identifies an invalid submitted plan.
+
+    The provider owns authoritative validation, but an explicit invalid
+    reference in the submitted ConceptualQuery is owned by the planner.  A
+    synthetic/contract test may set ``catalog_valid`` to prove the opposite
+    case without teaching the evaluator a physical schema.
+    """
+
+    rejected = [item for item in validations if item.get("accepted") is False]
+    if not rejected:
+        return False
+    if any(item.get("catalog_valid") is True for item in rejected):
+        return False
+    errors = [str(error).casefold() for item in rejected for error in item.get("errors", [])]
+    return any(marker in error for error in errors for marker in _PLAN_REJECTION_MARKERS)
 
 
 def _failed_layer(case: dict, response: dict, checks: dict) -> str | None:
@@ -231,6 +286,9 @@ def _failed_layer(case: dict, response: dict, checks: dict) -> str | None:
         ("zero_result", "RESULT_VERIFICATION_DEFECT"),
         ("answerability", "SYNTHESIS_DEFECT"),
     ):
+        if name == "conceptual_query_validity" and checks.get(name) is False:
+            validations = (response.get("evaluation_trace") or {}).get("provider_validations") or []
+            return "PEOPLEOPS_PLAN_DEFECT" if _validation_rejection_is_plan_defect(validations) else "MCP_VALIDATION_DEFECT"
         if checks.get(name) is False:
             return layer
     return None
@@ -259,6 +317,34 @@ def _recall_metric(records: list[dict], expected_key: str, observed_key: str) ->
         if score is not None:
             values.append(score)
     return {"value": sum(values) / len(values) if values else "N/A", "score_sum": sum(values), "eligible_cases": len(values)}
+
+
+def _build_metrics(records: list[dict]) -> dict:
+    """Build deterministic metrics from already captured API artifacts."""
+
+    return {
+        "semantic_goal_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "capability_selection_accuracy": _metric(records, "capability_selection"),
+        "plan_generated_rate": _metric(records, "plan_generated"),
+        "conceptual_query_validity": _metric(records, "conceptual_query_validity"),
+        "expected_entity_recall": _recall_metric(records, "expected_entities", "observed_entities"),
+        "expected_metric_function_recall": _recall_metric(records, "expected_metric_functions", "observed_metric_functions"),
+        "expected_metric_field_recall": _recall_metric(records, "expected_metric_fields", "observed_metric_fields"),
+        "dimension_accuracy": _metric(records, "dimension_accuracy"),
+        "filter_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "time_scope_accuracy": _metric(records, "time_scope"),
+        "workflow_execution_success_rate": _metric(records, "workflow_execution_success"),
+        "provider_query_execution_success_rate": _metric(records, "provider_execution_success"),
+        "zero_result_accuracy": _metric(records, "zero_result"),
+        "evidence_validity": _metric(records, "evidence_validity"),
+        "numeric_fact_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "unsupported_quantitative_claim_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "authorization_decision_accuracy": _metric(records, "authorization"),
+        "answerability_accuracy": _metric(records, "answerability"),
+        "abstention_accuracy": _negative_metric(records),
+        "unnecessary_query_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "replan_success_rate": _metric(records, "replan_success"),
+    }
 
 
 def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
@@ -293,29 +379,7 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
             raise RuntimeError(f"case {case['id']} failed: {exc}") from exc
         _write_predictions(output, records)
         print(f"[{index}/{len(cases)}] {case['id']}")
-    metrics = {
-        "semantic_goal_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
-        "capability_selection_accuracy": _metric(records, "capability_selection"),
-        "plan_generated_rate": _metric(records, "plan_generated"),
-        "conceptual_query_validity": _metric(records, "conceptual_query_validity"),
-        "expected_entity_recall": _recall_metric(records, "expected_entities", "observed_entities"),
-        "expected_metric_function_recall": _recall_metric(records, "expected_metric_functions", "observed_metric_functions"),
-        "expected_metric_field_recall": _recall_metric(records, "expected_metric_fields", "observed_metric_fields"),
-        "dimension_accuracy": _metric(records, "dimension_accuracy"),
-        "filter_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
-        "time_scope_accuracy": _metric(records, "time_scope"),
-        "workflow_execution_success_rate": _metric(records, "workflow_execution_success"),
-        "provider_query_execution_success_rate": _metric(records, "provider_execution_success"),
-        "zero_result_accuracy": _metric(records, "zero_result"),
-        "evidence_validity": _metric(records, "evidence_validity"),
-        "numeric_fact_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
-        "unsupported_quantitative_claim_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
-        "authorization_decision_accuracy": _metric(records, "authorization"),
-        "answerability_accuracy": _metric(records, "answerability"),
-        "abstention_accuracy": _negative_metric(records),
-        "unnecessary_query_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
-        "replan_success_rate": _metric(records, "replan_success"),
-    }
+    metrics = _build_metrics(records)
     validated_code_sha = _git_commit()
     manifest = {
         "run_id": run_id,
@@ -347,6 +411,33 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
     report.extend(f"- `{item['case_id']}`: failed_layer=`{item['diagnostics'].get('failed_layer')}`" for item in failed) or report.append("- None")
     (output / "report.md").write_text("\n".join(report) + "\n", encoding="utf-8")
     return {"run_id": run_id, "metrics": metrics, "case_count": len(cases)}
+
+
+def reevaluate(run_dir: Path) -> dict:
+    """Recompute metrics from a completed run without external calls."""
+
+    dataset = run_dir / "dataset.jsonl"
+    predictions = run_dir / "predictions.jsonl"
+    evidence = run_dir / "evidence.jsonl"
+    required = (dataset, predictions, evidence, run_dir / "manifest.json")
+    if any(not path.is_file() for path in required):
+        raise ValueError("run is missing required artifacts")
+    cases = _load_cases(dataset)
+    records = [json.loads(line) for line in predictions.read_text(encoding="utf-8").splitlines() if line.strip()]
+    evidence_records = [json.loads(line) for line in evidence.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(records) != len(cases) or len(evidence_records) != len(cases):
+        raise ValueError("run artifact counts do not match dataset")
+    reevaluated = [_evaluate(case, record["observed"]) for case, record in zip(cases, records, strict=True)]
+    metrics = _build_metrics(reevaluated)
+    payload = {"source_run_id": json.loads((run_dir / "manifest.json").read_text())["run_id"], "external_calls": False, "metrics": metrics, "cases": reevaluated}
+    (run_dir / "metrics-reevaluated.json").write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    failed = [item for item in reevaluated if any(value is False for value in item["checks"].values())]
+    report = ["# Structured HR offline re-evaluation", "", f"Source run: `{payload['source_run_id']}`", "External calls: none", "", "## Deterministic metrics", ""]
+    report.extend(f"- `{key}`: {value}" for key, value in metrics.items())
+    report.extend(["", "## Failed cases", ""])
+    report.extend(f"- `{item['case_id']}`: failed_layer=`{item['diagnostics'].get('failed_layer')}`" for item in failed) or report.append("- None")
+    (run_dir / "report-reevaluated.md").write_text("\n".join(report) + "\n", encoding="utf-8")
+    return {"source_run_id": payload["source_run_id"], "metrics": metrics, "case_count": len(cases)}
 
 
 def _write_predictions(output: Path, records: list[dict]) -> None:
@@ -391,7 +482,11 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--base-url", default=os.getenv("PEOPLEOPS_API_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--request-timeout", type=float, default=180.0)
+    parser.add_argument("--reevaluate-run", type=Path, help="Re-evaluate existing artifacts without external calls")
     args = parser.parse_args()
+    if args.reevaluate_run:
+        print(json.dumps(reevaluate(args.reevaluate_run), indent=2))
+        return
     print(json.dumps(run(args.dataset, args.output_dir, args.base_url, args.request_timeout), indent=2))
 
 

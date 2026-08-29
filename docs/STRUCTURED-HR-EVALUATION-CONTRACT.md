@@ -109,3 +109,21 @@ The evaluator reports the first observable divergence using the public categorie
 ## Metric shape and denominators
 
 Every Structured HR metric is an object with `value`, `successes` and `eligible_cases`. Fractional recall metrics additionally use `score_sum` because their per-case score is not binary. `N/A` is used when there are no eligible cases and is never converted to zero. `abstention_accuracy` uses only cases with `expected_answerable == false`; `answerability_accuracy` uses all applicable cases.
+
+## Offline attribution and zero-row evidence
+
+Offline re-evaluation consumes captured `predictions.jsonl` and `evidence.jsonl`
+artifacts and never calls PeopleOps, OpenAI, MCP, or HRIS. Provider feedback
+identifying an unknown field, entity, relationship, unqualified reference,
+invalid aggregation/filter/time scope, or duplicate alias is attributed to the
+submitted plan (`PEOPLEOPS_PLAN_DEFECT`) when the query contains that invalid
+reference. `MCP_VALIDATION_DEFECT` is reserved for evidence explicitly
+establishing that a catalog-valid conceptual query was rejected by the
+provider.
+
+Zero-row accuracy is determined from the provider execution trace: validation
+accepted, execution succeeded, `row_count == 0`, and
+`result_verification_status == ZERO_ROWS`. The final workflow status is not
+required to be `completed`. If an authorization trace conflicts with a
+restricted capability requirement, the historical case is not evaluable rather
+than being converted into a grant or denial.
