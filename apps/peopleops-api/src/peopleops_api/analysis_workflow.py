@@ -311,7 +311,13 @@ def _expand_period_comparison_plan(plan: AnalysisPlan) -> AnalysisPlan:
         for label, scope in (("current", period.current), ("previous", period.previous)):
             query = planned.query.model_copy(update={"time_scope": scope})
             expanded.append(
-                planned.model_copy(update={"purpose": f"{planned.purpose} ({label} period)", "query": query})
+                planned.model_copy(
+                    update={
+                        "purpose": f"{planned.purpose} ({label} period)",
+                        "query": query,
+                        "logical_role": label,
+                    }
+                )
             )
     return plan.model_copy(update={"queries": expanded}) if changed else plan
 
@@ -506,15 +512,30 @@ def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
 
     payload = {
         "capabilities": [
-            {"name": item.name, "entities": item.entities, "sensitivity": item.sensitivity}
+            {
+                "name": item.name,
+                "entities": item.entities,
+                "operations": item.supported_operations,
+                "sensitivity": item.sensitivity,
+            }
             for item in catalog.capabilities
         ],
         "entities": [
             {
                 "entity_id": item.entity_id,
-                "fields": [field.field_id for field in item.fields],
+                "fields": [
+                    {
+                        "reference": f"{item.entity_id}.{field.field_id}",
+                        "type": field.data_type,
+                        "semantic_role": field.semantic_role,
+                        "nullable": field.nullable,
+                        "sensitivity": field.sensitivity,
+                    }
+                    for field in item.fields
+                ],
                 "relationships": item.relationships,
                 "sensitivity": item.sensitivity,
+                "operations": item.supported_operations,
             }
             for item in catalog.entities
         ],
@@ -904,17 +925,29 @@ class AnalysisWorkflow:
             }
         feedback = "; ".join(state.get("query_errors", []))
         catalog = state.get("catalog")
+        catalog_context = (
+            _semantic_catalog(catalog)
+            if catalog is not None
+            else "not required for this plan"
+        )
+        previous_plan = state.get("plan")
         plan = self.model.parse(
             purpose=(
                 "Create a bounded plan of provider-neutral conceptual queries. Use semantic IDs from "
                 "the catalog only; select capabilities dynamically; never output physical SQL. "
-                "For grouping or aggregation dimensions, use the field named dimensions; never use "
-                "group_by or introduce fields outside the provided schema."
+                "Every field reference in select, metrics, filters, dimensions, comparisons, "
+                "order_by, and time_scope MUST be copied exactly from a catalog field reference "
+                "in the form entity.field (for example employee.employee_code). Never emit a bare "
+                "field name, and never infer or invent a reference. For grouping or aggregation "
+                "dimensions, use the field named dimensions; never use group_by or introduce "
+                "fields outside the provided schema. If the catalog does not support the requested "
+                "operation, return no query rather than changing the user's intent."
             ),
             instructions=(
                 f"Semantic request: {state['semantic_request'].model_dump_json()}\n"
-                f"Catalog metadata: {catalog.model_dump_json() if catalog else 'not required for this plan'}\n"
-                f"Previous validation feedback (if any): {feedback or 'none'}"
+                f"Provider-neutral semantic catalog: {catalog_context}\n"
+                f"Previous plan (if any): {previous_plan.model_dump_json() if previous_plan else 'none'}\n"
+                f"Structured provider validation feedback (if any): {feedback or 'none'}"
             ),
             output_model=AnalysisPlan,
         )
@@ -931,7 +964,7 @@ class AnalysisWorkflow:
             attempts.append({
                 "attempt_number": len(attempts) + 1,
                 "conceptual_queries": [
-                    {"query_index": index, "logical_query_role": _logical_query_role(item.purpose), "query": item.query.model_dump(mode="json")}
+                    {"query_index": index, "logical_query_role": _logical_query_role(item), "query": item.query.model_dump(mode="json")}
                     for index, item in enumerate(plan.queries)
                 ],
                 "provider_feedback": list(state.get("query_errors", [])),
@@ -953,7 +986,7 @@ class AnalysisWorkflow:
         attempt_number = len((trace or {}).get("planning_attempts") or []) or 1
         for query_index, planned in enumerate(state["plan"].queries):
             query_dump = planned.query.model_dump(mode="json")
-            validation_record = {"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "accepted": False, "errors": []}
+            validation_record = {"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned), "query": query_dump, "attempted": True, "accepted": False, "errors": []}
             try:
                 validation = self.gateway.validate_query(
                     planned.query,
@@ -985,14 +1018,14 @@ class AnalysisWorkflow:
                 )
             except MCPClientError as exc:
                 if trace is not None:
-                    trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "success": False, "error_code": exc.code, "error": self._safe_error(exc)})
+                    trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned), "query": query_dump, "attempted": True, "success": False, "error_code": exc.code, "error": self._safe_error(exc)})
                 if _is_replannable_provider_error(exc):
                     errors.append(self._safe_error(exc))
                     continue
                 raise
             results.append((planned, result))
             if trace is not None:
-                trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned.purpose), "query": query_dump, "attempted": True, "success": True, "result_verification_status": _verify_structured_result(result).get("status"), "row_count": len(result.rows)})
+                trace.setdefault("provider_executions", []).append({"attempt_number": attempt_number, "query_index": query_index, "logical_query_role": _logical_query_role(planned), "query": query_dump, "attempted": True, "success": True, "result_verification_status": _verify_structured_result(result).get("status"), "row_count": len(result.rows)})
         next_replan_count = state.get("replan_count", 0)
         if trace is not None:
             trace["replan_count"] = max(
@@ -1343,14 +1376,13 @@ def _assert_supported_numbers(
                 raise OpenAIModelError("structured response contained an unsupported numeric claim")
 
 
-def _logical_query_role(purpose: str) -> str | None:
-    """Return a structural comparison role without inspecting user wording."""
-    normalized = purpose.casefold()
-    if "current" in normalized:
-        return "current"
-    if "previous" in normalized:
-        return "previous"
-    return None
+def _logical_query_role(planned: Any) -> str | None:
+    """Return only explicitly propagated comparison metadata.
+
+    The role is assigned by period-comparison expansion.  Looking for words
+    in a free-form purpose makes trace semantics depend on model wording.
+    """
+    return getattr(planned, "logical_role", None)
 
 
 def _policy_filters(values: dict[str, Any] | PolicyFilterContract) -> Any:

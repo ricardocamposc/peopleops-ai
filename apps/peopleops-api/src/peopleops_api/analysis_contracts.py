@@ -50,6 +50,10 @@ class PlannedQuery(BaseModel):
 
     purpose: str = Field(min_length=1, max_length=255)
     query: ConceptualQuery
+    # Internal, provider-neutral metadata used after period-comparison
+    # expansion.  It is deliberately optional so ordinary plans remain
+    # backward compatible and the provider never needs to interpret it.
+    logical_role: Literal["current", "previous"] | None = None
 
 
 class PolicyPlan(BaseModel):

@@ -14,6 +14,7 @@ from peopleops_api.analysis_workflow import (
     _openai_strict_schema,
     _response_diagnostics,
     _response_output_text,
+    _semantic_catalog,
 )
 
 
@@ -88,6 +89,42 @@ def test_analysis_plan_normalizes_group_by_to_canonical_dimensions():
     assert "group_by" not in normalized["queries"][0]["query"]
 
 
+def test_semantic_catalog_exposes_qualified_field_references():
+    catalog = DiscoveryCatalog.model_validate(
+        {
+            "provider_type": "test",
+            "catalog_version": "1",
+            "fingerprint": "fp",
+            "capabilities": [],
+            "entities": [
+                {
+                    "entity_id": "employee",
+                    "business_name": "Employee",
+                    "description": "An employee",
+                    "fields": [
+                        {
+                            "field_id": "employee_code",
+                            "business_name": "Employee code",
+                            "description": "Code",
+                            "data_type": "string",
+                            "nullable": False,
+                            "semantic_role": "identifier",
+                            "sensitivity": "standard",
+                        }
+                    ],
+                    "relationships": [],
+                    "temporal_fields": [],
+                    "sensitivity": "standard",
+                    "supported_operations": ["select"],
+                }
+            ],
+            "relationships": [],
+        }
+    )
+    rendered = json.loads(_semantic_catalog(catalog))
+    assert rendered["entities"][0]["fields"][0]["reference"] == "employee.employee_code"
+
+
 def test_period_comparison_expands_into_independent_provider_queries():
     from peopleops_api.analysis_workflow import _expand_period_comparison_plan
 
@@ -111,6 +148,7 @@ def test_period_comparison_expands_into_independent_provider_queries():
     expanded = _expand_period_comparison_plan(plan)
     assert len(expanded.queries) == 2
     assert [item.query.time_scope.value for item in expanded.queries] == ["2025-02", "2025-01"]
+    assert [item.logical_role for item in expanded.queries] == ["current", "previous"]
 
 
 class _Content:

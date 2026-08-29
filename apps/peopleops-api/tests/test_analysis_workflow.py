@@ -266,8 +266,8 @@ def test_evaluation_trace_records_independent_period_queries(db_session):
     period_plan = AnalysisPlan(
         goal="compare workforce periods",
         queries=[
-            {"purpose": "current period", "query": _plan().queries[0].query},
-            {"purpose": "previous period", "query": _plan().queries[0].query},
+            {"purpose": "period A", "logical_role": "current", "query": _plan().queries[0].query},
+            {"purpose": "period B", "logical_role": "previous", "query": _plan().queries[0].query},
         ],
     )
     model = FakeModel(
