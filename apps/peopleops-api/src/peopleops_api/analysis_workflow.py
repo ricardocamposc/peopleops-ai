@@ -500,6 +500,7 @@ class AnalysisState(TypedDict, total=False):
     replan_count: int
     query_errors: list[str]
     human_decision: str
+    evaluation_trace: dict[str, Any]
 
 
 @dataclass
@@ -533,6 +534,7 @@ class AnalysisWorkflow:
                         "facts": [],
                         "policies": [],
                         "warnings": [],
+                        **({"evaluation_trace": {"planning_attempts": [], "provider_validations": [], "provider_executions": [], "authorization": {}, "replan_count": 0}} if ((interaction.conversation and (interaction.conversation.metadata_ or {}).get("evaluation_structured_hr")) is True) else {}),
                     }
                 )
             interaction.latency_ms = round((monotonic() - started) * 1000)
@@ -715,6 +717,17 @@ class AnalysisWorkflow:
             semantic.requires_structured_data = False
             semantic.required_capabilities = []
             semantic.policy_filters = type(semantic.policy_filters)()
+        trace = state.get("evaluation_trace")
+        if trace is not None:
+            requires_payroll = "payroll" in semantic.required_capabilities
+            trace["authorization"] = {
+                "required": requires_payroll,
+                "granted": not requires_payroll or self.security.allows_payroll(),
+                "decision": "denied" if requires_payroll and not self.security.allows_payroll() else "granted",
+                "scope_present": self.security.allows_payroll(),
+            }
+            state["interaction"].evaluation_trace = trace
+            self.session.commit()
         # A policy-only request must not be routed through the HRIS planner.
         # This avoids inventing structured entities for questions whose source
         # of truth is the policy corpus.
@@ -828,13 +841,25 @@ class AnalysisWorkflow:
         self._stage(
             state, "planning", "completed", snapshots={"query_plan": plan.model_dump(mode="json")}
         )
+        if state.get("evaluation_trace") is not None:
+            attempts = state["evaluation_trace"].setdefault("planning_attempts", [])
+            attempts.append({
+                "attempt_number": len(attempts) + 1,
+                "conceptual_queries": [item.query.model_dump(mode="json") for item in plan.queries],
+                "provider_feedback": list(state.get("query_errors", [])),
+            })
+            state["interaction"].evaluation_trace = state["evaluation_trace"]
+            self.session.commit()
         return {"plan": plan, "interaction": state["interaction"], "query_errors": []}
 
     def _execute_queries(self, state: AnalysisState) -> dict[str, Any]:
         self._stage(state, "query_execution", "running")
         results: list[tuple[Any, QueryResult]] = []
         errors: list[str] = []
+        trace = state.get("evaluation_trace")
         for planned in state["plan"].queries:
+            query_dump = planned.query.model_dump(mode="json")
+            validation_record = {"query": query_dump, "attempted": True, "accepted": False, "errors": []}
             try:
                 validation = self.gateway.validate_query(
                     planned.query,
@@ -842,13 +867,22 @@ class AnalysisWorkflow:
                     security=self.security,
                 )
             except MCPClientError as exc:
+                validation_record.update({"error_code": exc.code, "error": self._safe_error(exc)})
+                if trace is not None:
+                    trace.setdefault("provider_validations", []).append(validation_record)
                 if _is_replannable_provider_error(exc):
                     errors.append(self._safe_error(exc))
                     continue
                 raise
             if not validation.valid:
+                validation_record.update({"errors": list(validation.errors), "catalog_version": validation.catalog_version, "query_hash": validation.query_hash})
+                if trace is not None:
+                    trace.setdefault("provider_validations", []).append(validation_record)
                 errors.extend(validation.errors)
                 continue
+            validation_record.update({"accepted": True, "catalog_version": validation.catalog_version, "query_hash": validation.query_hash})
+            if trace is not None:
+                trace.setdefault("provider_validations", []).append(validation_record)
             try:
                 result = self.gateway.execute_query(
                         planned.query,
@@ -856,11 +890,19 @@ class AnalysisWorkflow:
                         security=self.security,
                 )
             except MCPClientError as exc:
+                if trace is not None:
+                    trace.setdefault("provider_executions", []).append({"query": query_dump, "attempted": True, "success": False, "error_code": exc.code, "error": self._safe_error(exc)})
                 if _is_replannable_provider_error(exc):
                     errors.append(self._safe_error(exc))
                     continue
                 raise
             results.append((planned, result))
+            if trace is not None:
+                trace.setdefault("provider_executions", []).append({"query": query_dump, "attempted": True, "success": True, "result_verification_status": _verify_structured_result(result).get("status"), "row_count": len(result.rows)})
+        if trace is not None:
+            trace["replan_count"] = state.get("replan_count", 0)
+            trace["final_validation_status"] = "rejected" if errors else "accepted"
+            state["interaction"].evaluation_trace = trace
         if errors:
             self._stage(
                 state,

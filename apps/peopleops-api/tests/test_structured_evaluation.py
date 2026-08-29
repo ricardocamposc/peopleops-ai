@@ -8,7 +8,7 @@ ROOT = Path(__file__).parents[2].parents[0]
 ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(ROOT / "ops"))
 
-from structured_hr_baseline import _evaluate, _load_cases  # noqa: E402
+from structured_hr_baseline import _evaluate, _load_cases, _time_scope_matches  # noqa: E402
 from publish_structured_baseline import publish  # noqa: E402
 
 
@@ -37,6 +37,10 @@ def test_evaluator_separates_metric_function_field_and_alias() -> None:
             "dimensions": ["department.name"],
         }}]},
         "evidence": [{"type": "structured_data", "result_verification": {"status": "VALID"}}],
+        "evaluation_trace": {
+            "provider_validations": [{"accepted": True}],
+            "provider_executions": [{"success": True}],
+        },
     }
     record = _evaluate({
         "id": "metric-contract", "question": "total payroll by department", "expected_answerable": True,
@@ -56,3 +60,49 @@ def test_evaluator_counts_only_negative_cases_for_abstention() -> None:
     assert record["checks"]["answerability"] is True
     assert record["checks"]["workflow_execution_success"] is True
     assert record["checks"]["provider_execution_success"] is None
+
+
+def test_time_scope_is_compared_semantically() -> None:
+    assert _time_scope_matches(
+        {"kind": "relative_window", "days": 45},
+        [{"time_scope": {"type": "date_range", "start": "2025-01-01", "end": "2025-02-14"}}],
+    ) is True
+    assert _time_scope_matches(
+        {"kind": "explicit_period", "value": "2025-02"},
+        [{"time_scope": {"type": "payroll_period", "value": "2025-02"}}],
+    ) is True
+
+
+def test_period_comparison_requires_independent_provider_executions() -> None:
+    queries = [
+        {"time_scope": {"type": "payroll_period", "value": "2025-01"}},
+        {"time_scope": {"type": "payroll_period", "value": "2025-02"}},
+    ]
+    assert _time_scope_matches({"kind": "period_comparison", "expected_query_count": 2}, queries, {"provider_executions": [{"success": True}, {"success": True}]}) is True
+    assert _time_scope_matches({"kind": "period_comparison", "expected_query_count": 2}, queries, {"provider_executions": [{"success": True}]}) is False
+
+
+def test_provider_validation_and_execution_are_independent() -> None:
+    record = _evaluate(
+        {"id": "provider-stages", "question": "query", "expected_answerable": True, "expected_capabilities": ["workforce"]},
+        {
+            "status": "failed",
+            "semantic_request": {"required_capabilities": ["workforce"]},
+            "query_plan": {"queries": [{"query": {"entities": ["employee"]}}]},
+            "evaluation_trace": {
+                "provider_validations": [{"accepted": True}],
+                "provider_executions": [{"success": False, "error_code": "QUERY_EXECUTION_ERROR"}],
+            },
+        },
+    )
+    assert record["checks"]["conceptual_query_validity"] is True
+    assert record["checks"]["provider_execution_success"] is False
+    assert record["diagnostics"]["failed_layer"] == "PROVIDER_EXECUTION_DEFECT"
+
+
+def test_metrics_are_structured_with_denominators() -> None:
+    from structured_hr_baseline import _metric
+
+    records = [{"checks": {"answerability": True}}, {"checks": {"answerability": False}}]
+    metric = _metric(records, "answerability")
+    assert metric == {"value": 0.5, "successes": 1, "eligible_cases": 2}

@@ -82,3 +82,30 @@ automatically generated label such as `count_id`.
 The 32-case v2 dataset may be run as a diagnostic after these changes. The
 holdout dataset is not executed or used for optimization in this remediation,
 and no official structured baseline is published here.
+## Evaluation trace and metric contract
+
+The structured HR evaluator is an observation layer over the real PeopleOps → MCP → HRIS workflow. Ground-truth datasets contain expectations only; runtime observations are written to run artifacts.
+
+## Evaluation-only observability
+
+When `evaluation_structured_hr` is enabled, the API persists an `evaluation_trace` containing provider-neutral planning attempts, conceptual queries, provider validation decisions, provider execution outcomes, authorization decision, replan count, and final validation status. It contains no physical SQL, credentials, secrets, or chain-of-thought. The public response omits this trace unless evaluation mode is explicitly requested.
+
+Provider validation and execution are separate metrics. `conceptual_query_validity` measures provider acceptance of a generated ConceptualQuery. `provider_query_execution_success_rate` includes only queries for which execution was actually attempted. A validation rejection, intentional abstention, or authorization denial before execution is not an execution failure.
+
+## Time-scope contract
+
+`expected_time_scope` is structured ground truth. Supported forms are `relative_window` (optionally with `days`), `explicit_period` with `value`, and `period_comparison` with `expected_query_count`. A period comparison is valid only when the logical comparison expands to independent conceptual queries with distinct scopes and independent provider executions. Internal query type names are not compared literally.
+
+## Authorization and replanning
+
+Cases may declare `evaluation_security.scopes`; the runner transmits these through the existing security header mechanism. Cases that test security may declare `expected_authorization: "denied"`. Authorization accuracy has its own denominator and does not contaminate planning, validation, or execution metrics.
+
+Replanning is evaluated only from recorded operational evidence: an initially rejected provider validation, a new planning attempt, a new ConceptualQuery, and an accepted final validation. No textual answer is used to infer replanning.
+
+## First failure layer
+
+The evaluator reports the first observable divergence using the public categories `UNDERSTANDING_DEFECT`, `PEOPLEOPS_PLAN_DEFECT`, `CONCEPTUAL_CONTRACT_DEFECT`, `AUTHORIZATION_DECISION`, `MCP_VALIDATION_DEFECT`, `MCP_SQL_TRANSLATION_DEFECT`, `MCP_RELATIONSHIP_PATH_DEFECT`, `PROVIDER_EXECUTION_DEFECT`, `RESULT_VERIFICATION_DEFECT`, `SYNTHESIS_DEFECT`, `INFRASTRUCTURE_DEFECT`, and `EVALUATOR_DEFECT`. A failed workflow with an existing semantic request is not automatically classified as generic execution failure.
+
+## Metric shape and denominators
+
+Every Structured HR metric is an object with `value`, `successes` and `eligible_cases`. Fractional recall metrics additionally use `score_sum` because their per-case score is not binary. `N/A` is used when there are no eligible cases and is never converted to zero. `abstention_accuracy` uses only cases with `expected_answerable == false`; `answerability_accuracy` uses all applicable cases.

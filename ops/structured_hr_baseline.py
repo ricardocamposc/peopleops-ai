@@ -17,11 +17,14 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _request(base_url: str, payload: dict, timeout: float) -> dict:
+def _request(base_url: str, payload: dict, timeout: float, scopes: list[str] | None = None) -> dict:
+    headers = {"Content-Type": "application/json", "X-Evaluation-Run": "structured-hr"}
+    if scopes:
+        headers["X-Security-Scopes"] = ",".join(scopes)
     request = Request(
         f"{base_url.rstrip('/')}/api/v1/analysis",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "X-Evaluation-Run": "structured-hr"},
+        headers=headers,
         method="POST",
     )
     try:
@@ -85,6 +88,51 @@ def _observed_time_scopes(queries: list[dict]) -> set[str]:
     return values
 
 
+def _time_scope_matches(expected: dict | None, queries: list[dict], trace: dict | None = None) -> bool | None:
+    if not expected:
+        return None
+    kind = expected.get("kind")
+    scopes = [query.get("time_scope") or {} for query in queries]
+    if kind == "explicit_period":
+        return any(s.get("type") == "payroll_period" and s.get("value") == expected.get("value") for s in scopes)
+    if kind == "latest_available":
+        # The provider-neutral response does not expose the catalog's ordered
+        # period set, so latest-available cannot be proven deterministically.
+        return None
+    if kind == "relative_window":
+        ranges = [s for s in scopes if s.get("type") == "date_range" and s.get("start") and s.get("end")]
+        if not ranges:
+            return False
+        if expected.get("days") is None:
+            return True
+        from datetime import date
+        for scope in ranges:
+            try:
+                if (date.fromisoformat(str(scope["end"])) - date.fromisoformat(str(scope["start"]))).days + 1 == int(expected["days"]):
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+    if kind == "period_comparison":
+        executions = (trace or {}).get("provider_executions") or []
+        distinct = {json.dumps(q.get("time_scope"), sort_keys=True) for q in queries}
+        return len(queries) >= int(expected.get("expected_query_count", 2)) and len(distinct) >= 2 and len(executions) >= 2
+    return False
+
+
+def _authorization_check(case: dict, trace: dict) -> bool | None:
+    expected = case.get("expected_authorization")
+    return None if expected is None else trace.get("authorization", {}).get("decision") == expected
+
+
+def _replan_check(trace: dict) -> bool | None:
+    attempts = trace.get("planning_attempts") or []
+    if len(attempts) < 2:
+        return None
+    validations = trace.get("provider_validations") or []
+    return bool(any(not item.get("accepted") for item in validations) and trace.get("replan_count", 0) >= 1 and trace.get("final_validation_status") == "accepted")
+
+
 def _evaluate(case: dict, response: dict) -> dict:
     parts = _query_parts(response)
     expected_answerable = case.get("expected_answerable")
@@ -97,9 +145,11 @@ def _evaluate(case: dict, response: dict) -> dict:
     expected_fields = set(case.get("expected_metric_fields") or [])
     expected_fields.update(metric for metric in legacy_metrics if metric not in {"count", "sum", "avg", "min", "max"})
     expected_dimensions = set(case.get("expected_dimensions") or [])
-    provider = [item for item in response.get("evidence") or [] if item.get("type") == "structured_data"]
-    provider_statuses = [(item.get("result_verification") or {}).get("status") for item in provider]
-    provider_valid = bool(provider) and all(status in {"VALID", "ZERO_ROWS"} for status in provider_statuses)
+    trace = response.get("evaluation_trace") or {}
+    validations = trace.get("provider_validations") or []
+    executions = trace.get("provider_executions") or []
+    provider_valid = bool(validations) and all(item.get("accepted") is True for item in validations)
+    provider_executed = bool(executions) and all(item.get("success") is True for item in executions)
     plan_generated = bool(parts["queries"])
     checks = {
         "capability_selection": expected_caps <= parts["capabilities"] if expected_caps else None,
@@ -113,20 +163,19 @@ def _evaluate(case: dict, response: dict) -> dict:
         "plan_generated": plan_generated if expected_caps else None,
         "conceptual_query_validity": provider_valid if plan_generated else None,
         "workflow_execution_success": response.get("status") != "failed",
-        "provider_execution_success": provider_valid if expected_answerable is not False else None,
+        "provider_execution_success": provider_executed if executions else None,
         "zero_result": (
             any(
                 item.get("result_verification", {}).get("status") == "ZERO_ROWS"
                 for item in response.get("evidence") or []
             )
-            if case.get("expected_zero_rows")
+            if "expected_zero_rows" in case
             else None
         ),
-        "evidence_validity": provider_valid if provider else None,
-        "time_scope": (
-            case.get("expected_time_scope") in _observed_time_scopes(parts["queries"])
-            if case.get("expected_time_scope") else None
-        ),
+        "evidence_validity": provider_valid if validations else None,
+        "time_scope": _time_scope_matches(case.get("expected_time_scope"), parts["queries"], trace),
+        "authorization": _authorization_check(case, trace),
+        "replan_success": _replan_check(trace),
     }
     return {
         "case_id": case["id"],
@@ -145,6 +194,7 @@ def _evaluate(case: dict, response: dict) -> dict:
             "response": response.get("response"),
             "latency_ms": response.get("latency_ms"),
             "model_name": response.get("model_name"),
+            "evaluation_trace": trace,
         },
         "checks": checks,
         "diagnostics": {
@@ -158,27 +208,28 @@ def _evaluate(case: dict, response: dict) -> dict:
             "observed_metric_fields": sorted(parts["metric_fields"]),
             "expected_dimensions": sorted(expected_dimensions),
             "observed_dimensions": sorted(parts["dimensions"]),
-            "provider_validation": provider_valid if provider else None,
-            "provider_execution": provider_valid if provider else None,
+            "provider_validation": validations,
+            "provider_execution": executions,
             "failed_layer": _failed_layer(case, response, checks),
         },
     }
 
 
 def _failed_layer(case: dict, response: dict, checks: dict) -> str | None:
-    if response.get("status") == "failed":
-        return "understanding" if not response.get("semantic_request") else "execution"
+    if response.get("status") == "failed" and not response.get("semantic_request"):
+        return "UNDERSTANDING_DEFECT"
     for name, layer in (
-        ("capability_selection", "understanding"),
-        ("entity_recall", "planning"),
-        ("metric_function_recall", "planning"),
-        ("metric_field_recall", "planning"),
-        ("dimension_accuracy", "planning"),
-        ("plan_generated", "planning"),
-        ("conceptual_query_validity", "provider_validation"),
-        ("provider_execution_success", "execution"),
-        ("zero_result", "result_verification"),
-        ("answerability", "synthesis"),
+        ("capability_selection", "UNDERSTANDING_DEFECT"),
+        ("entity_recall", "PEOPLEOPS_PLAN_DEFECT"),
+        ("metric_function_recall", "PEOPLEOPS_PLAN_DEFECT"),
+        ("metric_field_recall", "PEOPLEOPS_PLAN_DEFECT"),
+        ("dimension_accuracy", "PEOPLEOPS_PLAN_DEFECT"),
+        ("plan_generated", "PEOPLEOPS_PLAN_DEFECT"),
+        ("authorization", "AUTHORIZATION_DECISION"),
+        ("conceptual_query_validity", "MCP_VALIDATION_DEFECT"),
+        ("provider_execution_success", "PROVIDER_EXECUTION_DEFECT"),
+        ("zero_result", "RESULT_VERIFICATION_DEFECT"),
+        ("answerability", "SYNTHESIS_DEFECT"),
     ):
         if checks.get(name) is False:
             return layer
@@ -189,6 +240,25 @@ def _rate(records: list[dict], key: str) -> float | str:
     values = [item["checks"].get(key) for item in records]
     values = [value for value in values if value is not None]
     return sum(value is True for value in values) / len(values) if values else "N/A"
+
+
+def _metric(records: list[dict], key: str) -> dict:
+    values = [item["checks"].get(key) for item in records]
+    values = [value for value in values if value is not None]
+    return {
+        "value": sum(value is True for value in values) / len(values) if values else "N/A",
+        "successes": sum(value is True for value in values),
+        "eligible_cases": len(values),
+    }
+
+
+def _recall_metric(records: list[dict], expected_key: str, observed_key: str) -> dict:
+    values = []
+    for item in records:
+        score = _set_recall(item["diagnostics"].get(expected_key, []), set(item["diagnostics"].get(observed_key, [])))
+        if score is not None:
+            values.append(score)
+    return {"value": sum(values) / len(values) if values else "N/A", "score_sum": sum(values), "eligible_cases": len(values)}
 
 
 def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
@@ -208,7 +278,8 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
         }
         started = time.monotonic()
         try:
-            response = _request(base_url, payload, timeout)
+            scopes = (case.get("evaluation_security") or {}).get("scopes") or []
+            response = _request(base_url, payload, timeout, scopes=scopes)
             response.setdefault("latency_ms", round((time.monotonic() - started) * 1000))
             records.append(_evaluate(case, response))
         except Exception as exc:
@@ -223,26 +294,27 @@ def run(dataset: Path, output: Path, base_url: str, timeout: float) -> dict:
         _write_predictions(output, records)
         print(f"[{index}/{len(cases)}] {case['id']}")
     metrics = {
-        "semantic_goal_accuracy": "N/A",
-        "capability_selection_accuracy": _rate(records, "capability_selection"),
-        "plan_generated_rate": _rate(records, "plan_generated"),
-        "conceptual_query_validity": _rate(records, "conceptual_query_validity"),
-        "expected_entity_recall": _average_recall(records, "expected_entities", "observed_entities"),
-        "expected_metric_function_recall": _average_recall(records, "expected_metric_functions", "observed_metric_functions"),
-        "expected_metric_field_recall": _average_recall(records, "expected_metric_fields", "observed_metric_fields"),
-        "dimension_accuracy": _rate(records, "dimension_accuracy"),
-        "filter_accuracy": "N/A",
-        "time_scope_accuracy": _rate(records, "time_scope"),
-        "workflow_execution_success_rate": _rate(records, "workflow_execution_success"),
-        "provider_query_execution_success_rate": _rate(records, "provider_execution_success"),
-        "zero_result_accuracy": _rate(records, "zero_result"),
-        "evidence_validity": _rate(records, "evidence_validity"),
-        "numeric_fact_accuracy": "N/A",
-        "unsupported_quantitative_claim_rate": "N/A",
-        "answerability_accuracy": _rate(records, "answerability"),
-        "abstention_accuracy": _negative_rate(records),
-        "unnecessary_query_rate": "N/A",
-        "replan_success_rate": "N/A",
+        "semantic_goal_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "capability_selection_accuracy": _metric(records, "capability_selection"),
+        "plan_generated_rate": _metric(records, "plan_generated"),
+        "conceptual_query_validity": _metric(records, "conceptual_query_validity"),
+        "expected_entity_recall": _recall_metric(records, "expected_entities", "observed_entities"),
+        "expected_metric_function_recall": _recall_metric(records, "expected_metric_functions", "observed_metric_functions"),
+        "expected_metric_field_recall": _recall_metric(records, "expected_metric_fields", "observed_metric_fields"),
+        "dimension_accuracy": _metric(records, "dimension_accuracy"),
+        "filter_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "time_scope_accuracy": _metric(records, "time_scope"),
+        "workflow_execution_success_rate": _metric(records, "workflow_execution_success"),
+        "provider_query_execution_success_rate": _metric(records, "provider_execution_success"),
+        "zero_result_accuracy": _metric(records, "zero_result"),
+        "evidence_validity": _metric(records, "evidence_validity"),
+        "numeric_fact_accuracy": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "unsupported_quantitative_claim_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "authorization_decision_accuracy": _metric(records, "authorization"),
+        "answerability_accuracy": _metric(records, "answerability"),
+        "abstention_accuracy": _negative_metric(records),
+        "unnecessary_query_rate": {"value": "N/A", "successes": 0, "eligible_cases": 0},
+        "replan_success_rate": _metric(records, "replan_success"),
     }
     manifest = {
         "run_id": run_id,
@@ -300,6 +372,11 @@ def _evidence_rate(records: list[dict]) -> float | str:
 def _negative_rate(records: list[dict]) -> float | str:
     values = [item["checks"].get("answerability") for item in records if item["expected"].get("expected_answerable") is False]
     return sum(value is True for value in values) / len(values) if values else "N/A"
+
+
+def _negative_metric(records: list[dict]) -> dict:
+    values = [item["checks"].get("answerability") for item in records if item["expected"].get("expected_answerable") is False]
+    return {"value": sum(value is True for value in values) / len(values) if values else "N/A", "successes": sum(value is True for value in values), "eligible_cases": len(values)}
 
 
 def _git_commit() -> str:

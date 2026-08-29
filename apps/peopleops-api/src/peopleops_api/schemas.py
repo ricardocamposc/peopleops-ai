@@ -34,6 +34,7 @@ class AnalysisRead(BaseModel):
     provider_type: str | None
     provider_catalog_version: str | None
     validation: dict | None
+    evaluation_trace: dict | None
     structured_result: dict | list | None
     policy_sources: list | None
     policy_versions: list | None

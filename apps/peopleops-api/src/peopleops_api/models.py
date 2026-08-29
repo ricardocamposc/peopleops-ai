@@ -57,6 +57,7 @@ class AnalysisInteraction(Base):
     provider_type: Mapped[str | None] = mapped_column(String(64))
     provider_catalog_version: Mapped[str | None] = mapped_column(String(128))
     validation: Mapped[dict | None] = mapped_column(JSONB)
+    evaluation_trace: Mapped[dict | None] = mapped_column(JSONB)
     structured_result: Mapped[dict | None] = mapped_column(JSONB)
     policy_sources: Mapped[list | None] = mapped_column(JSONB)
     policy_versions: Mapped[list | None] = mapped_column(JSONB)

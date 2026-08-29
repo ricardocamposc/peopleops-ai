@@ -67,6 +67,13 @@ app.add_middleware(
 )
 
 
+def _analysis_response(interaction, *, include_evaluation_trace: bool = False) -> AnalysisRead:
+    result = AnalysisRead.model_validate(interaction)
+    if not include_evaluation_trace:
+        result.evaluation_trace = None
+    return result
+
+
 def _security_context(request: Request) -> SecurityContext:
     """Build the provider context from the authenticated edge context.
 
@@ -174,7 +181,10 @@ def register_analysis(
         ),
     )
     interaction = workflow.run(interaction)
-    return AnalysisRead.model_validate(interaction)
+    return _analysis_response(
+        interaction,
+        include_evaluation_trace=payload.metadata.get("evaluation_structured_hr") is True,
+    )
 
 
 @app.get("/api/v1/analysis/{request_id}", response_model=AnalysisRead)
@@ -186,7 +196,11 @@ def read_analysis(request_id: str, session: Annotated[Session, Depends(get_db)])
     interaction = get_interaction(session, parsed_request_id)
     if interaction is None:
         raise HTTPException(status_code=404, detail="analysis not found")
-    return AnalysisRead.model_validate(interaction)
+    include_trace = bool(
+        interaction.conversation
+        and (interaction.conversation.metadata_ or {}).get("evaluation_structured_hr") is True
+    )
+    return _analysis_response(interaction, include_evaluation_trace=include_trace)
 
 
 @app.get("/api/v1/analysis", response_model=list[AnalysisRead])
@@ -196,7 +210,13 @@ def list_analysis(
     if limit < 1 or limit > 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
     return [
-        AnalysisRead.model_validate(interaction)
+        _analysis_response(
+            interaction,
+            include_evaluation_trace=bool(
+                interaction.conversation
+                and (interaction.conversation.metadata_ or {}).get("evaluation_structured_hr") is True
+            ),
+        )
         for interaction in list_interactions(session, limit=limit)
     ]
 
