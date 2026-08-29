@@ -164,6 +164,7 @@ def register_analysis(
             model=settings.openai_model,
             timeout_seconds=settings.openai_timeout_seconds,
             max_retries=settings.openai_max_retries,
+            max_output_tokens=settings.openai_max_output_tokens,
         ),
         security=_security_context(request),
         policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
@@ -174,6 +175,7 @@ def register_analysis(
                     model=settings.openai_model,
                     timeout_seconds=settings.openai_timeout_seconds,
                     max_retries=settings.openai_max_retries,
+                    max_output_tokens=settings.openai_max_output_tokens,
                 )
             )
             if settings.openai_api_key
@@ -310,6 +312,7 @@ def human_review_decision(
                 model=settings.openai_model,
                 timeout_seconds=settings.openai_timeout_seconds,
                 max_retries=settings.openai_max_retries,
+                max_output_tokens=settings.openai_max_output_tokens,
             ),
             security=_security_context(request),
             policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),

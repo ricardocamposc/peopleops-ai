@@ -72,8 +72,10 @@ class OpenAIStructuredModel:
         model: str,
         timeout_seconds: float = 30.0,
         max_retries: int = 0,
+        max_output_tokens: int = 4096,
     ) -> None:
         self.model_name = model
+        self.max_output_tokens = min(max(max_output_tokens, 256), 16384)
         if not api_key:
             self._client = None
             return
@@ -107,15 +109,25 @@ class OpenAIStructuredModel:
                         "schema": schema,
                     }
                 },
+                max_output_tokens=self.max_output_tokens,
             )
-            if not response.output_text:
+            diagnostics = _response_diagnostics(response)
+            if diagnostics["status"] == "incomplete":
+                logger.warning("OpenAI structured output incomplete: %s", diagnostics)
+                raise OpenAIModelError("OpenAI structured output incomplete")
+            if diagnostics["has_refusal"]:
+                logger.warning("OpenAI structured output refused: %s", diagnostics)
+                raise OpenAIModelError("OpenAI refused structured output")
+            output_text = _response_output_text(response)
+            if not output_text:
+                logger.warning("OpenAI structured output was empty: %s", diagnostics)
                 raise OpenAIModelError("OpenAI returned no structured output")
             logger.debug(
                 "OpenAI structured output metadata: length=%d first_char=%r",
-                len(response.output_text),
-                response.output_text[:1],
+                len(output_text),
+                output_text[:1],
             )
-            payload = _decode_structured_json(response.output_text)
+            payload = _decode_structured_json(output_text)
             if output_model is AnalysisPlan:
                 payload = _normalize_analysis_plan_payload(payload)
             return output_model.model_validate(payload)
@@ -153,7 +165,66 @@ def _openai_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
             return [visit(child) for child in value]
         return value
 
-    return visit(schema)
+    adapted = visit(schema)
+    # Responses structured decoding is unreliable with the broad Pydantic
+    # union used by QueryFilter.value (date/Decimal/list and scalar branches).
+    # Keep the typed Pydantic contract as the final validator, but emit the
+    # equivalent JSON wire types without format/pattern branches that can make
+    # the constrained decoder terminate before producing any output.
+    query_filter = adapted.get("$defs", {}).get("QueryFilter")
+    if query_filter:
+        query_filter["properties"]["value"] = {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "number"},
+                {"type": "boolean"},
+                {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {"type": "string"},
+                            {"type": "number"},
+                            {"type": "boolean"},
+                        ]
+                    },
+                },
+                {"type": "null"},
+            ]
+        }
+    return adapted
+
+
+def _response_output_text(response: Any) -> str:
+    """Read structured text across SDK response representations."""
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return output_text
+    fragments: list[str] = []
+    for item in getattr(response, "output", None) or []:
+        for content in getattr(item, "content", None) or []:
+            text = getattr(content, "text", None)
+            if text:
+                fragments.append(text)
+    return "\n".join(fragments)
+
+
+def _response_diagnostics(response: Any) -> dict[str, Any]:
+    """Return bounded, non-sensitive response metadata for operational logs."""
+    output = getattr(response, "output", None) or []
+    contents = [content for item in output for content in (getattr(item, "content", None) or [])]
+    incomplete = getattr(response, "incomplete_details", None)
+    return {
+        "response_id": getattr(response, "id", None),
+        "model": getattr(response, "model", None),
+        "status": getattr(response, "status", None),
+        "has_output_text": bool(getattr(response, "output_text", None)),
+        "output_item_count": len(output),
+        "output_item_types": [getattr(item, "type", None) for item in output],
+        "content_types": [getattr(content, "type", None) for content in contents],
+        "has_refusal": any(bool(getattr(content, "refusal", None)) for content in contents),
+        "has_error": bool(getattr(response, "error", None)),
+        "incomplete_reason": getattr(incomplete, "reason", None) if incomplete else None,
+    }
 
 
 def _decode_structured_json(output: str) -> Any:
@@ -948,8 +1019,9 @@ class AnalysisWorkflow:
         }
 
     def _after_execution(self, state: AnalysisState) -> str:
-        if state.get("query_errors") and state.get("replan_count", 0) < self.max_replans:
-            state["replan_count"] = state.get("replan_count", 0) + 1
+        completed_attempts = len((state.get("evaluation_trace") or {}).get("planning_attempts", []))
+        replans_used = max(0, completed_attempts - 1)
+        if state.get("query_errors") and replans_used < self.max_replans:
             return "replan"
         if state["semantic_request"].requires_policy:
             return "policy"

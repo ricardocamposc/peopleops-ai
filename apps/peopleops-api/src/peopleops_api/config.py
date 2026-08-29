@@ -26,6 +26,9 @@ class Settings(BaseSettings):
         default=30.0, gt=0, le=120, alias="OPENAI_TIMEOUT_SECONDS"
     )
     openai_max_retries: int = Field(default=0, ge=0, le=2, alias="OPENAI_MAX_RETRIES")
+    openai_max_output_tokens: int = Field(
+        default=4096, ge=256, le=16384, alias="OPENAI_MAX_OUTPUT_TOKENS"
+    )
     max_question_length: int = Field(default=4000, ge=1, le=20000, alias="MAX_QUESTION_LENGTH")
     max_policy_top_k: int = Field(default=20, ge=1, le=50, alias="MAX_POLICY_TOP_K")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")

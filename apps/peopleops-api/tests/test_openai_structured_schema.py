@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from peopleops_api.analysis_contracts import AnalysisPlan, StructuredAnswer
@@ -10,6 +12,8 @@ from peopleops_api.analysis_workflow import (
     _decode_structured_json,
     _normalize_analysis_plan_payload,
     _openai_strict_schema,
+    _response_diagnostics,
+    _response_output_text,
 )
 
 
@@ -34,6 +38,9 @@ def test_openai_schema_supports_nested_analysis_contracts():
     schema = _openai_strict_schema(AnalysisPlan.model_json_schema())
     assert schema["additionalProperties"] is False
     assert "policy" in schema["required"]
+    value_schema = schema["$defs"]["QueryFilter"]["properties"]["value"]
+    assert "format" not in json.dumps(value_schema)
+    assert "pattern" not in json.dumps(value_schema)
 
 
 def test_structured_decoder_accepts_json_markdown_fence():
@@ -104,6 +111,53 @@ def test_period_comparison_expands_into_independent_provider_queries():
     expanded = _expand_period_comparison_plan(plan)
     assert len(expanded.queries) == 2
     assert [item.query.time_scope.value for item in expanded.queries] == ["2025-02", "2025-01"]
+
+
+class _Content:
+    def __init__(self, text=None, content_type="output_text", refusal=None):
+        self.text = text
+        self.type = content_type
+        self.refusal = refusal
+
+
+class _OutputItem:
+    def __init__(self, content):
+        self.type = "message"
+        self.content = content
+
+
+class _Response:
+    id = "resp_test"
+    model = "test-model"
+    error = None
+    incomplete_details = None
+
+    def __init__(self, *, output_text=None, output=None, status="completed", incomplete=None):
+        self.output_text = output_text
+        self.output = output or []
+        self.status = status
+        self.incomplete_details = incomplete
+
+
+def test_response_parser_reads_structured_content_when_output_text_is_empty():
+    response = _Response(output=[_OutputItem([_Content('{"goal":"ok"}')])])
+    assert _response_output_text(response) == '{"goal":"ok"}'
+    assert _response_diagnostics(response)["has_output_text"] is False
+
+
+def test_response_diagnostics_identifies_incomplete_response_without_content():
+    incomplete = type("Incomplete", (), {"reason": "max_output_tokens"})()
+    response = _Response(status="incomplete", incomplete=incomplete)
+    diagnostics = _response_diagnostics(response)
+    assert diagnostics["status"] == "incomplete"
+    assert diagnostics["incomplete_reason"] == "max_output_tokens"
+    assert _response_output_text(response) == ""
+
+
+def test_response_diagnostics_identifies_refusal():
+    response = _Response(output=[_OutputItem([_Content(content_type="refusal", refusal="拒否")])])
+    diagnostics = _response_diagnostics(response)
+    assert diagnostics["has_refusal"] is True
 
 
 def test_analysis_plan_adds_intermediate_relationship_entities():
