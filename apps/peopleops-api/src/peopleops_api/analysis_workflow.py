@@ -77,6 +77,8 @@ class OpenAIStructuredModel:
     ) -> None:
         self.model_name = model
         self.max_output_tokens = min(max(max_output_tokens, 256), 16384)
+        self.last_response_diagnostics: dict[str, Any] | None = None
+        self.last_failure_class: str | None = None
         if not api_key:
             self._client = None
             return
@@ -113,14 +115,18 @@ class OpenAIStructuredModel:
                 max_output_tokens=self.max_output_tokens,
             )
             diagnostics = _response_diagnostics(response)
+            self.last_response_diagnostics = diagnostics
             if diagnostics["status"] == "incomplete":
+                self.last_failure_class = "INCOMPLETE_RESPONSE"
                 logger.warning("OpenAI structured output incomplete: %s", diagnostics)
                 raise OpenAIModelError("OpenAI structured output incomplete")
             if diagnostics["has_refusal"]:
+                self.last_failure_class = "REFUSAL"
                 logger.warning("OpenAI structured output refused: %s", diagnostics)
                 raise OpenAIModelError("OpenAI refused structured output")
             output_text = _response_output_text(response)
             if not output_text:
+                self.last_failure_class = "EMPTY_STRUCTURED_OUTPUT"
                 logger.warning("OpenAI structured output was empty: %s", diagnostics)
                 raise OpenAIModelError("OpenAI returned no structured output")
             logger.debug(
@@ -131,10 +137,17 @@ class OpenAIStructuredModel:
             payload = _decode_structured_json(output_text)
             if output_model is AnalysisPlan:
                 payload = _normalize_analysis_plan_payload(payload)
-            return output_model.model_validate(payload)
+            result = output_model.model_validate(payload)
+            self.last_failure_class = None
+            return result
         except OpenAIModelError:
             raise
         except Exception as exc:  # normalize provider details, never persist them
+            self.last_failure_class = (
+                "PARSER_ERROR" if isinstance(exc, json.JSONDecodeError)
+                else "SCHEMA_VALIDATION_ERROR" if hasattr(exc, "errors")
+                else "OPENAI_API_ERROR"
+            )
             logger.warning("OpenAI structured output failed (%s): %s", type(exc).__name__, exc)
             raise OpenAIModelError("OpenAI structured output failed") from exc
 
@@ -214,6 +227,7 @@ def _response_diagnostics(response: Any) -> dict[str, Any]:
     output = getattr(response, "output", None) or []
     contents = [content for item in output for content in (getattr(item, "content", None) or [])]
     incomplete = getattr(response, "incomplete_details", None)
+    usage = getattr(response, "usage", None)
     return {
         "response_id": getattr(response, "id", None),
         "model": getattr(response, "model", None),
@@ -225,6 +239,8 @@ def _response_diagnostics(response: Any) -> dict[str, Any]:
         "has_refusal": any(bool(getattr(content, "refusal", None)) for content in contents),
         "has_error": bool(getattr(response, "error", None)),
         "incomplete_reason": getattr(incomplete, "reason", None) if incomplete else None,
+        "input_tokens": getattr(usage, "input_tokens", None) if usage else None,
+        "output_tokens": getattr(usage, "output_tokens", None) if usage else None,
     }
 
 
@@ -284,6 +300,39 @@ def _normalize_analysis_plan_payload(payload: Any) -> Any:
             query["limit"] = 100
         if "dimensions" not in query and "group_by" in query:
             query["dimensions"] = query.pop("group_by")
+        # TemporalIntent plus provider context is authoritative for relative,
+        # explicit-period, and period-list scopes.  The planning call does not
+        # need to reproduce those concrete values.  Responses may therefore
+        # emit a structurally present but incomplete temporal placeholder;
+        # treat it as absent so the deterministic temporal layer can apply the
+        # resolved scope after parsing.  This is deliberately limited to
+        # temporal shapes and does not repair fields, metrics, or relationships.
+        def normalize_scope(scope: Any) -> Any:
+            if not isinstance(scope, dict):
+                return scope
+            scope_type = scope.get("type")
+            incomplete_scope = (
+                (scope_type == "period" and not scope.get("period"))
+                or (scope_type == "period_list" and not scope.get("periods"))
+                or (scope_type == "date_range" and not all(
+                    scope.get(key) for key in ("field", "start", "end")
+                ))
+                or (scope_type == "payroll_period" and not scope.get("value"))
+                or (scope_type == "period_comparison" and not all(
+                    scope.get(key) for key in ("current", "previous")
+                ))
+            )
+            if incomplete_scope:
+                return None
+            if scope_type == "period_comparison":
+                scope = dict(scope)
+                scope["current"] = normalize_scope(scope.get("current"))
+                scope["previous"] = normalize_scope(scope.get("previous"))
+                if scope["current"] is None or scope["previous"] is None:
+                    return None
+            return scope
+
+        query["time_scope"] = normalize_scope(query.get("time_scope"))
         # Sensitivity is part of SemanticRequest, not ConceptualQuery.
         query.pop("sensitivity", None)
         planned_copy["query"] = query

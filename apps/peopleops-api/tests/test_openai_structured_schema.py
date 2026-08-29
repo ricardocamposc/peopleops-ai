@@ -1,7 +1,5 @@
 import json
 
-import pytest
-
 from peopleops_api.analysis_contracts import AnalysisPlan, StructuredAnswer
 from peopleops_api.mcp_contracts import (
     DiscoveryCatalog,
@@ -54,7 +52,7 @@ def test_structured_decoder_accepts_trailing_provider_content():
     }
 
 
-def test_analysis_plan_preserves_incomplete_time_scope_for_validation():
+def test_analysis_plan_drops_incomplete_time_scope_for_deterministic_resolution():
     payload = {
         "goal": "overtime",
         "queries": [
@@ -69,9 +67,8 @@ def test_analysis_plan_preserves_incomplete_time_scope_for_validation():
         ],
     }
     normalized = _normalize_analysis_plan_payload(payload)
-    assert normalized["queries"][0]["query"]["time_scope"] == payload["queries"][0]["query"]["time_scope"]
-    with pytest.raises(ValueError, match="date_range requires"):
-        AnalysisPlan.model_validate(normalized)
+    assert normalized["queries"][0]["query"]["time_scope"] is None
+    assert AnalysisPlan.model_validate(normalized).queries[0].query.time_scope is None
 
 
 def test_analysis_plan_normalizes_group_by_to_canonical_dimensions():
@@ -196,6 +193,24 @@ def test_response_diagnostics_identifies_refusal():
     response = _Response(output=[_OutputItem([_Content(content_type="refusal", refusal="拒否")])])
     diagnostics = _response_diagnostics(response)
     assert diagnostics["has_refusal"] is True
+
+
+def test_incomplete_temporal_plan_scope_is_left_for_deterministic_resolver():
+    from peopleops_api.analysis_workflow import _normalize_analysis_plan_payload
+
+    payload = {
+        "goal": "overtime",
+        "queries": [{
+            "purpose": "period list",
+            "query": {
+                "entities": ["overtime"],
+                "select": [{"field": "overtime.approved_minutes"}],
+                "time_scope": {"type": "period_list", "periods": [], "field": "overtime.work_date"},
+            },
+        }],
+    }
+    normalized = _normalize_analysis_plan_payload(payload)
+    assert normalized["queries"][0]["query"]["time_scope"] is None
 
 
 def test_analysis_plan_adds_intermediate_relationship_entities():
