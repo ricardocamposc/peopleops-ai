@@ -6,6 +6,24 @@ and it contains no observed results.
 
 ## Canonical ground truth
 
+The current Reference MCP catalog exposes this provider-neutral capability
+matrix:
+
+| Capability | Entities | Operations | Sensitivity |
+| --- | --- | --- | --- |
+| workforce | employee, department, position | read, aggregate | confidential |
+| employment | contract | read, aggregate | confidential |
+| attendance | attendance, attendance_incident | read, aggregate | confidential |
+| overtime | overtime | read, aggregate | confidential |
+| time_off | vacation_balance, vacation_request, leave_request | read, aggregate | confidential |
+| payroll | payroll_period, payroll, payroll_concept, payroll_item | read, aggregate | restricted |
+
+The audit corrected contract-related expectations from `contracts` to
+`employment`, overtime-only questions from `attendance` to `overtime`, and
+non-qualified department dimensions to `department.name`. These changes are
+ground-truth corrections derived from the catalog, not adaptations to model
+output.
+
 `expected_metric_functions` identifies the aggregate (`count`, `sum`, `avg`,
 `min`, or `max`). `expected_metric_fields` identifies the provider-neutral
 field reference used by that aggregate, and `expected_dimensions` contains
