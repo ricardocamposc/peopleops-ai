@@ -325,12 +325,24 @@ def _expand_period_comparison_plan(plan: AnalysisPlan) -> AnalysisPlan:
 def _complete_plan_relationship_entities(
     plan: AnalysisPlan, catalog: DiscoveryCatalog | None
 ) -> AnalysisPlan:
-    """Include relationship endpoints required by the discovered query graph."""
+    """Complete only the minimum relationship closure required by a query.
+
+    The planner may propose entities that are not needed by the selected
+    projection.  Only referenced entities and shortest discovered paths are
+    semantic evidence for the query; unrelated entities must not widen scope.
+    """
 
     if catalog is None:
         return plan
     relationships = {item.relationship_id: item for item in catalog.relationships}
+    # Relationship-only catalogs are valid in focused/in-memory provider
+    # tests; their endpoints are still canonical conceptual entities.
     known_entities = {item.entity_id for item in catalog.entities}
+    known_entities.update(
+        endpoint
+        for relation in catalog.relationships
+        for endpoint in (relation.from_entity, relation.to_entity)
+    )
     entity_aliases = _catalog_entity_aliases(known_entities)
     for planned in plan.queries:
         for item in planned.query.entities:
@@ -385,27 +397,73 @@ def _complete_plan_relationship_entities(
             planned.query.time_scope.field = _resolve_field_reference(
                 planned.query.time_scope.field, entity_aliases
             )
+        for item in planned.query.select:
+            item.field = _catalog_field_repair(item.field, catalog)
+        for metric in planned.query.metrics:
+            if metric.field:
+                metric.field = _catalog_field_repair(metric.field, catalog)
+        for item in planned.query.filters:
+            item.field = _catalog_field_repair(item.field, catalog)
+        planned.query.dimensions = [
+            _catalog_field_repair(item, catalog) for item in planned.query.dimensions
+        ]
+        if planned.query.time_scope and planned.query.time_scope.field:
+            planned.query.time_scope.field = _catalog_field_repair(
+                planned.query.time_scope.field, catalog
+            )
+        for item in planned.query.comparisons:
+            item.left = _catalog_field_repair(item.left, catalog)
+            item.right = _catalog_field_repair(item.right, catalog)
+        _normalize_projection_aliases(planned.query)
         referenced_entities = _referenced_query_entities(planned.query)
-        for entity_id in referenced_entities:
-            if entity_id in known_entities and entity_id not in entities:
-                entities.append(entity_id)
-        for relationship_id in planned.query.relationships:
-            relationship = relationships.get(relationship_id)
-            if relationship is None:
-                continue
-            for entity_id in (relationship.from_entity, relationship.to_entity):
-                if entity_id not in entities:
-                    entities.append(entity_id)
-        for source, target in _entity_pairs(entities):
+        required_entities = (
+            {entity_id for entity_id in referenced_entities if entity_id in known_entities}
+            if referenced_entities
+            else {entity_id for entity_id in entities if entity_id in known_entities}
+        )
+        if (
+            planned.query.time_scope is not None
+            and planned.query.time_scope.type == "payroll_period"
+            and "payroll_period" in known_entities
+        ):
+            # The conceptual provider contract requires the period entity for
+            # period predicates; this is contract completion, not a physical
+            # schema mapping.
+            required_entities.add("payroll_period")
+        ordered_required_entities = [
+            entity_id for entity_id in entities if entity_id in required_entities
+        ]
+        for entity_id in sorted(required_entities):
+            if entity_id not in ordered_required_entities:
+                ordered_required_entities.append(entity_id)
+        required_relationships: set[str] = set()
+        if not referenced_entities:
+            # A field-less query has no narrower projection signal, so an
+            # explicitly declared relationship remains part of its contract.
+            required_relationships.update(
+                relationship_id
+                for relationship_id in planned.query.relationships
+                if relationship_id in relationships
+            )
+        for source, target in _entity_pairs(sorted(required_entities)):
             for relationship_id in _relationship_path(source, target, catalog):
-                if relationship_id not in planned.query.relationships:
-                    planned.query.relationships.append(relationship_id)
+                required_relationships.add(relationship_id)
                 relationship = relationships.get(relationship_id)
                 if relationship:
+                    required_entities.update((relationship.from_entity, relationship.to_entity))
                     for entity_id in (relationship.from_entity, relationship.to_entity):
-                        if entity_id not in entities:
-                            entities.append(entity_id)
-        planned.query.entities = entities
+                        if entity_id not in ordered_required_entities:
+                            ordered_required_entities.append(entity_id)
+        unknown_entities = [entity_id for entity_id in entities if entity_id not in known_entities]
+        planned.query.entities = list(dict.fromkeys([*ordered_required_entities, *unknown_entities]))
+        planned.query.relationships = [
+            relationship_id
+            for relationship_id in planned.query.relationships
+            if relationship_id in required_relationships
+        ]
+        for relationship_id in required_relationships:
+            if relationship_id not in planned.query.relationships:
+                planned.query.relationships.append(relationship_id)
         for metric in metrics:
             aliases[metric.alias or metric.field or metric.function] = metric.alias or metric.field or metric.function
         metric_labels = {
@@ -441,6 +499,61 @@ def _resolve_field_reference(reference: str, aliases: dict[str, str]) -> str:
     if not separator:
         return reference
     return f"{aliases.get(entity, entity)}.{field}"
+
+
+def _catalog_field_repair(reference: str, catalog: DiscoveryCatalog) -> str:
+    """Repair a qualified reference only when its exact field id is unique."""
+
+    if "." not in reference:
+        return reference
+    _, field = reference.split(".", 1)
+    known_fields = {
+        f"{item.entity_id}.{candidate.field_id}"
+        for item in catalog.entities
+        for candidate in item.fields
+    }
+    if reference in known_fields:
+        return reference
+    candidates = [
+        f"{item.entity_id}.{candidate.field_id}"
+        for item in catalog.entities
+        for candidate in item.fields
+        if candidate.field_id == field
+    ]
+    return candidates[0] if len(candidates) == 1 else reference
+
+
+def _projection_label(query: Any, item: Any) -> str:
+    if hasattr(item, "function"):
+        if item.alias:
+            return item.alias
+        return f"{item.function}_{(item.field or item.function).rsplit('.', 1)[-1]}"
+    return item.alias or item.field.rsplit(".", 1)[-1]
+
+
+def _normalize_projection_aliases(query: Any) -> None:
+    """Make the complete provider projection namespace deterministic."""
+
+    used: set[str] = set()
+    for item in query.select:
+        base = _technical_alias(_projection_label(query, item))
+        label = base
+        suffix = 2
+        while label in used:
+            label = f"{base}_{suffix}"
+            suffix += 1
+        if item.alias is not None or label != base:
+            item.alias = label
+        used.add(label)
+    for metric in query.metrics:
+        base = _technical_alias(_projection_label(query, metric))
+        label = base
+        suffix = 2
+        while label in used:
+            label = f"{base}_{suffix}"
+            suffix += 1
+        metric.alias = label
+        used.add(label)
 
 
 def _referenced_query_entities(query: Any) -> set[str]:
@@ -649,6 +762,11 @@ def _catalog_conceptual_validation_errors(
         if item.operator in {"in", "not_in"} and isinstance(item.value, list):
             if any(isinstance(value, str) and value in known_fields for value in item.value):
                 errors.append(f"INVALID_FILTER: {item.field} membership values must be scalar values")
+
+    projection_labels = [_projection_label(query, item) for item in query.select]
+    projection_labels.extend(_projection_label(query, item) for item in query.metrics)
+    if len(projection_labels) != len(set(projection_labels)):
+        errors.append("DUPLICATE_ALIAS: select and metric aliases must be unique")
 
     # Order references may be either a canonical field or a generated metric
     # alias. Aliases are checked against the query's own metrics, while fields
@@ -1070,7 +1188,17 @@ class AnalysisWorkflow:
                 "period contains its required non-empty value; for an explicit period use its exact "
                 "semantic period identifier as value rather than inventing a date range; and never attach current/previous to "
                 "a date_range. Do not put literal dates in QueryComparison.right because that field "
-                "is a conceptual field reference. If the catalog does not support the requested "
+                "is a conceptual field reference. Filter.value is always a literal scalar or list of "
+                "literals; never prefix a literal with an entity name, and never use a field reference "
+                "as a filter value. A field-to-field comparison belongs in comparisons, not filters. "
+                "For payroll_period scopes, express the period only in time_scope using the exact "
+                "period-code field and value from the catalog; do not add a second filter on a payroll "
+                "foreign-key field, do not use current/previous as field references, and do not use "
+                "current/previous as period-code values. A payroll_period time_scope requires the "
+                "payroll_period entity in the query. "
+                "Do not add entities or relationships unless they are required by a selected field, "
+                "metric, dimension, filter, time field, comparison, or the minimum relationship path "
+                "between those references. Do not include unrelated sensitive domains. If the catalog does not support the requested "
                 "operation, return no query rather than changing the user's intent."
             ),
             instructions=(

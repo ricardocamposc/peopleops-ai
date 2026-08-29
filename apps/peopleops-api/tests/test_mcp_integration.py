@@ -34,7 +34,9 @@ def reference_server():
         ],
         cwd=server_root,
         env=env,
-        stdout=subprocess.PIPE,
+        # An unread pipe can fill while uvicorn/provider logs, blocking the
+        # process and making the health wait appear to hang.
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.STDOUT,
     )
     try:
@@ -45,12 +47,15 @@ def reference_server():
             except OSError:
                 time.sleep(0.1)
         else:
-            output = process.stdout.read().decode(errors="replace") if process.stdout else ""
-            pytest.fail(f"reference MCP server could not start: {output}")
+            pytest.fail("reference MCP server could not start before the bounded health deadline")
         yield f"http://127.0.0.1:{port}"
     finally:
         process.terminate()
-        process.wait(timeout=5)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
 
 
 def test_gateway_discovers_catalog_over_real_http(reference_server) -> None:

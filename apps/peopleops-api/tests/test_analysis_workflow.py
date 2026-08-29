@@ -11,7 +11,15 @@ from peopleops_api.analysis_workflow import (
 )
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction, Conversation
-from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QuerySelect, QueryValidation
+from peopleops_api.query_contracts import (
+    ConceptualQuery,
+    QueryFilter,
+    QueryMetric,
+    QueryPeriod,
+    QueryResult,
+    QuerySelect,
+    QueryValidation,
+)
 from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrievalStatus
 
 
@@ -434,6 +442,233 @@ def test_plan_preserves_unknown_fields_for_provider_feedback(db_session):
     normalized = _complete_plan_relationship_entities(plan, build_catalog())
 
     assert normalized.queries[0].query.select[0].field == "employee.not_in_catalog"
+
+
+def test_relationship_completion_removes_unreferenced_sensitive_entities():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="employees by department",
+        queries=[
+            {
+                "purpose": "minimal workforce query",
+                "query": ConceptualQuery(
+                    entities=["employee", "department", "payroll"],
+                    select=[QuerySelect(field="employee.employee_code")],
+                    dimensions=["department.name"],
+                    relationships=["employee_department", "payroll_employee"],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert set(query.entities) == {"employee", "department"}
+    assert query.relationships == ["employee_department"]
+
+
+def test_relationship_completion_keeps_minimal_multi_hop_path():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="payroll periods by employee",
+        queries=[
+            {
+                "purpose": "multi-hop query",
+                "query": ConceptualQuery(
+                    entities=["employee", "payroll_period"],
+                    select=[
+                        QuerySelect(field="employee.employee_code"),
+                        QuerySelect(field="payroll_period.code"),
+                    ],
+                    metrics=[QueryMetric(field="payroll.net_amount", function="sum")],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert {"employee", "payroll", "payroll_period"}.issubset(query.entities)
+    assert set(query.relationships) == {"payroll_employee", "payroll_period"}
+
+
+def test_filter_literals_are_not_conceptual_references():
+    from reference_mcp_server.discovery import build_catalog
+
+    valid = ConceptualQuery(
+        entities=["employee"],
+        select=[QuerySelect(field="employee.employee_code")],
+        filters=[QueryFilter(field="employee.status", operator="eq", value="active")],
+    )
+    invalid = valid.model_copy(
+        update={
+            "filters": [
+                QueryFilter(
+                    field="employee.status", operator="eq", value="employee.active"
+                )
+            ]
+        }
+    )
+
+    assert _catalog_conceptual_validation_errors(valid, build_catalog()) == []
+    assert any("INVALID_FILTER" in error for error in _catalog_conceptual_validation_errors(invalid, build_catalog()))
+
+
+def test_projection_aliases_are_unique_across_select_and_metrics():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="alias collision",
+        queries=[
+            {
+                "purpose": "alias collision",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[
+                        QuerySelect(field="employee.department_id", alias="department_id"),
+                        QuerySelect(field="employee.status", alias="department_id"),
+                    ],
+                    metrics=[QueryMetric(field="employee.id", function="count", alias="department_id")],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    labels = [item.alias for item in query.select] + [item.alias for item in query.metrics]
+    assert len(labels) == len(set(labels))
+    assert _catalog_conceptual_validation_errors(query, build_catalog()) == []
+    assert [item.field for item in query.select] == [
+        "employee.department_id",
+        "employee.status",
+    ]
+    assert query.metrics[0].field == "employee.id"
+
+
+def test_generated_metric_alias_is_disambiguated_from_explicit_select_alias():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="generated alias collision",
+        queries=[
+            {
+                "purpose": "generated alias collision",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[
+                        QuerySelect(field="employee.id", alias="count_id"),
+                        QuerySelect(field="count(employee.id)"),
+                    ],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert len({item.alias for item in query.select} | {metric.alias for metric in query.metrics}) == 2
+    assert _catalog_conceptual_validation_errors(query, build_catalog()) == []
+
+
+def test_catalog_repair_uses_only_unique_field_identifier():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="worked minutes",
+        queries=[
+            {
+                "purpose": "unique catalog repair",
+                "query": ConceptualQuery(
+                    entities=["attendance_incident"],
+                    select=[QuerySelect(field="attendance_incident.worked_minutes")],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert query.select[0].field == "attendance.worked_minutes"
+    assert query.entities == ["attendance"]
+
+
+def test_catalog_repair_does_not_guess_ambiguous_field_identifier():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="status",
+        queries=[
+            {
+                "purpose": "ambiguous catalog reference",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[QuerySelect(field="employee.status")],
+                    dimensions=["status"],
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert query.dimensions == ["status"]
+    assert any("UNQUALIFIED_FIELD" in error for error in _catalog_conceptual_validation_errors(query, build_catalog()))
+
+
+def test_period_comparison_expansion_preserves_complete_independent_scopes():
+    from peopleops_api.analysis_workflow import _expand_period_comparison_plan
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="compare payroll periods",
+        queries=[
+            {
+                "purpose": "period comparison",
+                "query": ConceptualQuery(
+                    entities=["payroll"],
+                    metrics=[QueryMetric(field="payroll.net_amount", function="sum")],
+                    time_scope=QueryPeriod(
+                        type="period_comparison",
+                        current=QueryPeriod(type="payroll_period", value="2025-02"),
+                        previous=QueryPeriod(type="payroll_period", value="2025-01"),
+                    ),
+                ),
+            }
+        ],
+    )
+
+    expanded = _complete_plan_relationship_entities(_expand_period_comparison_plan(plan), build_catalog())
+
+    assert [item.logical_role for item in expanded.queries] == ["current", "previous"]
+    assert [item.query.time_scope.value for item in expanded.queries] == ["2025-02", "2025-01"]
+    assert all(item.query.time_scope.type == "payroll_period" for item in expanded.queries)
+
+
+def test_payroll_period_scope_adds_required_conceptual_entity():
+    from peopleops_api.analysis_workflow import _complete_plan_relationship_entities
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="payroll period",
+        queries=[
+            {
+                "purpose": "period scoped query",
+                "query": ConceptualQuery(
+                    entities=["payroll"],
+                    metrics=[QueryMetric(field="payroll.net_amount", function="sum")],
+                    time_scope=QueryPeriod(type="payroll_period", value="2025-02"),
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert "payroll_period" in query.entities
+    assert "payroll_period" in query.relationships
 
 
 def test_catalog_preflight_accepts_only_discovered_qualified_fields():

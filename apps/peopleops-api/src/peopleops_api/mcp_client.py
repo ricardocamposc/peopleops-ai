@@ -110,16 +110,27 @@ class MCPClient:
         raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id)
 
     def _run(self, coroutine: Any, context: DiscoveryRequestContext) -> BaseModel:
+        async def bounded() -> BaseModel:
+            return await asyncio.wait_for(coroutine, timeout=self.timeout_seconds)
+
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(coroutine)
+            try:
+                return asyncio.run(bounded())
+            except (TimeoutError, asyncio.TimeoutError) as exc:
+                raise MCPTimeoutError(
+                    "MCP_TIMEOUT",
+                    "MCP provider timed out",
+                    request_id=context.request_id,
+                    retryable=True,
+                ) from exc
 
         result: Future[BaseModel] = Future()
 
         def runner() -> None:
             try:
-                result.set_result(asyncio.run(coroutine))
+                result.set_result(asyncio.run(bounded()))
             except BaseException as exc:
                 result.set_exception(exc)
 
