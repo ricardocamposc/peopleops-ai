@@ -1214,6 +1214,8 @@ class AnalysisWorkflow:
                 "is a conceptual field reference. Filter.value is always a literal scalar or list of "
                 "literals; never prefix a literal with an entity name, and never use a field reference "
                 "as a filter value. A field-to-field comparison belongs in comparisons, not filters. "
+                "For a calendar period or period list, emit one analytical base query; never emit one "
+                "query per requested period because the deterministic temporal layer owns expansion. "
                 "For payroll_period scopes, express the period only in time_scope using the exact "
                 "period-code field and value from the catalog; do not add a second filter on a payroll "
                 "foreign-key field, do not use current/previous as field references, and do not use "
@@ -1711,8 +1713,23 @@ def _apply_temporal_intent(
                         for planned in plan.queries
                     ]
                 })
+        if intent.kind == "period_list":
+            field = _temporal_field(plan.queries[0].query, catalog)
+            resolved = resolve_temporal_intent(intent, context, field=field or "")
+            expected = {_period_signature(period) for _, period in resolved}
+            observed = {
+                _period_signature(planned.query.time_scope)
+                for planned in plan.queries
+            }
+            if expected and observed == expected and len(plan.queries) == len(expected):
+                return plan
     expanded: list[Any] = []
-    for planned in plan.queries:
+    planned_queries = (
+        [plan.queries[0]]
+        if intent.kind == "period_list" and len(plan.queries) > 1
+        else plan.queries
+    )
+    for planned in planned_queries:
         field = _temporal_field(planned.query, catalog)
         if field is None:
             expanded.append(planned)
@@ -1722,9 +1739,52 @@ def _apply_temporal_intent(
             expanded.append(planned)
             continue
         for role, period in resolved:
-            query = planned.query.model_copy(update={"time_scope": period})
-            expanded.append(planned.model_copy(update={"query": query, "logical_role": role}))
-    return plan.model_copy(update={"queries": expanded})
+            # Once the deterministic temporal resolver owns the scope, discard
+            # model-emitted filters on that same temporal field.  Keeping the
+            # first period's bounds while expanding a period list would create
+            # a silent cross-product (or an empty intersection) and would make
+            # the authoritative scope non-authoritative.
+            filters = [
+                item
+                for item in planned.query.filters
+                if item.field != period.field
+            ]
+            query = planned.query.model_copy(update={"time_scope": period, "filters": filters})
+            purpose = planned.purpose
+            if intent.kind == "period_list" and period.period is not None:
+                purpose = (
+                    f"{planned.query.goal} "
+                    f"({period.period.year:04d}-{period.period.month:02d})"
+                )
+            expanded.append(planned.model_copy(update={"purpose": purpose, "query": query, "logical_role": role}))
+    unique: list[Any] = []
+    seen: set[str] = set()
+    for planned in expanded:
+        key = json.dumps(
+            {
+                "role": _logical_query_role(planned),
+                "query": planned.query.model_dump(mode="json"),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if key not in seen:
+            seen.add(key)
+            unique.append(planned)
+    return plan.model_copy(update={"queries": unique})
+
+
+def _period_signature(period: Any) -> tuple[Any, ...] | None:
+    if period is None:
+        return None
+    if getattr(period, "period", None) is not None:
+        return ("period", period.period.year, period.period.month)
+    return (
+        period.type,
+        period.start,
+        period.end,
+        period.value,
+    )
 
 
 def _temporal_field(query: Any, catalog: DiscoveryCatalog | None) -> str | None:

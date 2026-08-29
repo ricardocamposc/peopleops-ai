@@ -1,7 +1,9 @@
 from datetime import date, datetime
 
-from peopleops_api.analysis_contracts import TemporalIntent
-from peopleops_api.mcp_contracts import TemporalContext
+from peopleops_api.analysis_contracts import AnalysisPlan, PlannedQuery, TemporalIntent
+from peopleops_api.mcp_contracts import DiscoveryCatalog, DiscoveryEntity, DiscoveryField, TemporalContext
+from peopleops_api.query_contracts import ConceptualQuery, QueryFilter, QuerySelect
+from peopleops_api.analysis_workflow import _apply_temporal_intent
 from peopleops_api.temporal import resolve_temporal_intent
 
 
@@ -63,3 +65,66 @@ def test_period_list_uses_reference_year_without_contiguous_range() -> None:
         {"year": 2026, "month": 3},
         {"year": 2026, "month": 6},
     ]
+
+
+def test_period_list_temporal_application_is_idempotent() -> None:
+    catalog = DiscoveryCatalog(
+        provider_type="test", catalog_version="1", fingerprint="test", capabilities=[],
+        relationships=[], entities=[DiscoveryEntity(
+            entity_id="overtime", business_name="Overtime", description="", sensitivity="internal",
+            supported_operations=["read"], temporal_fields=["work_date"], fields=[
+                DiscoveryField(field_id="approved_minutes", business_name="", description="", data_type="integer", nullable=False, semantic_role="metric", sensitivity="internal"),
+                DiscoveryField(field_id="work_date", business_name="", description="", data_type="date", nullable=False, semantic_role="date", sensitivity="internal", temporal_kind="date"),
+            ],
+        )],
+    )
+    plan = AnalysisPlan(
+        goal="overtime",
+        queries=[PlannedQuery(
+            purpose="overtime",
+            query=ConceptualQuery(
+                entities=["overtime"], select=[QuerySelect(field="overtime.approved_minutes")]
+            ),
+        )],
+    )
+    intent = TemporalIntent(kind="period_list", months=[1, 3, 6])
+    first = _apply_temporal_intent(plan, intent, context(date(2026, 8, 29)), catalog)
+    second = _apply_temporal_intent(first, intent, context(date(2026, 8, 29)), catalog)
+    assert len(first.queries) == 3
+    assert len(second.queries) == 3
+
+
+def test_authoritative_period_replaces_model_temporal_filters() -> None:
+    catalog = DiscoveryCatalog(
+        provider_type="test", catalog_version="1", fingerprint="test",
+        capabilities=[], relationships=[], entities=[DiscoveryEntity(
+            entity_id="overtime", business_name="Overtime", description="", sensitivity="internal",
+            supported_operations=["read"], temporal_fields=["work_date"], fields=[
+                DiscoveryField(field_id="status", business_name="", description="", data_type="string", nullable=False, semantic_role="attribute", sensitivity="internal"),
+                DiscoveryField(field_id="work_date", business_name="", description="", data_type="date", nullable=False, semantic_role="date", sensitivity="internal", temporal_kind="date"),
+            ],
+        )],
+    )
+    plan = AnalysisPlan(
+        goal="overtime",
+        queries=[PlannedQuery(purpose="overtime", query=ConceptualQuery(
+            entities=["overtime"],
+            select=[QuerySelect(field="overtime.status")],
+            filters=[
+                QueryFilter(field="overtime.work_date", operator="gte", value="2026-01-01"),
+                QueryFilter(field="overtime.status", operator="eq", value="approved"),
+            ],
+        ))],
+    )
+    resolved = _apply_temporal_intent(
+        plan, TemporalIntent(kind="period_list", months=[1, 3, 6]),
+        context(date(2026, 8, 29)), catalog,
+    )
+    assert len(resolved.queries) == 3
+    assert [q.query.time_scope.period.model_dump() for q in resolved.queries] == [
+        {"year": 2026, "month": 1}, {"year": 2026, "month": 3}, {"year": 2026, "month": 6}
+    ]
+    assert all(
+        [f.field for f in q.query.filters] == ["overtime.status"]
+        for q in resolved.queries
+    )

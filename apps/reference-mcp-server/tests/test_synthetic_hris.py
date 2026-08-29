@@ -131,6 +131,18 @@ def test_ground_truth_scenarios_are_coherent(migrated_database) -> None:
         )
         assert cursor.fetchone() == ("E-103", 10.0, 0)
 
+        cursor.execute(
+            "SELECT to_char(work_date, 'YYYY-MM'), COALESCE(SUM(approved_minutes), 0) "
+            "FROM overtime_record WHERE work_date >= '2026-01-01' AND work_date < '2026-07-01' "
+            "GROUP BY 1 ORDER BY 1"
+        )
+        assert cursor.fetchall() == [("2026-01", 180), ("2026-02", 120), ("2026-03", 240)]
+        cursor.execute(
+            "SELECT count(*) FROM overtime_record "
+            "WHERE work_date >= '2026-06-01' AND work_date < '2026-07-01'"
+        )
+        assert cursor.fetchone() == (0,)
+
 
 def test_payroll_checks_are_true_for_seeded_rows(migrated_database) -> None:
     _seed(migrated_database)

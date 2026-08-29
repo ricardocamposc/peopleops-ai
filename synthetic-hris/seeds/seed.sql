@@ -29,7 +29,10 @@ INSERT INTO attendance_record (id, employee_id, work_date, status, scheduled_min
 INSERT INTO attendance_incident (id, employee_id, incident_date, incident_type, minutes, status) VALUES
   (1, 2, '2025-02-10', 'late', 15, 'approved'), (2, 3, '2025-02-10', 'absence', 480, 'approved');
 INSERT INTO overtime_record (id, employee_id, work_date, approved_minutes, status) VALUES
-  (1, 1, '2025-02-12', 120, 'approved'), (2, 4, '2025-02-12', 600, 'approved');
+  (1, 1, '2025-02-12', 120, 'approved'), (2, 4, '2025-02-12', 600, 'approved'),
+  (3, 1, '2026-01-12', 60, 'approved'), (4, 2, '2026-01-18', 120, 'approved'),
+  (5, 1, '2026-02-10', 90, 'approved'), (6, 3, '2026-02-21', 30, 'approved'),
+  (7, 2, '2026-03-08', 180, 'approved'), (8, 4, '2026-03-22', 60, 'approved');
 INSERT INTO vacation_balance (id, employee_id, period_year, earned_days, used_days, scheduled_days, available_days) VALUES
   (1, 1, 2025, 20, 5, 3, 12), (2, 2, 2025, 14, 8, 4, 2),
   (3, 3, 2025, 18, 3, 0, 15), (4, 4, 2025, 20, 10, 2, 8);
