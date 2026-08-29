@@ -7,6 +7,7 @@ from peopleops_api.analysis_workflow import (
     AnalysisWorkflow,
     _catalog_conceptual_validation_errors,
     _complete_plan_relationship_entities,
+    _deterministic_result_facts,
     _semantic_catalog_errors,
 )
 from peopleops_api.mcp_contracts import SecurityContext
@@ -21,6 +22,19 @@ from peopleops_api.query_contracts import (
     QueryValidation,
 )
 from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrievalStatus
+
+
+def test_deterministic_result_facts_expose_numeric_totals_to_synthesis() -> None:
+    result = QueryResult(
+        request_id="req",
+        validation=QueryValidation(valid=True, query_hash="hash", catalog_version="v1"),
+        columns=["approved_minutes"],
+        rows=[{"approved_minutes": 60}, {"approved_minutes": 120}],
+    )
+    assert _deterministic_result_facts(result) == {
+        "row_count": 2,
+        "numeric_sums": {"approved_minutes": 180},
+    }
 
 
 @dataclass
