@@ -11,10 +11,12 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from reference_mcp_server.alternate_schema import build_alternate_catalog
+from reference_mcp_server.audit import monotonic_started, record_interaction
 from reference_mcp_server.config import get_settings
 from reference_mcp_server.discovery import CatalogMetadata, build_catalog, build_catalog_from_database
 from reference_mcp_server.execution import QueryExecutionError, execute_query, validate_query
 from reference_mcp_server.query_contracts import ConceptualQuery
+from reference_mcp_server.temporal import get_temporal_context
 
 settings = get_settings()
 
@@ -81,14 +83,28 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
         except Exception as exc:
             raise catalog_error() from exc
 
+    @mcp.tool(title="Get temporal context")
+    def temporal_context(request_id: str, security: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return provider-source calendar context without exposing SQL or physical schema."""
+        try:
+            return get_temporal_context(settings, request_id=request_id).model_dump(mode="json")
+        except Exception as exc:
+            raise catalog_error() from exc
+
     @mcp.tool(title="Validate conceptual query")
     def validate_conceptual_query(
         query: dict[str, Any], request_id: str, security: dict[str, Any] | None = None
     ) -> dict[str, Any]:
         """Validate a provider-neutral query without executing it."""
+        started_at, _ = monotonic_started()
         try:
             typed_query = ConceptualQuery.model_validate(query)
         except Exception as exc:
+            if settings.mcp_audit_enabled:
+                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
+                                   started_at=started_at, status="invalid_contract",
+                                   conceptual_query=query, error_code="INVALID_CONCEPTUAL_QUERY",
+                                   error_message_safe="conceptual query contract invalid")
             raise ToolError("INVALID_CONCEPTUAL_QUERY") from exc
         try:
             catalog = current_catalog()
@@ -102,8 +118,24 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
                 request_id=request_id,
                 max_result_rows=settings.max_result_rows,
             )
+            if settings.mcp_audit_enabled:
+                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
+                                   started_at=started_at,
+                                   status="accepted" if result.valid else "rejected",
+                                   catalog_version=result.catalog_version, provider_type=catalog.provider_type,
+                                   conceptual_query=typed_query.model_dump(mode="json"),
+                                   query_hash=result.query_hash,
+                                   validation_result=result.model_dump(mode="json"),
+                                   validation_errors=result.errors,
+                                   error_code=None if result.valid else "QUERY_VALIDATION_ERROR",
+                                   error_message_safe=None if result.valid else "query validation failed")
             return result.model_dump(mode="json")
         except Exception as exc:
+            if settings.mcp_audit_enabled:
+                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
+                                   started_at=started_at, status="failed",
+                                   conceptual_query=query, error_code="INVALID_CONCEPTUAL_QUERY",
+                                   error_message_safe="conceptual validation failed")
             raise ToolError("INVALID_CONCEPTUAL_QUERY") from exc
 
     @mcp.tool(title="Execute conceptual query")

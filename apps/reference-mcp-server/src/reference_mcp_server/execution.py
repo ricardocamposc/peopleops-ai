@@ -5,12 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import date
 from dataclasses import dataclass
 from typing import Any
 
 import psycopg
 
 from reference_mcp_server.config import Settings
+from reference_mcp_server.audit import monotonic_started, record_interaction
 from reference_mcp_server.discovery import CatalogMetadata, EntityMetadata, RelationshipMetadata
 from reference_mcp_server.query_contracts import (
     ConceptualQuery,
@@ -77,6 +79,7 @@ def validate_query(
     refs += query.dimensions
     if query.time_scope:
         refs += _period_fields(query.time_scope)
+        _validate_temporal_scope(query.time_scope, entities, selected_entities, errors)
     sensitive = False
     for reference in refs:
         try:
@@ -241,13 +244,42 @@ def execute_query(
     request_id: str,
     scopes: list[str],
 ) -> QueryResult:
+    started_at, _ = monotonic_started()
+    query_payload = query.model_dump(mode="json")
+    physical: PhysicalQuery | None = None
+    validation: QueryValidation | None = None
     validation = validate_query(
         query, catalog, scopes, request_id=request_id, max_result_rows=settings.max_result_rows
     )
     if not validation.valid:
+        if settings.mcp_audit_enabled:
+            record_interaction(
+                settings, tool_name="execute_conceptual_query", request_id=request_id,
+                started_at=started_at, status="validation_rejected",
+                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+                conceptual_query=query_payload, query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"),
+                validation_errors=validation.errors, execution_attempted=False,
+                error_code="QUERY_VALIDATION_ERROR", error_message_safe="query validation failed",
+            )
         return QueryResult(request_id=request_id, validation=validation)
-    physical = translate_query(query, catalog)
-    validate_physical_query(physical)
+    try:
+        physical = translate_query(query, catalog)
+        validate_physical_query(physical)
+    except QueryExecutionError as exc:
+        if settings.mcp_audit_enabled:
+            record_interaction(
+                settings, tool_name="execute_conceptual_query", request_id=request_id,
+                started_at=started_at, status="physical_validation_failed",
+                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+                conceptual_query=query_payload, query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"),
+                physical_sql=physical.sql if physical else None,
+                physical_params=physical.params if physical else None,
+                execution_attempted=False, error_code=exc.code,
+                error_message_safe="physical query validation failed",
+            )
+        raise
     result_limit = min(query.limit, settings.max_result_rows)
     try:
         with (
@@ -276,14 +308,47 @@ def execute_query(
                         "RESULT_LIMIT_EXCEEDED", "query result exceeded the provider size limit"
                     )
     except psycopg.errors.QueryCanceled as exc:
+        if settings.mcp_audit_enabled:
+            record_interaction(
+                settings, tool_name="execute_conceptual_query", request_id=request_id,
+                started_at=started_at, status="execution_failed",
+                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+                conceptual_query=query_payload, query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
+                physical_params=physical.params, execution_attempted=True,
+                execution_success=False, error_code="QUERY_TIMEOUT",
+                error_message_safe="query exceeded provider timeout",
+            )
         raise QueryExecutionError(
             "QUERY_TIMEOUT", "query exceeded the provider timeout", retryable=True
         ) from exc
     except (psycopg.errors.SyntaxError, psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+        if settings.mcp_audit_enabled:
+            record_interaction(
+                settings, tool_name="execute_conceptual_query", request_id=request_id,
+                started_at=started_at, status="execution_failed",
+                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+                conceptual_query=query_payload, query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
+                physical_params=physical.params, execution_attempted=True,
+                execution_success=False, error_code="QUERY_VALIDATION_FAILED",
+                error_message_safe="provider rejected the validated query",
+            )
         raise QueryExecutionError(
             "QUERY_VALIDATION_FAILED", "provider rejected the validated physical query"
         ) from exc
     except (psycopg.Error, OSError) as exc:
+        if settings.mcp_audit_enabled:
+            record_interaction(
+                settings, tool_name="execute_conceptual_query", request_id=request_id,
+                started_at=started_at, status="execution_failed",
+                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+                conceptual_query=query_payload, query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
+                physical_params=physical.params, execution_attempted=True,
+                execution_success=False, error_code="QUERY_EXECUTION_ERROR",
+                error_message_safe="provider failed to execute the query",
+            )
         raise QueryExecutionError(
             "QUERY_EXECUTION_ERROR", "provider failed to execute the validated query"
         ) from exc
@@ -299,6 +364,16 @@ def execute_query(
         result_reference=f"mcp://{catalog.provider_type}/query/{validation.query_hash}",
         request_id=request_id,
     )
+    if settings.mcp_audit_enabled:
+        record_interaction(
+            settings, tool_name="execute_conceptual_query", request_id=request_id,
+            started_at=started_at, status="completed",
+            catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
+            conceptual_query=query_payload, query_hash=validation.query_hash,
+            validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
+            physical_params=physical.params, execution_attempted=True,
+            execution_success=True, row_count=len(rows),
+        )
     return QueryResult(
         request_id=request_id,
         validation=validation,
@@ -429,6 +504,41 @@ def _period_fields(period: QueryPeriod) -> list[str]:
     return [period.field] if period.field else []
 
 
+def _validate_temporal_scope(
+    period: QueryPeriod,
+    entities: dict[str, EntityMetadata],
+    selected_entities: set[str],
+    errors: list[str],
+) -> None:
+    if period.type == "period_comparison":
+        if period.current:
+            _validate_temporal_scope(period.current, entities, selected_entities, errors)
+        if period.previous:
+            _validate_temporal_scope(period.previous, entities, selected_entities, errors)
+        return
+    if period.type == "payroll_period" and not period.field:
+        return
+    if not period.field:
+        errors.append("INVALID_TIME_FIELD: temporal scope requires a field")
+        return
+    try:
+        entity_id, field_id = _split_reference(period.field)
+    except QueryExecutionError as exc:
+        errors.append(str(exc))
+        return
+    entity = entities.get(entity_id)
+    field = next((item for item in entity.fields if item.field_id == field_id), None) if entity else None
+    if entity_id not in selected_entities or field is None:
+        errors.append(f"INVALID_TIME_FIELD: unknown temporal field: {period.field}")
+        return
+    temporal = field.temporal_kind in {"date", "datetime"} or field_id in entity.temporal_fields
+    period_capable = entity.supports_period_filter or field.temporal_kind == "period"
+    if period.type == "date_range" and not temporal:
+        errors.append(f"INVALID_TIME_FIELD: date_range requires date/datetime field: {period.field}")
+    if period.type in {"period", "period_list", "payroll_period"} and not (temporal or period_capable):
+        errors.append(f"INVALID_TIME_FIELD: period is not supported by field: {period.field}")
+
+
 def _period_sql(
     period: QueryPeriod,
     entities: dict[str, EntityMetadata],
@@ -439,6 +549,20 @@ def _period_sql(
         field, _ = _field_sql(period.field or "", entities, aliases)
         params.extend([period.start, period.end])
         return [f"{field} BETWEEN %s AND %s"]
+    if period.type in {"period", "period_list"}:
+        values = [period.period] if period.type == "period" else period.periods
+        predicates: list[str] = []
+        for value in values:
+            if value is None:
+                continue
+            start = date(value.year, value.month, 1)
+            next_month = value.month % 12 + 1
+            next_year = value.year + (1 if value.month == 12 else 0)
+            end = date(next_year, next_month, 1)
+            field, _ = _field_sql(period.field or "", entities, aliases)
+            params.extend([start, end])
+            predicates.append(f"{field} >= %s AND {field} < %s")
+        return ["(" + " OR ".join(predicates) + ")"] if predicates else []
     if period.type == "payroll_period":
         field, _ = _field_sql("payroll_period.code", entities, aliases)
         params.append(period.value)

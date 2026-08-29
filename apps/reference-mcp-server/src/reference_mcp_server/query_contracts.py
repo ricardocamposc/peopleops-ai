@@ -49,13 +49,23 @@ class QueryFilter(BaseModel):
         return self
 
 
+class PeriodValue(BaseModel):
+    """Provider-neutral calendar period; physical representation stays provider-side."""
+
+    model_config = ConfigDict(extra="forbid")
+    year: int = Field(ge=1, le=9999)
+    month: int = Field(ge=1, le=12)
+
+
 class QueryPeriod(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["date_range", "payroll_period", "period_comparison"]
+    type: Literal["date_range", "period", "period_list", "payroll_period", "period_comparison"]
     field: str | None = None
     start: date | None = None
     end: date | None = None
     value: str | None = None
+    period: PeriodValue | None = None
+    periods: list[PeriodValue] = Field(default_factory=list, max_length=120)
     current: QueryPeriod | None = None
     previous: QueryPeriod | None = None
 
@@ -67,6 +77,10 @@ class QueryPeriod(BaseModel):
             raise ValueError("period start must not be after end")
         if self.type == "payroll_period" and not self.value:
             raise ValueError("payroll_period requires value")
+        if self.type == "period" and self.period is None:
+            raise ValueError("period requires a period value")
+        if self.type == "period_list" and not self.periods:
+            raise ValueError("period_list requires at least one period")
         if self.type == "period_comparison" and (not self.current or not self.previous):
             raise ValueError("period_comparison requires current and previous periods")
         return self

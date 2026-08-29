@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     max_result_bytes: int = Field(
         default=1_048_576, ge=1024, le=10_485_760, alias="MAX_RESULT_BYTES"
     )
+    mcp_audit_enabled: bool = Field(default=True, alias="MCP_AUDIT_ENABLED")
+    mcp_audit_schema: str = Field(default="mcp_audit", alias="MCP_AUDIT_SCHEMA")
 
 
 @lru_cache

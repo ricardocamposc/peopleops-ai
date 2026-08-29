@@ -27,3 +27,17 @@ receives only the MCP contract and never receives Synthetic HRIS credentials.
 For local development, start it with `make mcp` after the synthetic HRIS is
 available. The PeopleOps `HRDataGateway` connects to
 `http://127.0.0.1:8001/mcp` using the official MCP client lifecycle.
+# Temporal context and MCP audit
+
+The provider exposes a typed `temporal_context` MCP tool. Relative calendar
+expressions are resolved from the Synthetic HRIS PostgreSQL source date, not
+from the application clock or an LLM-generated date.
+
+MCP calls are persisted by the server in the separate `mcp_audit` PostgreSQL
+schema (configurable with `MCP_AUDIT_SCHEMA`). Records retain request/tool
+correlation, conceptual query, validation, physical SQL template and separate
+parameters, execution timing, row count and safe error status. Credentials and
+authorization headers are never persisted.
+### Temporal periods
+
+The server exposes provider temporal context and translates provider-neutral `PeriodValue(year, month)` scopes using catalog temporal metadata. Calendar periods are not assumed to be a physical field; date ranges require a catalog-compatible date/datetime field, and invalid temporal field combinations are rejected before SQL execution.

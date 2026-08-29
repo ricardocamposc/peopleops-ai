@@ -17,6 +17,7 @@ from reference_mcp_server.query_contracts import (
     QueryMetric,
     QueryPeriod,
     QuerySelect,
+    PeriodValue,
 )
 
 CATALOG = build_catalog()
@@ -193,3 +194,32 @@ def test_validation_rejects_oversized_limit_and_restricted_scope() -> None:
     assert validation.valid is False
     assert any("scope hr:payroll" in error for error in validation.errors)
     assert any("maximum of 2" in error for error in validation.errors)
+
+
+def test_date_range_rejects_non_temporal_field() -> None:
+    query = ConceptualQuery(
+        entities=["payroll_period"],
+        select=[QuerySelect(field="payroll_period.code")],
+        time_scope=QueryPeriod(
+            type="date_range", field="payroll_period.code",
+            start=date(2026, 8, 1), end=date(2026, 8, 31),
+        ),
+    )
+    validation = validate_query(query, CATALOG, ["hr:payroll"])
+    assert validation.valid is False
+    assert any(error.startswith("INVALID_TIME_FIELD") for error in validation.errors)
+
+
+def test_period_uses_temporal_target_and_period_list_uses_discrete_ranges() -> None:
+    query = ConceptualQuery(
+        entities=["overtime"],
+        metrics=[QueryMetric(field="overtime.approved_minutes", function="sum")],
+        time_scope=QueryPeriod(
+            type="period_list", field="overtime.work_date",
+            periods=[PeriodValue(year=2026, month=1), PeriodValue(year=2026, month=3)],
+        ),
+    )
+    assert validate_query(query, CATALOG, []).valid
+    physical = translate_query(query, CATALOG)
+    assert physical.params == (date(2026, 1, 1), date(2026, 2, 1), date(2026, 3, 1), date(2026, 4, 1))
+    assert physical.sql.count('"work_date"') == 4

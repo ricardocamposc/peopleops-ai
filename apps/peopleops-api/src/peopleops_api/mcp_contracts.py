@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -20,6 +21,8 @@ class DiscoveryField(BaseModel):
     sensitivity: str
     is_primary_key: bool = False
     is_foreign_key: bool = False
+    temporal_kind: str = "none"
+    period_granularity: str | None = None
 
 
 class DiscoveryEntity(BaseModel):
@@ -31,6 +34,8 @@ class DiscoveryEntity(BaseModel):
     fields: list[DiscoveryField]
     relationships: list[str] = Field(default_factory=list)
     temporal_fields: list[str] = Field(default_factory=list)
+    primary_temporal_field: str | None = None
+    supports_period_filter: bool = False
     sensitivity: str
     supported_operations: list[str]
 
@@ -64,6 +69,14 @@ class DiscoveryCatalog(BaseModel):
     capabilities: list[DiscoveryCapability]
     entities: list[DiscoveryEntity]
     relationships: list[DiscoveryRelationship]
+
+
+class TemporalContext(BaseModel):
+    source_current_date: date
+    source_current_timestamp: datetime
+    source_timezone: str | None = None
+    current_year: int
+    current_month: int
 
 
 class SecurityContext(BaseModel):

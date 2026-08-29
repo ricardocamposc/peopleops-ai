@@ -229,3 +229,20 @@ BIZAG / SAP / Workday / Custom ERP
 ```
 
 Una futura Integration Console para discovery/mapping/config queda fuera del MVP.
+## Structured HR temporal source and MCP audit
+
+Relative temporal expressions are represented as a language-independent intent
+in PeopleOps. The Reference MCP Server supplies the authoritative source date,
+timestamp and timezone from PostgreSQL through the provider-neutral
+`temporal_context` tool. PeopleOps then performs deterministic calendar
+resolution and sends concrete `QueryPeriod` values to MCP. It does not use its
+process clock to resolve provider-relative periods.
+
+The Reference MCP Server persists MCP interactions separately from PeopleOps
+application data, in the `mcp_audit` schema. This includes validation and
+execution lifecycle, request correlation, query hash, SQL template, separated
+parameters, timing, row count and safe error information. Physical SQL remains
+owned and observable only by MCP.
+### Temporal and period contract
+
+Relative temporal intents are resolved from the Reference MCP provider's temporal context, never from the PeopleOps process clock or an LLM-generated date. A `PeriodValue(year, month)` is a provider-neutral semantic abstraction; it is not necessarily a physical database field. The MCP provider selects the appropriate date, period, or year/month mapping and performs physical translation.

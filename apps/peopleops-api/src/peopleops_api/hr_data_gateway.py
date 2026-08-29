@@ -14,6 +14,7 @@ from peopleops_api.mcp_contracts import (
     DiscoveryRelationship,
     DiscoveryRequestContext,
     SecurityContext,
+    TemporalContext,
 )
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult, QueryValidation
 
@@ -71,6 +72,14 @@ class HRDataGateway:
             {**_context_arguments(context), "query": query.model_dump(mode="json")},
             QueryValidation,
             context,
+        )
+
+    def get_temporal_context(
+        self, *, request_id: str, security: SecurityContext | None = None
+    ) -> TemporalContext:
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "temporal_context", _context_arguments(context), TemporalContext, context
         )
 
     def execute_query(

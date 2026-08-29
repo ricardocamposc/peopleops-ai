@@ -24,6 +24,7 @@ SemanticRole = Literal[
     "amount",
     "quantity",
 ]
+TemporalKind = Literal["none", "date", "datetime", "period"]
 Operation = Literal["read", "aggregate"]
 RelationshipType = Literal["many_to_one", "one_to_many"]
 
@@ -48,6 +49,8 @@ class FieldMetadata(BaseModel):
     sensitivity: Sensitivity
     is_primary_key: bool = False
     is_foreign_key: bool = False
+    temporal_kind: TemporalKind = "none"
+    period_granularity: str | None = None
 
 
 class RelationshipMetadata(BaseModel):
@@ -71,6 +74,8 @@ class EntityMetadata(BaseModel):
     fields: list[FieldMetadata]
     relationships: list[str] = Field(default_factory=list)
     temporal_fields: list[str] = Field(default_factory=list)
+    primary_temporal_field: str | None = None
+    supports_period_filter: bool = False
     sensitivity: Sensitivity
     supported_operations: list[Operation]
 
@@ -194,6 +199,16 @@ def _entity(
     relationships: list[str] | None = None,
     operations: list[Operation] | None = None,
 ) -> EntityMetadata:
+    temporal_fields = temporal_fields or []
+    fields = [
+        field.model_copy(
+            update={
+                "temporal_kind": "date" if field.field_id in temporal_fields else field.temporal_kind,
+                "period_granularity": "month" if field.field_id in temporal_fields else field.period_granularity,
+            }
+        )
+        for field in fields
+    ]
     return EntityMetadata(
         entity_id=entity_id,
         business_name=business_name,
@@ -201,7 +216,9 @@ def _entity(
         physical_source=physical_source,
         fields=fields,
         relationships=relationships or [],
-        temporal_fields=temporal_fields or [],
+        temporal_fields=temporal_fields,
+        primary_temporal_field=temporal_fields[0] if temporal_fields else None,
+        supports_period_filter=bool(temporal_fields),
         sensitivity=sensitivity,
         supported_operations=operations or ["read", "aggregate"],
     )

@@ -38,11 +38,33 @@ class SemanticRequest(BaseModel):
     sensitivity: Literal["standard", "restricted"] = "standard"
     requires_human_review: bool = False
     time_scope_description: str | None = Field(default=None, max_length=255)
+    temporal_intent: "TemporalIntent | None" = None
     requires_structured_data: bool = True
     requires_policy: bool = False
     policy_query: str | None = Field(default=None, max_length=1000)
     policy_as_of: date | None = None
     policy_filters: PolicyFilterContract = Field(default_factory=PolicyFilterContract)
+
+
+class TemporalIntent(BaseModel):
+    """Language-independent temporal intent; dates are resolved by provider context."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "current_month", "previous_month", "current_year", "year_to_date",
+        "explicit_month_year", "period_list", "year_to_current_month",
+        "explicit_date_range", "current_vs_previous",
+        "same_month_previous_years", "latest_available_period", "current_day",
+        "previous_day", "unknown",
+    ]
+    month: int | None = Field(default=None, ge=1, le=12)
+    months: list[int] = Field(default_factory=list, max_length=12)
+    year: int | None = Field(default=None, ge=1900, le=2200)
+    days: int | None = Field(default=None, ge=1, le=3660)
+    years: int | None = Field(default=None, ge=1, le=20)
+    start: date | None = None
+    end: date | None = None
 
 
 class PlannedQuery(BaseModel):

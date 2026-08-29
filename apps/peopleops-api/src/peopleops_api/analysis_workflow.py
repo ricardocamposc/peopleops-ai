@@ -40,6 +40,7 @@ from peopleops_api.policy_retrieval import (
 )
 from peopleops_api.payroll_analysis import derive_payroll_facts
 from peopleops_api.query_contracts import QueryMetric, QueryResult
+from peopleops_api.temporal import resolve_temporal_intent
 
 logger = logging.getLogger(__name__)
 
@@ -754,6 +755,18 @@ def _catalog_conceptual_validation_errors(
     period = query.time_scope
     if period is not None and period.type != "period_comparison" and (period.current or period.previous):
         errors.append("INVALID_TIME_SCOPE: current/previous require period_comparison")
+    if period is not None and period.type != "period_comparison" and period.field:
+        entity_id, _, field_id = period.field.partition(".")
+        entity = next((item for item in catalog.entities if item.entity_id == entity_id), None)
+        field = next((item for item in entity.fields if item.field_id == field_id), None) if entity else None
+        temporal = bool(
+            field
+            and (field_id in entity.temporal_fields or getattr(field, "temporal_kind", "none") in {"date", "datetime"})
+        )
+        if period.type == "date_range" and not temporal:
+            errors.append(f"INVALID_TIME_FIELD: date_range requires a date/datetime field: {period.field}")
+        if period.type in {"period", "period_list"} and not (temporal or getattr(entity, "supports_period_filter", False)):
+            errors.append(f"INVALID_TIME_FIELD: period is not supported by field: {period.field}")
     for item in query.filters:
         if isinstance(item.value, str) and any(
             item.value.startswith(f"{entity}.") for entity in known_entities
@@ -814,6 +827,7 @@ class AnalysisState(TypedDict, total=False):
     query_errors: list[str]
     human_decision: str
     evaluation_trace: dict[str, Any]
+    temporal_context: Any
 
 
 @dataclass
@@ -1089,6 +1103,11 @@ class AnalysisWorkflow:
                 # it must not silently change a request that already entered
                 # the structured-data path into a policy-only request.
                 semantic.requires_structured_data = True
+        temporal_context = None
+        if semantic.requires_structured_data and catalog is not None and hasattr(self.gateway, "get_temporal_context"):
+            temporal_context = self.gateway.get_temporal_context(
+                request_id=str(state["interaction"].request_id), security=self.security
+            )
         if trace is not None:
             requires_payroll = "payroll" in semantic.required_capabilities
             trace["authorization"] = {
@@ -1097,6 +1116,8 @@ class AnalysisWorkflow:
                 "decision": "denied" if requires_payroll and not self.security.allows_payroll() else "granted",
                 "scope_present": self.security.allows_payroll(),
             }
+            if temporal_context is not None:
+                trace["temporal_context"] = temporal_context.model_dump(mode="json")
             state["interaction"].evaluation_trace = trace
             self.session.commit()
         if "payroll" in semantic.required_capabilities and not self.security.allows_payroll():
@@ -1116,6 +1137,8 @@ class AnalysisWorkflow:
             result["evaluation_trace"] = trace
         if catalog is not None:
             result["catalog"] = catalog
+        if temporal_context is not None:
+            result["temporal_context"] = temporal_context
         return result
 
     def _discover_catalog(self, state: AnalysisState) -> dict[str, Any]:
@@ -1211,6 +1234,10 @@ class AnalysisWorkflow:
             output_model=AnalysisPlan,
         )
         assert isinstance(plan, AnalysisPlan)
+        if state.get("temporal_context") is not None and semantic.temporal_intent is not None:
+            plan = _apply_temporal_intent(
+                plan, semantic.temporal_intent, state["temporal_context"], catalog
+            )
         plan = _complete_plan_relationship_entities(plan, catalog)
         plan = _expand_period_comparison_plan(plan)
         self._stage(
@@ -1219,7 +1246,7 @@ class AnalysisWorkflow:
         trace = deepcopy(state.get("evaluation_trace"))
         if trace is not None:
             attempts = trace.setdefault("planning_attempts", [])
-            trace["replan_count"] = max(state.get("replan_count", 0), len(attempts)) - 1
+            trace["replan_count"] = max(0, max(state.get("replan_count", 0), len(attempts)) - 1)
             attempts.append({
                 "attempt_number": len(attempts) + 1,
                 "conceptual_queries": [
@@ -1655,6 +1682,78 @@ def _logical_query_role(planned: Any) -> str | None:
     in a free-form purpose makes trace semantics depend on model wording.
     """
     return getattr(planned, "logical_role", None)
+
+
+def _apply_temporal_intent(
+    plan: AnalysisPlan, intent: Any, context: Any, catalog: DiscoveryCatalog | None
+) -> AnalysisPlan:
+    """Replace model-computed relative periods with provider-derived periods."""
+    if len(plan.queries) > 1:
+        existing_roles = {_logical_query_role(item) for item in plan.queries}
+        if existing_roles >= {"current", "previous"}:
+            resolved_by_role = {
+                role: period
+                for role, period in resolve_temporal_intent(
+                    intent, context, field=_temporal_field(plan.queries[0].query, catalog) or ""
+                )
+                if role is not None
+            }
+            if resolved_by_role:
+                return plan.model_copy(update={
+                    "queries": [
+                        planned.model_copy(update={
+                            "query": planned.query.model_copy(update={
+                                "time_scope": resolved_by_role.get(
+                                    _logical_query_role(planned), planned.query.time_scope
+                                )
+                            })
+                        })
+                        for planned in plan.queries
+                    ]
+                })
+    expanded: list[Any] = []
+    for planned in plan.queries:
+        field = _temporal_field(planned.query, catalog)
+        if field is None:
+            expanded.append(planned)
+            continue
+        resolved = resolve_temporal_intent(intent, context, field=field)
+        if not resolved:
+            expanded.append(planned)
+            continue
+        for role, period in resolved:
+            query = planned.query.model_copy(update={"time_scope": period})
+            expanded.append(planned.model_copy(update={"query": query, "logical_role": role}))
+    return plan.model_copy(update={"queries": expanded})
+
+
+def _temporal_field(query: Any, catalog: DiscoveryCatalog | None) -> str | None:
+    if catalog is None:
+        return None
+    entities = {entity.entity_id: entity for entity in catalog.entities}
+    referenced = _referenced_query_entities(query)
+    selected = [entity_id for entity_id in query.entities if entity_id in entities]
+    candidates = [entity_id for entity_id in selected if entity_id in referenced] or selected
+    supplied = query.time_scope.field if query.time_scope is not None else None
+    if supplied and _is_catalog_temporal_field(supplied, entities):
+        return supplied
+    for entity_id in candidates:
+        entity = entities[entity_id]
+        field = entity.primary_temporal_field or (entity.temporal_fields[0] if entity.temporal_fields else None)
+        if field:
+            return f"{entity_id}.{field}"
+    return None
+
+
+def _is_catalog_temporal_field(reference: str, entities: dict[str, Any]) -> bool:
+    entity_id, separator, field_id = reference.partition(".")
+    if not separator or entity_id not in entities:
+        return False
+    entity = entities[entity_id]
+    if field_id in entity.temporal_fields:
+        return True
+    field = next((item for item in entity.fields if item.field_id == field_id), None)
+    return bool(field and getattr(field, "temporal_kind", "none") in {"date", "datetime"})
 
 
 def _policy_filters(values: dict[str, Any] | PolicyFilterContract) -> Any:

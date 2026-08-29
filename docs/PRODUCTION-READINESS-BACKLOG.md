@@ -572,3 +572,11 @@ that the product is production-ready.
 | Date | Item | Change | Evidence |
 |---|---|---|---|
 | 2026-08-28 | Initial production-readiness backlog | Added 15 open items, Production Gate and Controlled Pilot Gate | Current repository evaluation evidence and architecture documentation |
+## MCP temporal and execution audit evidence
+
+The MVP now has provider-derived temporal context and a separate MCP audit
+store for development/test evidence. Production rollout still requires a
+managed audit schema with retention/redaction policy, provider authentication,
+access control and operational review of SQL/parameter sensitivity. Relative
+period resolution remains intentionally provider-authoritative and is not
+derived from the PeopleOps application clock.

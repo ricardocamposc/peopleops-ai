@@ -155,6 +155,7 @@ def _provider_error_code(content: list[Any]) -> str:
         "SOURCE_UNAVAILABLE",
         "EXECUTION_FAILED",
         "CATALOG_CHANGED",
+        "SOURCE_UNAVAILABLE",
     }
     text = " ".join(item.text for item in content if isinstance(item, TextContent))
     return next((code for code in known if code in text), "MCP_PROVIDER_ERROR")
