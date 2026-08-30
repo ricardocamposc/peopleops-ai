@@ -3,10 +3,12 @@ from datetime import date
 import pytest
 
 from reference_mcp_server.discovery import build_catalog
+from reference_mcp_server.config import Settings
 from reference_mcp_server.execution import (
     PhysicalQuery,
     QueryExecutionError,
     query_hash,
+    payroll_read_authorization,
     translate_query,
     validate_physical_query,
     validate_query,
@@ -194,6 +196,36 @@ def test_validation_rejects_oversized_limit_and_restricted_scope() -> None:
     assert validation.valid is False
     assert any("scope hr:payroll" in error for error in validation.errors)
     assert any("maximum of 2" in error for error in validation.errors)
+
+
+def test_payroll_read_authorization_is_configurable_without_granting_scope() -> None:
+    query = ConceptualQuery(
+        entities=["payroll"], select=[QuerySelect(field="payroll.gross_amount")], limit=5
+    )
+    denied = validate_query(query, CATALOG, ["hr:read"])
+    assert denied.valid is False
+    assert payroll_read_authorization(["hr:read"], Settings()).get("decision") == "denied"
+
+    allowed = validate_query(
+        query, CATALOG, ["hr:read"], payroll_read_authorization_enabled=False
+    )
+    assert allowed.valid is True
+    context = payroll_read_authorization(
+        ["hr:read"], Settings(MCP_PAYROLL_READ_AUTHORIZATION_ENABLED=False)
+    )
+    assert context == {
+        "required": True,
+        "enforcement_enabled": False,
+        "scope_present": False,
+        "decision": "allowed_by_configuration",
+    }
+
+
+def test_payroll_scope_still_allows_when_enforcement_is_enabled() -> None:
+    query = ConceptualQuery(
+        entities=["payroll"], select=[QuerySelect(field="payroll.gross_amount")], limit=5
+    )
+    assert validate_query(query, CATALOG, ["hr:read", "hr:payroll"]).valid is True
 
 
 def test_date_range_rejects_non_temporal_field() -> None:

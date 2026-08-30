@@ -65,6 +65,12 @@ class AuthorizationError(Exception):
     """Raised when the backend security context cannot access requested data."""
 
 
+def payroll_read_allowed(security: SecurityContext, enforcement_enabled: bool) -> bool:
+    """Return whether payroll read authorization permits this request."""
+
+    return not enforcement_enabled or security.allows_payroll()
+
+
 class OpenAIStructuredModel:
     def __init__(
         self,
@@ -93,11 +99,20 @@ class OpenAIStructuredModel:
         except Exception as exc:  # provider initialization boundary
             raise OpenAIModelError("OpenAI could not be initialized") from exc
 
-    def parse(self, *, purpose: str, instructions: str, output_model: type[BaseModel]) -> BaseModel:
+    def parse(
+        self,
+        *,
+        purpose: str,
+        instructions: str,
+        output_model: type[BaseModel],
+        schema_override: dict[str, Any] | None = None,
+    ) -> BaseModel:
         if self._client is None:
             raise OpenAIModelError("OpenAI is not configured")
         try:
-            schema = _openai_strict_schema(output_model.model_json_schema())
+            schema = _openai_strict_schema(
+                schema_override or output_model.model_json_schema()
+            )
             response = self._client.responses.create(
                 model=self.model_name,
                 input=[
@@ -206,6 +221,73 @@ def _openai_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
             ]
         }
     return adapted
+
+
+def _catalog_constrained_analysis_plan_schema(
+    catalog: DiscoveryCatalog | None,
+) -> dict[str, Any]:
+    """Build planner identifier enums from the discovered conceptual catalog."""
+
+    schema = deepcopy(AnalysisPlan.model_json_schema())
+    if catalog is None:
+        return schema
+    entities = sorted({item.entity_id for item in catalog.entities})
+    fields = sorted(
+        {
+            f"{entity.entity_id}.{field.field_id}"
+            for entity in catalog.entities
+            for field in entity.fields
+        }
+    )
+    relationships = sorted({item.relationship_id for item in catalog.relationships})
+
+    def constrain_string(value: Any, choices: list[str]) -> None:
+        if not choices or not isinstance(value, dict):
+            return
+        if value.get("type") == "string":
+            value["enum"] = choices
+        for branch in value.get("anyOf", []):
+            constrain_string(branch, choices)
+
+    def visit(value: Any, property_name: str | None = None) -> None:
+        if isinstance(value, dict):
+            if property_name == "entities" and isinstance(value.get("items"), dict):
+                constrain_string(value["items"], entities)
+            elif property_name == "relationships" and isinstance(value.get("items"), dict):
+                constrain_string(value["items"], relationships)
+            elif property_name == "dimensions" and isinstance(value.get("items"), dict):
+                constrain_string(value["items"], fields)
+            elif property_name in {"field", "left", "right", "reference"}:
+                constrain_string(value, fields)
+            for key, child in value.items():
+                visit(child, key if key != "properties" else property_name)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, property_name)
+
+    visit(schema)
+    return schema
+
+
+def _planner_parse(
+    model: StructuredModel,
+    *,
+    purpose: str,
+    instructions: str,
+    catalog: DiscoveryCatalog | None,
+) -> AnalysisPlan:
+    """Use runtime catalog constraints only for the OpenAI planner adapter."""
+
+    kwargs: dict[str, Any] = {
+        "purpose": purpose,
+        "instructions": instructions,
+        "output_model": AnalysisPlan,
+    }
+    if isinstance(model, OpenAIStructuredModel):
+        kwargs["schema_override"] = _catalog_constrained_analysis_plan_schema(catalog)
+    result = model.parse(**kwargs)
+    assert isinstance(result, AnalysisPlan)
+    return result
 
 
 def _response_output_text(response: Any) -> str:
@@ -732,6 +814,51 @@ def _semantic_catalog(catalog: DiscoveryCatalog) -> str:
     return json.dumps(payload, sort_keys=True)
 
 
+def _planner_catalog_scope(
+    catalog: DiscoveryCatalog, semantic: SemanticRequest
+) -> DiscoveryCatalog:
+    """Return only the conceptual catalog selected by semantic refinement."""
+
+    selected_capabilities = {
+        name for name in semantic.required_capabilities
+        if any(item.name == name for item in catalog.capabilities)
+    }
+    capability_entities = {
+        entity_id
+        for capability in catalog.capabilities
+        if capability.name in selected_capabilities
+        for entity_id in capability.entities
+    }
+    selected_entities = capability_entities | set(semantic.entities)
+    entities = [item for item in catalog.entities if item.entity_id in selected_entities]
+    included = {item.entity_id for item in entities}
+    capabilities = [
+        item for item in catalog.capabilities if item.name in selected_capabilities
+    ]
+    relationships = [
+        item
+        for item in catalog.relationships
+        if item.from_entity in included and item.to_entity in included
+    ]
+    return catalog.model_copy(
+        update={
+            "capabilities": capabilities,
+            "entities": entities,
+            "relationships": relationships,
+        }
+    )
+
+
+def _derive_entities_from_references(references: list[str]) -> set[str]:
+    """Derive conceptual entities from qualified conceptual references."""
+
+    return {
+        reference.split(".", 1)[0]
+        for reference in references
+        if "." in reference and reference.split(".", 1)[0]
+    }
+
+
 def _semantic_needs_catalog_refinement(
     semantic: SemanticRequest, catalog: DiscoveryCatalog
 ) -> bool:
@@ -905,6 +1032,8 @@ class AnalysisWorkflow:
     policy_provider: PolicyKnowledgeProvider | None = None
     evidence_verifier: PolicyEvidenceVerifier | None = None
     max_replans: int = 1
+    payroll_read_authorization_enabled: bool = True
+    read_analysis_human_review_enabled: bool = True
 
     def run(self, interaction: AnalysisInteraction) -> AnalysisInteraction:
         if interaction.status == "pending_human_review":
@@ -1034,10 +1163,54 @@ class AnalysisWorkflow:
         builder.add_edge("synthesize", END)
         return builder.compile()
 
-    @staticmethod
-    def _after_evidence_merge(state: AnalysisState) -> str:
+    def _after_evidence_merge(self, state: AnalysisState) -> str:
         semantic = state.get("semantic_request")
-        if semantic and (semantic.sensitivity == "restricted" or semantic.requires_human_review):
+        evidence = state.get("evidence", [])
+        evidence_available = any(
+            item.get("type") == "structured_data"
+            and item.get("result_verification", {}).get("status") in {"VALID", "ZERO_ROWS"}
+            for item in evidence
+        ) or bool(state.get("policies"))
+        operation_type = (
+            "read_only_structured_analysis"
+            if semantic and semantic.requires_structured_data
+            else "read_only_policy_retrieval"
+        )
+        semantic_review_signal = bool(
+            semantic
+            and (semantic.sensitivity == "restricted" or semantic.requires_human_review)
+        )
+        if not evidence_available:
+            review_required = False
+            reason = "no_reviewable_evidence"
+        elif (
+            operation_type == "read_only_structured_analysis"
+            and not self.read_analysis_human_review_enabled
+        ):
+            review_required = False
+            reason = "read_only_review_disabled_by_configuration"
+        else:
+            review_required = semantic_review_signal
+            reason = "semantic_review_required" if review_required else "review_not_required"
+
+        trace = deepcopy(state.get("evaluation_trace"))
+        if trace is not None:
+            trace["human_review_decision"] = {
+                "semantic_sensitivity": semantic.sensitivity if semantic else None,
+                "semantic_requires_human_review": (
+                    semantic.requires_human_review if semantic else False
+                ),
+                "operation_type": operation_type,
+                "enforcement_enabled": self.read_analysis_human_review_enabled,
+                "evidence_available": evidence_available,
+                "review_required": review_required,
+                "reason": reason,
+            }
+            state["evaluation_trace"] = trace
+            state["interaction"].evaluation_trace = trace
+            self.session.commit()
+
+        if review_required:
             return "review"
         return "synthesize"
 
@@ -1187,17 +1360,33 @@ class AnalysisWorkflow:
             )
         if trace is not None:
             requires_payroll = "payroll" in semantic.required_capabilities
+            scope_present = self.security.allows_payroll()
+            allowed = payroll_read_allowed(
+                self.security, self.payroll_read_authorization_enabled
+            )
             trace["authorization"] = {
                 "required": requires_payroll,
-                "granted": not requires_payroll or self.security.allows_payroll(),
-                "decision": "denied" if requires_payroll and not self.security.allows_payroll() else "granted",
-                "scope_present": self.security.allows_payroll(),
+                "enforcement_enabled": self.payroll_read_authorization_enabled,
+                "granted": not requires_payroll or allowed,
+                "decision": (
+                    "denied"
+                    if requires_payroll and not allowed
+                    else "allowed_by_configuration"
+                    if requires_payroll and not self.payroll_read_authorization_enabled
+                    else "granted"
+                ),
+                "scope_present": scope_present,
             }
             if temporal_context is not None:
                 trace["temporal_context"] = temporal_context.model_dump(mode="json")
             state["interaction"].evaluation_trace = trace
             self.session.commit()
-        if "payroll" in semantic.required_capabilities and not self.security.allows_payroll():
+        if (
+            "payroll" in semantic.required_capabilities
+            and not payroll_read_allowed(
+                self.security, self.payroll_read_authorization_enabled
+            )
+        ):
             raise AuthorizationError("payroll access requires the hr:payroll scope")
         interaction = state["interaction"]
         self._stage(
@@ -1263,13 +1452,17 @@ class AnalysisWorkflow:
             }
         feedback = "; ".join(state.get("query_errors", []))
         catalog = state.get("catalog")
+        planner_catalog = (
+            _planner_catalog_scope(catalog, semantic) if catalog is not None else None
+        )
         catalog_context = (
-            _semantic_catalog(catalog)
-            if catalog is not None
+            _semantic_catalog(planner_catalog)
+            if planner_catalog is not None
             else "not required for this plan"
         )
         previous_plan = state.get("plan")
-        plan = self.model.parse(
+        plan = _planner_parse(
+            self.model,
             purpose=(
                 "Create a bounded plan of provider-neutral conceptual queries. Use semantic IDs from "
                 "the catalog only; select capabilities dynamically; never output physical SQL. "
@@ -1310,24 +1503,43 @@ class AnalysisWorkflow:
                 f"Previous plan (if any): {previous_plan.model_dump_json() if previous_plan else 'none'}\n"
                 f"Structured provider validation feedback (if any): {feedback or 'none'}"
             ),
-            output_model=AnalysisPlan,
+            catalog=planner_catalog,
         )
-        assert isinstance(plan, AnalysisPlan)
+        raw_analysis_plan = plan.model_dump(mode="json")
+        raw_plan_attempt_number = len((state.get("evaluation_trace") or {}).get("planning_attempts", [])) + 1
+        trace = deepcopy(state.get("evaluation_trace"))
+        if trace is not None:
+            trace.setdefault("raw_analysis_plans", []).append({
+                "attempt_number": raw_plan_attempt_number,
+                "plan": raw_analysis_plan,
+            })
         if state.get("temporal_context") is not None and semantic.temporal_intent is not None:
             plan = _apply_temporal_intent(
                 plan, semantic.temporal_intent, state["temporal_context"], catalog
             )
+            if trace is not None:
+                trace.setdefault("temporal_resolution", []).append(
+                    _temporal_resolution_trace(
+                        raw_analysis_plan, plan, semantic.temporal_intent, catalog
+                    )
+                )
         plan = _complete_plan_relationship_entities(plan, catalog)
         plan = _expand_period_comparison_plan(plan)
         self._stage(
             state, "planning", "completed", snapshots={"query_plan": plan.model_dump(mode="json")}
         )
-        trace = deepcopy(state.get("evaluation_trace"))
         if trace is not None:
             attempts = trace.setdefault("planning_attempts", [])
+            if planner_catalog is not None:
+                trace["planner_catalog_scope"] = {
+                    "capabilities": [item.name for item in planner_catalog.capabilities],
+                    "entities": [item.entity_id for item in planner_catalog.entities],
+                    "relationships": [item.relationship_id for item in planner_catalog.relationships],
+                }
             trace["replan_count"] = max(0, max(state.get("replan_count", 0), len(attempts)) - 1)
             attempts.append({
                 "attempt_number": len(attempts) + 1,
+                "raw_analysis_plan": raw_analysis_plan,
                 "conceptual_queries": [
                     {"query_index": index, "logical_query_role": _logical_query_role(item), "query": item.query.model_dump(mode="json")}
                     for index, item in enumerate(plan.queries)
@@ -1637,7 +1849,10 @@ class AnalysisWorkflow:
             "policy_evidence_count": len(state.get("policies", [])),
             "warnings": list(state.get("warnings", [])),
         }
-        trace = deepcopy(state.get("evaluation_trace"))
+        trace = deepcopy(
+            state["interaction"].evaluation_trace
+            or state.get("evaluation_trace")
+        )
         if trace is not None:
             trace["synthesis_input"] = synthesis_input
             state["interaction"].evaluation_trace = trace
@@ -1782,10 +1997,112 @@ def _logical_query_role(planned: Any) -> str | None:
     return getattr(planned, "logical_role", None)
 
 
+def _analytical_subjects(query: Any) -> set[str]:
+    """Derive analytical subjects without trusting the proposed time field."""
+    references: list[str] = []
+    references.extend(item.field for item in getattr(query, "select", []))
+    references.extend(item.field for item in getattr(query, "metrics", []) if item.field)
+    references.extend(item.field for item in getattr(query, "filters", []))
+    references.extend(getattr(query, "dimensions", []))
+    for item in getattr(query, "comparisons", []):
+        references.extend([item.left, item.right])
+    references.extend(item.reference for item in getattr(query, "order_by", []))
+    return _derive_entities_from_references(references)
+
+
+def _authoritative_temporal_field(query: Any, catalog: DiscoveryCatalog | None) -> str | None:
+    """Return the catalog temporal target for the fields actually being analyzed."""
+    if catalog is None:
+        return None
+    entities = {item.entity_id: item for item in catalog.entities}
+    for entity_id in sorted(_analytical_subjects(query)):
+        entity = entities.get(entity_id)
+        if entity is None:
+            continue
+        field = entity.primary_temporal_field or (
+            entity.temporal_fields[0] if entity.temporal_fields else None
+        )
+        if field:
+            return f"{entity_id}.{field}"
+    return None
+
+
+def _provider_period_field(query: Any, catalog: DiscoveryCatalog | None) -> str | None:
+    """Recognize an already provider-semantic period field without mapping it."""
+    scope = getattr(query, "time_scope", None)
+    field = getattr(scope, "field", None) if scope is not None else None
+    if scope is None or scope.type != "payroll_period" or not field or catalog is None:
+        return None
+    entity_id, separator, field_id = field.partition(".")
+    if not separator or entity_id not in getattr(query, "entities", []):
+        return None
+    entity = next((item for item in catalog.entities if item.entity_id == entity_id), None)
+    if entity is None or not entity.supports_period_filter:
+        return None
+    if not any(item.field_id == field_id for item in entity.fields):
+        return None
+    return field
+
+
+def _temporal_resolution_trace(
+    raw_plan: dict[str, Any], resolved_plan: AnalysisPlan,
+    intent: Any, catalog: DiscoveryCatalog | None,
+) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    raw_queries = raw_plan.get("queries", [])
+    for index, planned in enumerate(resolved_plan.queries):
+        raw_query_index = index if index < len(raw_queries) else 0
+        raw_query = raw_queries[raw_query_index].get("query", {}) if raw_queries else {}
+        raw_subjects = _derive_entities_from_references(
+            [
+                item.get("field", "") for item in raw_query.get("select", [])
+            ]
+            + [
+                item.get("field", "") for item in raw_query.get("metrics", []) if item.get("field")
+            ]
+            + [item.get("field", "") for item in raw_query.get("filters", [])]
+            + list(raw_query.get("dimensions", []))
+            + [item.get("left", "") for item in raw_query.get("comparisons", [])]
+            + [item.get("right", "") for item in raw_query.get("comparisons", [])]
+            + [item.get("reference", "") for item in raw_query.get("order_by", [])]
+        )
+        proposed = raw_query.get("time_scope") or {}
+        resolved = planned.query.time_scope.model_dump(mode="json") if planned.query.time_scope else None
+        authoritative = _authoritative_temporal_field(planned.query, catalog)
+        entries.append({
+            "query_index": index,
+            "intent": intent.model_dump(mode="json") if hasattr(intent, "model_dump") else str(intent),
+            "analytical_subjects": sorted(raw_subjects),
+            "proposed_field": proposed.get("field"),
+            "proposed_scope": proposed,
+            "authoritative_field": authoritative,
+            "resolved_scope": resolved,
+            "correction_applied": proposed.get("field") != (resolved or {}).get("field"),
+            "correction_reason": (
+                "catalog_authoritative_field_for_analytical_subject"
+                if proposed.get("field") != (resolved or {}).get("field")
+                else None
+            ),
+        })
+    return {"queries": entries}
+
+
 def _apply_temporal_intent(
     plan: AnalysisPlan, intent: Any, context: Any, catalog: DiscoveryCatalog | None
 ) -> AnalysisPlan:
     """Replace model-computed relative periods with provider-derived periods."""
+    normalized_queries = []
+    for planned in plan.queries:
+        subject_field = _authoritative_temporal_field(planned.query, catalog)
+        authoritative = subject_field or _provider_period_field(planned.query, catalog)
+        supplied = planned.query.time_scope.field if planned.query.time_scope else None
+        if authoritative and supplied != authoritative and planned.query.time_scope is not None:
+            scope = planned.query.time_scope.model_copy(update={"field": authoritative})
+            planned = planned.model_copy(
+                update={"query": planned.query.model_copy(update={"time_scope": scope})}
+            )
+        normalized_queries.append(planned)
+    plan = plan.model_copy(update={"queries": normalized_queries})
     if len(plan.queries) > 1:
         existing_roles = {_logical_query_role(item) for item in plan.queries}
         if existing_roles >= {"current", "previous"}:
@@ -1826,6 +2143,11 @@ def _apply_temporal_intent(
         else plan.queries
     )
     for planned in planned_queries:
+        if not _authoritative_temporal_field(planned.query, catalog) and _provider_period_field(
+            planned.query, catalog
+        ):
+            expanded.append(planned)
+            continue
         field = _temporal_field(planned.query, catalog)
         if field is None:
             expanded.append(planned)
@@ -1891,6 +2213,12 @@ def _temporal_field(query: Any, catalog: DiscoveryCatalog | None) -> str | None:
     selected = [entity_id for entity_id in query.entities if entity_id in entities]
     candidates = [entity_id for entity_id in selected if entity_id in referenced] or selected
     supplied = query.time_scope.field if query.time_scope is not None else None
+    subject_field = _authoritative_temporal_field(query, catalog)
+    if subject_field:
+        return subject_field
+    provider_period = _provider_period_field(query, catalog)
+    if provider_period:
+        return provider_period
     if supplied and _is_catalog_temporal_field(supplied, entities):
         return supplied
     for entity_id in candidates:

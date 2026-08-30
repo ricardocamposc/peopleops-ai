@@ -57,6 +57,16 @@ from peopleops_api.schemas import (
 configure_logging()
 logger = logging.getLogger(__name__)
 settings = get_settings()
+if not settings.hr_payroll_read_authorization_enabled:
+    logger.warning(
+        "Payroll read authorization enforcement is disabled. Intended only for "
+        "synthetic/demo or explicitly trusted environments."
+    )
+if not settings.hr_read_analysis_human_review_enabled:
+    logger.warning(
+        "Human Review enforcement for read-only HR analysis is disabled. Intended only for "
+        "synthetic/demo or explicitly trusted environments."
+    )
 app = FastAPI(title="PeopleOps AI API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -181,6 +191,8 @@ def register_analysis(
             if settings.openai_api_key
             else None
         ),
+        payroll_read_authorization_enabled=settings.hr_payroll_read_authorization_enabled,
+        read_analysis_human_review_enabled=settings.hr_read_analysis_human_review_enabled,
     )
     interaction = workflow.run(interaction)
     return _analysis_response(
@@ -316,6 +328,7 @@ def human_review_decision(
             ),
             security=_security_context(request),
             policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
+            read_analysis_human_review_enabled=settings.hr_read_analysis_human_review_enabled,
         )
         workflow.resume(interaction)
         session.refresh(review)

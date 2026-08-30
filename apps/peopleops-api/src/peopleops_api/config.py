@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     max_policy_top_k: int = Field(default=20, ge=1, le=50, alias="MAX_POLICY_TOP_K")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o-mini", alias="OPENAI_MODEL")
+    hr_payroll_read_authorization_enabled: bool = Field(
+        default=True, alias="HR_PAYROLL_READ_AUTHORIZATION_ENABLED"
+    )
+    hr_read_analysis_human_review_enabled: bool = Field(
+        default=True, alias="HR_READ_ANALYSIS_HUMAN_REVIEW_ENABLED"
+    )
     policy_storage_path: str = Field(default="./var/policies", alias="POLICY_STORAGE_PATH")
     policy_max_upload_bytes: int = Field(
         default=25 * 1024 * 1024, gt=0, alias="POLICY_MAX_UPLOAD_BYTES"

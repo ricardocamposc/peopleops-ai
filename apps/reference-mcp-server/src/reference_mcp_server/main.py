@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -14,11 +15,23 @@ from reference_mcp_server.alternate_schema import build_alternate_catalog
 from reference_mcp_server.audit import monotonic_started, record_interaction
 from reference_mcp_server.config import get_settings
 from reference_mcp_server.discovery import CatalogMetadata, build_catalog, build_catalog_from_database
-from reference_mcp_server.execution import QueryExecutionError, execute_query, validate_query
+from reference_mcp_server.execution import (
+    QueryExecutionError,
+    execute_query,
+    payroll_read_authorization,
+    query_requires_payroll_read,
+    validate_query,
+)
 from reference_mcp_server.query_contracts import ConceptualQuery
 from reference_mcp_server.temporal import get_temporal_context
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+if not settings.mcp_payroll_read_authorization_enabled:
+    logger.warning(
+        "MCP payroll read authorization enforcement is disabled. "
+        "Intended only for synthetic/demo or explicitly trusted environments."
+    )
 
 
 def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False) -> MCPServer:
@@ -117,6 +130,7 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
                 _scopes(security),
                 request_id=request_id,
                 max_result_rows=settings.max_result_rows,
+                payroll_read_authorization_enabled=settings.mcp_payroll_read_authorization_enabled,
             )
             if settings.mcp_audit_enabled:
                 record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
@@ -127,6 +141,10 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
                                    query_hash=result.query_hash,
                                    validation_result=result.model_dump(mode="json"),
                                    validation_errors=result.errors,
+                                   authorization_context=payroll_read_authorization(
+                                       _scopes(security), settings,
+                                       required=query_requires_payroll_read(typed_query),
+                                   ),
                                    error_code=None if result.valid else "QUERY_VALIDATION_ERROR",
                                    error_message_safe=None if result.valid else "query validation failed")
             return result.model_dump(mode="json")

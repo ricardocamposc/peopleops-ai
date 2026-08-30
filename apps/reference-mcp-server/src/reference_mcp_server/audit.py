@@ -57,9 +57,14 @@ def ensure_audit_store(settings: Settings) -> None:
                     error_code text,
                     error_message_safe text,
                     source_current_date date,
-                    source_current_timestamp timestamptz
+                    source_current_timestamp timestamptz,
+                    authorization_context jsonb
                 )
             ''')
+            cursor.execute(
+                f'ALTER TABLE "{schema}".mcp_interaction '
+                "ADD COLUMN IF NOT EXISTS authorization_context jsonb"
+            )
 
 
 def record_interaction(
@@ -85,6 +90,7 @@ def record_interaction(
     error_message_safe: str | None = None,
     source_current_date: date | None = None,
     source_current_timestamp: datetime | None = None,
+    authorization_context: dict[str, Any] | None = None,
 ) -> str:
     """Persist one audit event; failures are logged but never alter MCP semantics."""
     interaction_id = str(uuid4())
@@ -101,9 +107,9 @@ def record_interaction(
                         conceptual_query, query_hash, validation_result, validation_errors,
                         physical_sql, physical_params, execution_attempted, execution_success,
                         row_count, error_code, error_message_safe, source_current_date,
-                        source_current_timestamp
+                        source_current_timestamp, authorization_context
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                              %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ''',
                     (
                         interaction_id, request_id, tool_name, started_at, completed,
@@ -116,6 +122,7 @@ def record_interaction(
                         json.dumps(list(physical_params), default=str) if physical_params is not None else None,
                         execution_attempted, execution_success, row_count, error_code,
                         error_message_safe, source_current_date, source_current_timestamp,
+                        json.dumps(authorization_context) if authorization_context is not None else None,
                     ),
                 )
         return interaction_id
