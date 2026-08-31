@@ -71,7 +71,7 @@ class BreakdownMeaning(BaseModel):
 
 
 class CalendarMeaning(BaseModel):
-    kind: Literal["WEEKDAY", "DAY_OF_MONTH", "LAST_DAY_OF_MONTH"]
+    kind: Literal["WEEKDAY", "DAY_OF_MONTH", "FIRST_DAY_OF_MONTH", "LAST_DAY_OF_MONTH"]
     field: str
     value: str | int | None = None
 
@@ -119,12 +119,14 @@ BREAKDOWNS
 - Only create a breakdown when the user explicitly asks for one.
 - 'by month' => TIME_GRAIN on the relevant date field with grain YEAR_MONTH.
 - Department breakdown => FIELD department.name.
-- Calendar conditions such as Monday/day 15/last day are filters, not breakdowns.
+- Calendar conditions such as Monday/day 15/first day of month/last day of month are filters, not breakdowns.
 
 CALENDAR MEANING
 - Every Monday => WEEKDAY value MONDAY.
 - Day 15 => DAY_OF_MONTH value 15.
+- First day of each month => FIRST_DAY_OF_MONTH. This concept is supported and needs no value.
 - Last day of month => LAST_DAY_OF_MONTH.
+- First day of the week is NOT currently supported because the contract has no week-start convention. If that is the requested concept, use unsupported_reasons rather than assuming Monday or Sunday.
 
 AMBIGUITY
 - If a material concept is underspecified, report ambiguity instead of guessing.
@@ -210,6 +212,9 @@ def compile_understanding(u: SemanticUnderstanding) -> SemanticQueryIntentV246:
             derived_filters.append(DerivedCalendarFilter(field=c.field, derivation="WEEKDAY", operator="EQ", value=c.value))
         elif c.kind == "DAY_OF_MONTH":
             derived_filters.append(DerivedCalendarFilter(field=c.field, derivation="DAY_OF_MONTH", operator="EQ", value=c.value))
+        elif c.kind == "FIRST_DAY_OF_MONTH":
+            # Provider-neutral compilation into the existing supported DSL primitive.
+            derived_filters.append(DerivedCalendarFilter(field=c.field, derivation="DAY_OF_MONTH", operator="EQ", value=1))
         else:
             predicates.append(CalendarPredicateFilter(field=c.field, predicate="IS_LAST_DAY_OF_MONTH"))
 
@@ -260,105 +265,3 @@ def understanding_differences(case: dict[str, Any], u: SemanticUnderstanding) ->
     if u.limit != e.get("limit"):
         diff.append("UNDERSTANDING_LIMIT")
     return diff
-
-
-def run(case_path: Path, output_dir: Path, model: str) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    cases = load_cases(case_path)
-    llm = OpenAIStructuredModel(api_key=os.environ["OPENAI_API_KEY"], model=model, max_retries=0)
-    rows: list[dict[str, Any]] = []
-
-    for case in cases:
-        row: dict[str, Any] = {"id": case["id"], "question": case["question"]}
-        started = time.perf_counter()
-        try:
-            scope_instructions = (
-                f"{SCOPE_PROMPT}\n\nQuestion:\n{case['question']}\n\n"
-                f"Capabilities:\n{json.dumps(CAPABILITIES)}"
-            )
-            scope = llm.parse(
-                purpose="phase3-capability-scope",
-                instructions=scope_instructions,
-                output_model=ScopeSelectionV243,
-            )
-            cats = capabilities(scope)
-            catalog = scoped_catalog(cats)
-            row["scope"] = scope.model_dump()
-            row["capabilities"] = cats
-            row["scoped_catalog"] = catalog
-            understanding_instructions = (
-                f"{UNDERSTANDING_PROMPT}\n\nQuestion:\n{case['question']}\n\n"
-                f"Source date: {SOURCE_DATE.isoformat()}\nTimezone: {SOURCE_TIMEZONE}\n"
-                f"Scoped catalog:\n{json.dumps(catalog)}"
-            )
-            understanding = llm.parse(
-                purpose="phase3-semantic-understanding",
-                instructions=understanding_instructions,
-                output_model=SemanticUnderstanding,
-            )
-            row["understanding"] = understanding.model_dump()
-            udiff = understanding_differences(case, understanding)
-            row["understanding_differences"] = udiff
-            row["understanding_success"] = not udiff
-
-            intent = compile_understanding(understanding)
-            row["compiled_intent"] = intent.model_dump()
-            row["derived_answerability"] = derived_answerability(intent)
-            row["derived_result_mode"] = result_mode(intent)
-            row["derived_entities"] = derived_entities(intent)
-            normalization_error = None
-            normalized = None
-            try:
-                normalized = normalize_time_scope(intent.time_scope)
-            except Exception as exc:  # diagnostic artifact, not production path
-                normalization_error = f"{type(exc).__name__}: {exc}"
-            row["normalized_time_scope"] = normalized
-            row["normalization_error"] = normalization_error
-            qdiff = semantic_differences(case, cats, intent, normalized, normalization_error)
-            row["query_differences"] = qdiff
-            row["query_semantic_success"] = not qdiff
-            row["eloquent_like"] = None if normalization_error else eloquent_like(intent, normalized)
-        except Exception as exc:  # preserve batch diagnostics
-            row["error"] = f"{type(exc).__name__}: {exc}"
-            row["understanding_success"] = False
-            row["query_semantic_success"] = False
-        row["latency_ms"] = round((time.perf_counter() - started) * 1000, 2)
-        rows.append(row)
-
-    metrics = {
-        "phase": "3-semantic-understanding-query-compiler",
-        "cases": len(rows),
-        "understanding_success": sum(bool(r.get("understanding_success")) for r in rows),
-        "compiled_semantic_success": sum(bool(r.get("query_semantic_success")) for r in rows),
-        "understanding_failure_distribution": dict(Counter(d for r in rows for d in r.get("understanding_differences", []))),
-        "compiled_failure_distribution": dict(Counter(d for r in rows for d in r.get("query_differences", []))),
-    }
-    manifest = {
-        "phase": "3-semantic-understanding-query-compiler",
-        "run_id": str(uuid.uuid4()),
-        "timestamp": time.time(),
-        "model": model,
-        "source_current_date": SOURCE_DATE.isoformat(),
-        "source_timezone": SOURCE_TIMEZONE,
-        "retries": 0,
-        "primary_gates": ["understanding_success", "compiled_semantic_success"],
-        "mcp_execution": False,
-        "sql_execution": False,
-    }
-    (output_dir / "raw_responses.jsonl").write_text("\n".join(json.dumps(r, default=str) for r in rows) + "\n", encoding="utf-8")
-    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(json.dumps(metrics, indent=2))
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--cases", type=Path, default=ROOT / "evaluation/spikes/semantic_understanding_phase3_cases.jsonl")
-    parser.add_argument("--output", type=Path, default=ROOT / f"evaluation/runs/semantic-understanding-phase3-{int(time.time())}")
-    parser.add_argument("--model", default="gpt-4o-mini")
-    args = parser.parse_args()
-    run(args.cases, args.output, args.model)
-
-
-if __name__ == "__main__":
-    main()
