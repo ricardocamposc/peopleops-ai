@@ -31,11 +31,12 @@ from semantic_query_dsl_phase242 import (
     derived_answerability,
     derived_entities,
     derived_result_mode,
+    eloquent_like,
     normalize_temporal,
-    render_eloquent_like,
     scoped_catalog,
-    semantic_check,
-    validate as validate_v242,
+    semantic_differences,
+    temporal_shape_errors,
+    validate_field_operations,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -125,19 +126,22 @@ def temporal_kind_errors(item) -> list[str]:
 
 def validate(scope: ScopeSelectionV243, intent: SemanticQueryIntentV242):
     fake_scope = type("Scope", (), {"capabilities": capabilities(scope)})()
-    result = validate_v242(fake_scope, intent)
-    extra = []
+    errors = validate_field_operations(fake_scope, intent)
+    errors.extend(temporal_shape_errors(intent))
     for item in intent.temporal_conditions:
-        extra.extend(temporal_kind_errors(item))
-    result["errors"] = sorted(set(result.get("errors", []) + extra))
-    result["scope_uses"] = [item.model_dump(mode="json") for item in scope.selected]
-    return result
+        errors.extend(temporal_kind_errors(item))
+    return {
+        "errors": sorted(set(errors)),
+        "scope_uses": [item.model_dump(mode="json") for item in scope.selected],
+    }
 
 
 def check(case, scope, intent, validation):
     fake_scope = type("Scope", (), {"capabilities": capabilities(scope)})()
-    ok, differences = semantic_check(case, fake_scope, intent, validation)
-    return ok and not validation["errors"], sorted(set(differences + validation["errors"]))
+    differences = semantic_differences(case, fake_scope, intent)
+    differences.extend(validation["errors"])
+    differences = sorted(set(differences))
+    return not differences, differences
 
 
 def load_cases(path: Path):
@@ -160,7 +164,7 @@ def run(cases, repetitions: int, output: Path, model_name: str):
                 intent = model.parse(purpose=INTENT_PROMPT_V243, instructions="Provider temporal context: " + json.dumps({"source_current_date": SOURCE_DATE.isoformat(), "source_timezone": SOURCE_TIMEZONE}) + "\nType capabilities: " + json.dumps(TYPE_CAPABILITIES) + "\nScoped conceptual fields: " + json.dumps(catalog["fields"], ensure_ascii=False) + "\nDefault result fields are platform metadata; do NOT copy them into result_fields unless the user explicitly names those attributes: " + json.dumps(catalog["default_result_fields"], ensure_ascii=False) + "\nQuestion: " + case["question"], output_model=SemanticQueryIntentV242)
                 validation = validate(scope, intent)
                 ok, differences = check(case, scope, intent, validation)
-                row.update({"structured_output_success": True, "scope": scope.model_dump(mode="json"), "capabilities": cats, "scoped_fields": sorted(catalog["fields"]), "raw_intent": intent.model_dump(mode="json"), "validation": validation, "derived_result_mode": derived_result_mode(intent), "derived_answerability": derived_answerability(intent), "derived_entities": derived_entities(intent), "normalized_temporal": normalize_temporal(intent), "eloquent_like": render_eloquent_like(intent, validation), "semantic_success": ok, "semantic_differences": differences})
+                row.update({"structured_output_success": True, "scope": scope.model_dump(mode="json"), "capabilities": cats, "scoped_fields": sorted(catalog["fields"]), "raw_intent": intent.model_dump(mode="json"), "validation": validation, "derived_result_mode": derived_result_mode(intent), "derived_answerability": derived_answerability(intent), "derived_entities": derived_entities(intent), "normalized_temporal": normalize_temporal(intent), "eloquent_like": eloquent_like(intent), "semantic_success": ok, "semantic_differences": differences})
             except Exception as exc:
                 row.update({"structured_output_success": False, "semantic_success": False, "semantic_differences": [model.last_failure_class or "MODEL_FAILURE"], "exception_class": type(exc).__name__, "error": str(exc)[:300]})
             row["latency_ms"] = round((time.monotonic() - started) * 1000, 1)
