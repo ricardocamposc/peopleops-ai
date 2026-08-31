@@ -272,15 +272,29 @@ def run(case_path: Path, output_dir: Path, model: str) -> None:
         row: dict[str, Any] = {"id": case["id"], "question": case["question"]}
         started = time.perf_counter()
         try:
-            scope = llm.parse(ScopeSelectionV243, f"{SCOPE_PROMPT}\n\nQuestion:\n{case['question']}\n\nCapabilities:\n{json.dumps(CAPABILITIES)}")
+            scope_instructions = (
+                f"{SCOPE_PROMPT}\n\nQuestion:\n{case['question']}\n\n"
+                f"Capabilities:\n{json.dumps(CAPABILITIES)}"
+            )
+            scope = llm.parse(
+                purpose="phase3-capability-scope",
+                instructions=scope_instructions,
+                output_model=ScopeSelectionV243,
+            )
             cats = capabilities(scope)
             catalog = scoped_catalog(cats)
             row["scope"] = scope.model_dump()
             row["capabilities"] = cats
             row["scoped_catalog"] = catalog
+            understanding_instructions = (
+                f"{UNDERSTANDING_PROMPT}\n\nQuestion:\n{case['question']}\n\n"
+                f"Source date: {SOURCE_DATE.isoformat()}\nTimezone: {SOURCE_TIMEZONE}\n"
+                f"Scoped catalog:\n{json.dumps(catalog)}"
+            )
             understanding = llm.parse(
-                SemanticUnderstanding,
-                f"{UNDERSTANDING_PROMPT}\n\nQuestion:\n{case['question']}\n\nSource date: {SOURCE_DATE.isoformat()}\nTimezone: {SOURCE_TIMEZONE}\nScoped catalog:\n{json.dumps(catalog)}",
+                purpose="phase3-semantic-understanding",
+                instructions=understanding_instructions,
+                output_model=SemanticUnderstanding,
             )
             row["understanding"] = understanding.model_dump()
             udiff = understanding_differences(case, understanding)
