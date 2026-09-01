@@ -178,10 +178,8 @@ def _effective_capabilities(
     selected: list[str],
     canonical: phase343.SemanticUnderstandingV343,
 ) -> list[str]:
-    """Use the existing structural capability closure when available."""
-    refs = phase32.referenced_fields(canonical)
-    derived = phase32.derive_required_capabilities(refs)
-    return phase32.effective_capabilities(selected, derived)
+    """Use the existing structural capability closure without reimplementing it."""
+    return phase32.effective_capabilities(selected, canonical)
 
 
 def _fingerprint(value: phase343.SemanticUnderstandingV343) -> str:
@@ -377,7 +375,6 @@ def run(
                 compiled_core = {"error": str(exc)}
                 normalization_error = f"{type(exc).__name__}: {exc}"
 
-            all_diff = raw_diff + canonical_diff + compiler_diff
             rows.append(
                 {
                     "id": case["id"],
