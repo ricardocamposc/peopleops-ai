@@ -18,10 +18,10 @@ import argparse
 import os
 from pathlib import Path
 
+import semantic_understanding_phase3 as phase3
 import semantic_understanding_phase31 as phase31
 import semantic_understanding_phase32 as phase32
 import semantic_understanding_phase34 as phase34
-import semantic_understanding_phase3 as phase3
 
 ROOT = Path(__file__).resolve().parents[2]
 
