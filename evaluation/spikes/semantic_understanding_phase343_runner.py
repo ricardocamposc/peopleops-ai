@@ -1,7 +1,9 @@
 """Run Phase 3.4.3 comparison cases without executing queries.
 
 This runner is an inspection/evaluation instrument. It must not infer semantic
-meaning from natural language in deterministic code.
+meaning from natural language in deterministic code. Compiled semantic
+correctness is delegated to semantic_comparison_baseline_evaluator_v1 so the
+same frozen measurement instrument is used by generated artifacts.
 """
 from __future__ import annotations
 
@@ -12,6 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+import semantic_comparison_baseline_evaluator_v1 as baseline_evaluator
 import semantic_understanding_phase3 as phase3
 import semantic_understanding_phase342 as phase342
 import semantic_understanding_phase343 as phase343
@@ -215,7 +218,7 @@ def _normalized_scope(intent: phase3.SemanticQueryIntentV246) -> Any:
 def compiled_plan_core(
     compiled: phase343.ComparisonPlan | phase3.SemanticQueryIntentV246,
 ) -> dict[str, Any]:
-    """Expose the compiled structure that the evaluator must actually validate."""
+    """Expose compiled structure and normalized operands for independent audit."""
     if isinstance(compiled, phase343.ComparisonPlan):
         return {
             "kind": "COMPARISON",
@@ -235,45 +238,6 @@ def compiled_plan_core(
         "intent": compiled.model_dump(),
         "normalized_time_scope": _normalized_scope(compiled),
     }
-
-
-def compiled_differences(
-    expected: dict[str, Any],
-    canonical: phase343.SemanticUnderstandingV343,
-    compiled: phase343.ComparisonPlan | phase3.SemanticQueryIntentV246,
-) -> list[str]:
-    """Validate compilation independently from canonical-understanding success."""
-    differences: list[str] = []
-    expected_answerability = expected["answerability"]
-    if compiled_answerability(compiled) != expected_answerability:
-        differences.append("COMPILED_ANSWERABILITY_MISMATCH")
-
-    if expected.get("comparison") is None:
-        if isinstance(compiled, phase343.ComparisonPlan):
-            differences.append("UNEXPECTED_COMPARISON_PLAN")
-        return differences
-
-    if not isinstance(compiled, phase343.ComparisonPlan):
-        differences.append("MISSING_COMPARISON_PLAN")
-        return differences
-
-    if compiled.alignment != expected.get("alignment"):
-        differences.append("COMPILED_ALIGNMENT_MISMATCH")
-    if compiled.operation != expected.get("operation"):
-        differences.append("COMPILED_OPERATION_MISMATCH")
-
-    # Compilation must preserve the analytical semantics carried by the
-    # canonical understanding on both independent operands.
-    expected_measure = None if canonical.measure is None else canonical.measure.model_dump()
-    for side_name, side_intent in (("LEFT", compiled.left), ("RIGHT", compiled.right)):
-        actual_measures = [m.model_dump() for m in side_intent.measures]
-        expected_measures = [] if expected_measure is None else [expected_measure]
-        if actual_measures != expected_measures:
-            differences.append(f"{side_name}_COMPILED_MEASURE_MISMATCH")
-        if side_intent.result_fields != canonical.requested_fields:
-            differences.append(f"{side_name}_COMPILED_RESULT_FIELDS_MISMATCH")
-
-    return differences
 
 
 def run(cases_path: Path, output_dir: Path, model: str) -> None:
@@ -334,7 +298,11 @@ def run(cases_path: Path, output_dir: Path, model: str) -> None:
             and canonical_answerability == expected["answerability"]
             and canonical_shape == expected_shape
         )
-        compiler_diff = compiled_differences(expected, canonical, compiled)
+        compiler_diff = baseline_evaluator.compiler_differences(
+            expected,
+            canonical,
+            compiled,
+        )
         compiler_success = not compiler_diff
         compiled_success = canonical_success and compiler_success
 
@@ -382,16 +350,20 @@ def run(cases_path: Path, output_dir: Path, model: str) -> None:
         "compiler_success_given_valid_input": sum(
             row["compiler_success"] for row in valid_inputs
         ),
+        "measurement_evaluator": "semantic_comparison_baseline_evaluator_v1",
     }
     manifest = {
         "phase": "3.4.3",
-        "run_type": "comparison-inspection-corrected",
+        "run_type": "comparison-inspection-hardened-evaluator",
         "cases": len(rows),
         "repetitions": 1,
         "model": model,
         "source_date": SOURCE_DATE.isoformat(),
         "timezone": SOURCE_TIMEZONE,
         "compiled_plan_validation": True,
+        "simple_intent_validation": True,
+        "normalized_scope_validation": True,
+        "measurement_evaluator": "semantic_comparison_baseline_evaluator_v1",
         "canonicalizer_may_infer_missing_unit": False,
     }
     (output_dir / "manifest.json").write_text(
@@ -417,6 +389,7 @@ def main() -> None:
     )
     args = parser.parse_args()
     phase343.assert_phase343_contract()
+    baseline_evaluator.assert_evaluator_contract()
     run(args.cases, args.output_dir, args.model)
 
 
