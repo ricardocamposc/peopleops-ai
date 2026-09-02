@@ -14,12 +14,6 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-import semantic_baseline_v1_runner_aligned as baseline_runner
-import semantic_comparison_baseline_evaluator_v3 as evaluator_v3
-import semantic_understanding_phase3 as phase3
-import semantic_understanding_phase343 as phase343
-import semantic_understanding_phase345 as phase345
-import semantic_understanding_phase36 as phase36
 from peopleops_api.analysis_workflow import OpenAIStructuredModel
 from semantic_query_dsl_phase242 import (
     CAPABILITIES,
@@ -29,6 +23,13 @@ from semantic_query_dsl_phase242 import (
 )
 from semantic_query_dsl_phase243 import ScopeSelectionV243
 from semantic_query_dsl_phase244 import capabilities
+
+import semantic_baseline_v1_runner_aligned as baseline_runner
+import semantic_comparison_baseline_evaluator_v3 as evaluator_v3
+import semantic_understanding_phase3 as phase3
+import semantic_understanding_phase343 as phase343
+import semantic_understanding_phase345 as phase345
+import semantic_understanding_phase36 as phase36
 
 RUNNER_VERSION = "semantic-understanding-phase36-v1"
 
