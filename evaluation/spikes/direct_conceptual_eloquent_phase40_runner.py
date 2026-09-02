@@ -66,6 +66,7 @@ def _resolve_reference(root_model: str, reference: str) -> bool:
 
 
 def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -> list[str]:
+    """Validate the allowed conceptual Eloquent surface without interpreting semantics."""
     if response.status == "NEEDS_INFO":
         return []
     query = response.eloquent_query or ""
@@ -102,7 +103,6 @@ def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -
     )
     root_model = model_matches[0]
     for method, reference in field_method_pattern.findall(query):
-        # Alias expressions are intentionally not allowed in the PoC.
         if not _resolve_reference(root_model, reference):
             errors.append(f"UNKNOWN_REFERENCE:{method}:{reference}")
 
@@ -112,9 +112,10 @@ def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -
 def validate_read_only_sql(sql: str) -> list[str]:
     """PoC safety gate before optional execution; not a production SQL parser."""
     stripped = sql.strip()
-    normalized = f" {re.sub(r'\s+', ' ', stripped.lower())} "
+    compact = re.sub(r"\s+", " ", stripped.lower())
+    normalized = f" {compact} "
     errors: list[str] = []
-    if not (normalized.lstrip().startswith("select ") or normalized.lstrip().startswith("with ")):
+    if not (compact.startswith("select ") or compact.startswith("with ")):
         errors.append("SQL_NOT_SELECT")
     if ";" in stripped or "--" in stripped or "/*" in stripped or "*/" in stripped:
         errors.append("SQL_MULTISTATEMENT_OR_COMMENT")
@@ -149,6 +150,7 @@ def validate_read_only_sql(sql: str) -> list[str]:
 
 
 def _execute_sql(sql: str, *, max_rows: int = 100) -> dict[str, Any]:
+    """Execute validated SQL in a read-only transaction against synthetic HRIS."""
     try:
         import psycopg
     except ImportError as exc:  # pragma: no cover - environment dependent
@@ -200,6 +202,30 @@ def _execute_sql(sql: str, *, max_rows: int = 100) -> dict[str, Any]:
         }
 
 
+def assert_runner_contract() -> None:
+    valid = phase40.ConceptualEloquentResponse(
+        status="QUERY",
+        eloquent_query=(
+            "Overtime::query()->where('work_date', '>=', '2026-01-01')"
+            "->where('work_date', '<', '2026-02-01')->sum('approved_minutes')"
+        ),
+    )
+    assert validate_conceptual_eloquent(valid) == []
+
+    leak = phase40.ConceptualEloquentResponse(
+        status="QUERY",
+        eloquent_query="Overtime::query()->where('overtime_record.work_date', '>=', '2026-01-01')->get()",
+    )
+    assert any(item.startswith("PHYSICAL_NAME_LEAK") for item in validate_conceptual_eloquent(leak))
+
+    unsafe_sql = "DELETE FROM overtime_record"
+    assert "SQL_NOT_SELECT" in validate_read_only_sql(unsafe_sql)
+    assert any(item.startswith("SQL_FORBIDDEN") for item in validate_read_only_sql(unsafe_sql))
+
+    safe_sql = "SELECT approved_minutes FROM overtime_record WHERE work_date >= DATE '2026-01-01'"
+    assert validate_read_only_sql(safe_sql) == []
+
+
 def run(
     cases_path: Path,
     output_dir: Path,
@@ -210,6 +236,7 @@ def run(
     execute_sql: bool,
 ) -> None:
     phase40.assert_phase40_contract()
+    assert_runner_contract()
     cases = _load_cases(cases_path)
     output_dir.mkdir(parents=True, exist_ok=True)
     llm = OpenAIStructuredModel(
@@ -309,19 +336,19 @@ def run(
     query_rows = [row for row in rows if row["response"]["status"] == "QUERY"]
     translated_rows = [row for row in rows if row["translation"] is not None]
     execution_rows = [row for row in rows if row["execution"] is not None]
+    status_correct_count = sum(row["status_correct"] for row in rows)
+    eloquent_valid_count = sum(row["eloquent_surface_valid"] for row in rows)
     metrics = {
         "runner_version": RUNNER_VERSION,
         "cases": len(cases),
         "repetitions": repetitions,
         "executions": total,
         "structured_output_success": total,
-        "status_correct": sum(row["status_correct"] for row in rows),
-        "status_correct_pct": _percent(sum(row["status_correct"] for row in rows), total),
+        "status_correct": status_correct_count,
+        "status_correct_pct": _percent(status_correct_count, total),
         "query_outputs": len(query_rows),
-        "eloquent_surface_valid": sum(row["eloquent_surface_valid"] for row in rows),
-        "eloquent_surface_valid_pct": _percent(
-            sum(row["eloquent_surface_valid"] for row in rows), total
-        ),
+        "eloquent_surface_valid": eloquent_valid_count,
+        "eloquent_surface_valid_pct": _percent(eloquent_valid_count, total),
         "eloquent_validation_error_counts": dict(validation_errors),
         "sql_translation_attempts": len(translated_rows),
         "sql_translated": sum(
