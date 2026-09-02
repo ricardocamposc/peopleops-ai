@@ -13,12 +13,11 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
-
 import semantic_baseline_v1_runner_aligned as baseline_runner
 import semantic_comparison_baseline_evaluator_v3 as evaluator_v3
 import semantic_understanding_phase343 as phase343
 import semantic_understanding_phase345 as phase345
+from pydantic import ValidationError
 
 REPLAY_VERSION = "semantic-baseline-v1-phase345-evaluator-v3-replay"
 
