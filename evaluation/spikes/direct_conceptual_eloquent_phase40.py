@@ -344,11 +344,23 @@ Provider model mappings:
 def assert_phase40_contract() -> None:
     conceptual = conceptual_catalog_text()
     physical = physical_catalog_text()
+
+    # Logical generation must not expose provider-owned physical source names.
     assert "overtime_record" not in conceptual
     assert "attendance_record" not in conceptual
     assert "overtime_record" in physical
-    assert "Employee" in conceptual
-    assert "employee.department" not in physical  # joins, not conceptual paths
+    assert "attendance_record" in physical
+
+    # Logical classes/relations are intentionally visible to the first LLM.
+    assert "class Employee" in conceptual
+    assert "department: belongsTo(Department)" in conceptual
+
+    # The provider view must contain physical join semantics. Do not reject
+    # substrings such as "employee.department" because a valid physical column
+    # like "employee.department_id" necessarily contains that text.
+    assert "employee.department_id = department.id" in physical
+    assert "overtime_record.employee_id = employee.id" in physical
+
     for forbidden in FORBIDDEN_METHODS:
         assert forbidden in ELOQUENT_GENERATION_PROMPT
 
