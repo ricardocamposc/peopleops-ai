@@ -26,7 +26,7 @@ from peopleops_api.analysis_workflow import OpenAIStructuredModel
 
 import direct_conceptual_eloquent_phase40 as phase40
 
-RUNNER_VERSION = "direct-conceptual-eloquent-phase40-v1"
+RUNNER_VERSION = "direct-conceptual-eloquent-phase40-v2"
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
@@ -65,6 +65,24 @@ def _resolve_reference(root_model: str, reference: str) -> bool:
     return False
 
 
+def _physical_reference_leak(root_model: str, reference: str) -> str | None:
+    """Return a physical table leaked through a quoted field reference, if any.
+
+    A physical table name may legitimately equal the lowercase conceptual model
+    name (for example Employee -> employee). Therefore whole-query substring
+    matching is invalid. A physical leak is only reported when a quoted field
+    reference uses a physical table qualifier that is not a valid conceptual
+    relationship path from the selected root model.
+    """
+    if _resolve_reference(root_model, reference):
+        return None
+    first = reference.split(".", 1)[0]
+    for physical in _physical_tables():
+        if first.lower() == physical.lower():
+            return physical
+    return None
+
+
 def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -> list[str]:
     """Validate the allowed conceptual Eloquent surface without interpreting semantics."""
     if response.status == "NEEDS_INFO":
@@ -76,10 +94,6 @@ def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -
     for forbidden in phase40.FORBIDDEN_METHODS:
         if forbidden.lower() in lower:
             errors.append(f"FORBIDDEN_CONSTRUCT:{forbidden}")
-
-    for physical in _physical_tables():
-        if re.search(rf"\b{re.escape(physical)}\b", query, flags=re.IGNORECASE):
-            errors.append(f"PHYSICAL_NAME_LEAK:{physical}")
 
     model_matches = re.findall(r"\b([A-Z][A-Za-z0-9_]*)::query\(\)", query)
     if not model_matches:
@@ -103,7 +117,12 @@ def validate_conceptual_eloquent(response: phase40.ConceptualEloquentResponse) -
     )
     root_model = model_matches[0]
     for method, reference in field_method_pattern.findall(query):
-        if not _resolve_reference(root_model, reference):
+        if _resolve_reference(root_model, reference):
+            continue
+        physical = _physical_reference_leak(root_model, reference)
+        if physical is not None:
+            errors.append(f"PHYSICAL_NAME_LEAK:{physical}")
+        else:
             errors.append(f"UNKNOWN_REFERENCE:{method}:{reference}")
 
     return sorted(set(errors))
@@ -211,6 +230,24 @@ def assert_runner_contract() -> None:
         ),
     )
     assert validate_conceptual_eloquent(valid) == []
+
+    employee_model = phase40.ConceptualEloquentResponse(
+        status="QUERY",
+        eloquent_query="Employee::query()->select('employee_code')->get()",
+    )
+    assert validate_conceptual_eloquent(employee_model) == []
+
+    department_model = phase40.ConceptualEloquentResponse(
+        status="QUERY",
+        eloquent_query="Department::query()->select('name')->get()",
+    )
+    assert validate_conceptual_eloquent(department_model) == []
+
+    conceptual_relation = phase40.ConceptualEloquentResponse(
+        status="QUERY",
+        eloquent_query="Overtime::query()->groupBy('employee.department.name')->sum('approved_minutes')",
+    )
+    assert validate_conceptual_eloquent(conceptual_relation) == []
 
     leak = phase40.ConceptualEloquentResponse(
         status="QUERY",
