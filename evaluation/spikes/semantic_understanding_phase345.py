@@ -12,7 +12,11 @@ from __future__ import annotations
 import semantic_understanding_phase3 as phase3
 import semantic_understanding_phase343 as phase343
 import semantic_understanding_phase344 as phase344
-from semantic_query_dsl_phase246 import SemanticQueryIntentV246, TemporalPoint, TimeScopeV246
+from semantic_query_dsl_phase246 import (
+    SemanticQueryIntentV246,
+    TemporalPoint,
+    TimeScopeV246,
+)
 
 
 def canonicalize(
