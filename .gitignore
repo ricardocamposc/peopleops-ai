@@ -25,6 +25,7 @@ coverage/
 *.local
 .DS_Store
 apps/peopleops-api/var/
+prompts/evaluations/
 evaluation/runs/*
 !evaluation/runs/.gitkeep
 !evaluation/runs/slice18-portfolio.json

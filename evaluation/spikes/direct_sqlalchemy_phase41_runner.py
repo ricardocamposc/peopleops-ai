@@ -186,6 +186,8 @@ def run(
             )
             summary["executed"] += int(bool(execution and execution.get("executed")))
 
+            response_json = response.model_dump(mode="json")
+            response_json["input_request"] = {"user_request": case["question"]}
             rows.append(
                 {
                     "id": case["id"],
@@ -194,7 +196,7 @@ def run(
                     "repetition": repetition,
                     "question": case["question"],
                     "accepted_outcomes": case["accepted_outcomes"],
-                    "response": response.model_dump(mode="json"),
+                    "response": response_json,
                     "outcome_acceptable": acceptable,
                     "validation_errors": all_errors,
                     "statement_built": statement is not None,

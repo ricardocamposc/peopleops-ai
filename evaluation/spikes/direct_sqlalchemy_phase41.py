@@ -134,63 +134,65 @@ def conceptual_catalog_text() -> str:
             lines.append(f"  - {column_property.key}: {column.type}")
         lines.append("relationships:")
         for relation in mapper.relationships:
-            direction = "many" if relation.uselist else "one"
-            lines.append(f"  - {relation.key}: {direction} -> {relation.mapper.class_.__name__}")
+            target = relation.mapper.class_
+            target_name = target.__name__
+            cardinality = "one-to-many" if relation.uselist else "many-to-one"
+            local_column, remote_column = relation.local_remote_pairs[0]
+            if relation.uselist:
+                key = (
+                    f"{model.__name__}.{local_column.key} <- "
+                    f"{target_name}.{remote_column.key}"
+                )
+            else:
+                key = (
+                    f"{model.__name__}.{local_column.key} -> "
+                    f"{target_name}.{remote_column.key}"
+                )
+            lines.append(
+                f"  - {relation.key}: {cardinality} -> {target_name}; "
+                f"relationship key: {key}"
+            )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
 
 
 GENERATION_PROMPT = f"""
-You translate an HR analytics request directly into SQLAlchemy 2.x ORM query
-code over the logical models below.
+Generate a read-only SQLAlchemy 2.x ORM query for the user's request using
+only the logical ORM models below.
 
-Reference date: 2026-08-30.
-Timezone: UTC.
+Reference date: 2026-08-30. Timezone: UTC. Resolve relative calendar
+expressions from this reference date.
 
-Return one of two outcomes:
+Return either QUERY or NEEDS_INFO in the structured response. For QUERY,
+provide one Python expression that evaluates to a SQLAlchemy Select or
+CompoundSelect. For NEEDS_INFO, state the essential missing information.
+The sqlalchemy response must be valid Python syntax. If the expression uses
+multiple chained lines, use implicit line continuation by enclosing the
+entire expression in outer parentheses. The opening parenthesis must appear
+before the root select() call and the closing parenthesis after the final
+method call. For example:
+(
+    select(..., func.sum(...))
+    .select_from(...)
+    .join(...)
+    .join(...)
+    .group_by(...)
+)
+Alternatively, return the complete expression on one line. Never place an
+indented .join(), .where(), .group_by(), or .order_by() after a root
+expression that has already closed without those outer parentheses.
 
-QUERY
-- Provide one Python expression that evaluates to a SQLAlchemy Select or
-  CompoundSelect.
-- Use SQLAlchemy 2.x select() style, not legacy Session.query().
-- The expression may use joins, aliases expressed through subqueries/CTEs,
-  UNION/UNION ALL, CASE, aggregate functions, date extraction, window
-  functions, subqueries, and any other normal READ-ONLY SQLAlchemy query
-  composition available through the provided namespace.
-- Do not artificially avoid UNION or other legitimate query constructs.
-- Do not emit SQL text and do not use raw textual SQL helpers.
-- Never generate INSERT, UPDATE, DELETE, MERGE, DDL, locking queries, imports,
-  or arbitrary Python side effects.
-- Explain exactly what the query returns in interpretation.
-- If you choose one reasonable interpretation of ambiguous wording, state that
-  explicitly in assumptions. A QUERY with a declared assumption is acceptable
-  when it is a defensible interpretation.
+Use normal SQLAlchemy 2.x composition, including select(), joins, aggregates,
+date expressions, subqueries, CTEs, UNION or UNION ALL when useful. Preserve
+the user's requested fields, filters, grouping, ordering, measures and
+periods. Use an obvious available model attribute for a clearly implied
+request, such as Overtime.approved_minutes for overtime quantities. Ask for
+NEEDS_INFO only when essential meaning is genuinely missing; do not ask for
+optional fields, grouping or filters. Explain the result in interpretation
+and disclose any chosen assumption in assumptions.
 
-NEEDS_INFO
-- Use this only when no responsible read-only query can be produced without
-  inventing essential business meaning.
-- State precisely what information is missing.
-
-Planning guidance:
-- Do not add employee, department, status, or other filters unless requested.
-- Ordinary calendar expressions should be resolved from the reference date.
-- If the user asks for overtime quantitatively (total, accumulated amount,
-  comparison, trend), Overtime.approved_minutes is the available quantitative
-  measure. For record/projection requests, select fields instead of forcing an
-  aggregate.
-- Comparisons may use one grouped query, several branches combined with UNION,
-  conditional aggregates, subqueries, or another natural SQLAlchemy strategy.
-  Do not force comparison into a binary schema.
-- Three or more periods are valid query-planning problems, not automatic
-  NEEDS_INFO cases.
-- For percentage change, it is acceptable to retrieve the source aggregates
-  needed for the calculation and explain that interpretation if computing the
-  percentage in-query would make the expression less clear.
-
-Available names in the execution namespace include:
-select, func, and_, or_, not_, case, cast, literal, distinct, extract,
-union, union_all, asc, desc, date, Integer, String, Date,
-and the ORM models below.
+Do not emit SQL text, physical table or column names, imports, writes, DDL,
+locking queries, or arbitrary Python side effects.
 
 Logical ORM models:
 {conceptual_catalog_text()}
@@ -326,6 +328,10 @@ def assert_phase41_contract() -> None:
     assert "class Overtime" in catalog
     assert "overtime_record" not in catalog
     assert "attendance_record" not in catalog
+    assert "Employee.id <- Attendance.employee_id" in catalog
+    assert "Attendance.employee_id -> Employee.id" in catalog
+    assert "Employee.department_id -> Department.id" in catalog
+    assert "Employee.id <- Overtime.employee_id" in catalog
     assert "union" in GENERATION_PROMPT.lower()
     assert "assumptions" in GENERATION_PROMPT
 
