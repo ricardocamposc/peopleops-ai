@@ -9,7 +9,7 @@ post-generation loop.
 from __future__ import annotations
 
 import time
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
@@ -161,6 +161,11 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
         }
 
         def metadata(*, technical_generation_failed: bool = False) -> dict[str, Any]:
+            for item in interactions:
+                item.setdefault(
+                    "repair_input",
+                    {"round": item.get("round"), "kind": item.get("kind")},
+                )
             successful_repair = int(
                 validation_attempts > 1
                 and valid_candidate is not None
@@ -343,9 +348,6 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 })
                 messages.append(_tool_message(call_id, feedback))
 
-        # The agent did not complete a valid structured submission. Preserve the
-        # tool history for diagnosis and emit an intentionally invalid candidate so
-        # the mandatory external validator independently confirms technical failure.
         fallback = phase42.QueryProgrammerResponse(
             status="QUERY",
             sqlalchemy="(",
