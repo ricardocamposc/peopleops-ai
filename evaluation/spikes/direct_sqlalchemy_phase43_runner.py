@@ -14,7 +14,7 @@ import direct_sqlalchemy_phase42 as phase42
 import direct_sqlalchemy_phase42_runner as phase42_runner
 import direct_sqlalchemy_phase43 as phase43
 
-RUNNER_VERSION = "direct-sqlalchemy-phase43-v1"
+RUNNER_VERSION = "direct-sqlalchemy-phase43-v2"
 DATASET_VERSION = "phase42-v1"
 DEFAULT_CASES = Path(__file__).with_name("direct_sqlalchemy_phase42_cases.jsonl")
 
@@ -36,17 +36,72 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def _agent_metadata(state: dict[str, Any]) -> dict[str, int]:
-    events = [
+def _programmer_events(state: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
         event for event in state.get("audit_trail", [])
         if event.get("role") == "sqlalchemy_query_developer"
     ]
-    keys = (
-        "agent_tool_rounds",
-        "agent_submission_attempts",
-        "agent_submission_rejections",
+
+
+def _event_agent_rounds(event: dict[str, Any]) -> int:
+    """Count actual model turns, not interaction/tool events.
+
+    Phase 4.3 records the model round on every interaction. Multiple tool calls may
+    happen in one model turn, so ``len(internal_iterations)`` over-counts rounds.
+    """
+    rounds = [
+        int(item.get("round", 0) or 0)
+        for item in event.get("internal_iterations", [])
+    ]
+    return max(rounds, default=0)
+
+
+def _agent_metadata(state: dict[str, Any]) -> dict[str, int]:
+    events = _programmer_events(state)
+    return {
+        "agent_tool_rounds": sum(_event_agent_rounds(event) for event in events),
+        "agent_submission_attempts": sum(
+            int(event.get("agent_submission_attempts", 0) or 0) for event in events
+        ),
+        "agent_submission_rejections": sum(
+            int(event.get("agent_submission_rejections", 0) or 0) for event in events
+        ),
+    }
+
+
+def _candidate_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Derive candidate metrics from validation tool calls only.
+
+    A model may continue requesting validation after the deterministic validation
+    budget is exhausted. Those requests are still generated candidates, but they
+    are not validator executions. Keeping both counts separate prevents the old
+    inconsistency where changed/unchanged candidates could exceed the reported
+    number of generated candidates.
+    """
+    validation_requests: list[dict[str, Any]] = [
+        item
+        for row in rows
+        for item in row.get("internal_iterations", [])
+        if item.get("kind") == "VALIDATION_TOOL_CALL"
+    ]
+    generated = len(validation_requests)
+    changed = sum(item.get("candidate_changed") is True for item in validation_requests)
+    unchanged = sum(item.get("candidate_changed") is False for item in validation_requests)
+    initial = sum(item.get("candidate_changed") is None for item in validation_requests)
+    budget_rejected = sum(
+        item.get("result", {}).get("stage") == "TOOL_BUDGET"
+        for item in validation_requests
     )
-    return {key: sum(int(event.get(key, 0) or 0) for event in events) for key in keys}
+    executed = generated - budget_rejected
+    return {
+        "candidate_validation_requests": generated,
+        "candidates_generated": generated,
+        "candidates_initial": initial,
+        "candidates_changed": changed,
+        "candidates_unchanged": unchanged,
+        "candidate_validations_executed": executed,
+        "candidate_validation_budget_rejections": budget_rejected,
+    }
 
 
 def _row(case: dict[str, Any], state: dict[str, Any], started: float) -> dict[str, Any]:
@@ -64,6 +119,16 @@ def _row(case: dict[str, Any], state: dict[str, Any], started: float) -> dict[st
 def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     base = phase42_runner._metrics(rows, "AGENT_TEAM")
     base["runner_version"] = RUNNER_VERSION
+
+    candidate_metrics = _candidate_metrics(rows)
+
+    # Phase 4.2 names are kept for comparability, but in Phase 4.3 they are
+    # normalized from model-initiated validation requests rather than generic
+    # interaction events.
+    base["internal_candidates_generated"] = candidate_metrics["candidates_generated"]
+    base["internal_candidates_changed"] = candidate_metrics["candidates_changed"]
+    base["internal_candidates_unchanged"] = candidate_metrics["candidates_unchanged"]
+
     base["agent_tool_calling"] = {
         "model_initiated_tool_calls": sum(row.get("internal_tool_calls", 0) for row in rows),
         "validation_attempts": sum(row.get("internal_validation_attempts", 0) for row in rows),
@@ -75,6 +140,7 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "technical_generation_failed": sum(
             row.get("technical_generation_failed", False) for row in rows
         ),
+        **candidate_metrics,
     }
     base["final"]["technical_generation_failed"] = sum(
         row.get("final_status") == "TECHNICAL_GENERATION_FAILED" for row in rows
@@ -87,6 +153,37 @@ def assert_runner_contract() -> None:
     cases = _load_cases(DEFAULT_CASES)
     assert len(cases) >= 30
     assert len({case["id"] for case in cases}) == len(cases)
+
+    synthetic = [{
+        "internal_iterations": [
+            {
+                "kind": "VALIDATION_TOOL_CALL",
+                "round": 1,
+                "candidate_changed": None,
+                "result": {"valid": False, "stats": {}},
+            },
+            {
+                "kind": "VALIDATION_TOOL_CALL",
+                "round": 2,
+                "candidate_changed": True,
+                "result": {"valid": False, "stage": "TOOL_BUDGET"},
+            },
+            {"kind": "SUBMISSION_ACCEPTED", "round": 3},
+        ]
+    }]
+    counts = _candidate_metrics(synthetic)
+    assert counts["candidates_generated"] == 2
+    assert counts["candidates_initial"] == 1
+    assert counts["candidates_changed"] == 1
+    assert counts["candidates_unchanged"] == 0
+    assert counts["candidate_validations_executed"] == 1
+    assert counts["candidate_validation_budget_rejections"] == 1
+    assert (
+        counts["candidates_initial"]
+        + counts["candidates_changed"]
+        + counts["candidates_unchanged"]
+        == counts["candidates_generated"]
+    )
 
 
 def run(
@@ -151,6 +248,14 @@ def run(
         "database_execution": False,
         "source_date": phase42.REFERENCE_CONTEXT["reference_date"],
         "timezone": phase42.REFERENCE_CONTEXT["timezone"],
+        "candidate_metric_semantics": {
+            "candidates_generated": "model validation-tool requests carrying a candidate",
+            "candidates_initial": "first candidate in each Query Programmer invocation",
+            "candidates_changed": "validation requests whose candidate differs from the previous request in the same invocation",
+            "candidates_unchanged": "validation requests whose candidate equals the previous request in the same invocation",
+            "candidate_validations_executed": "requests that actually reached deterministic validation",
+            "candidate_validation_budget_rejections": "validation requests rejected because the per-invocation validation budget was exhausted",
+        },
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     (output_dir / "raw_responses.jsonl").write_text(
