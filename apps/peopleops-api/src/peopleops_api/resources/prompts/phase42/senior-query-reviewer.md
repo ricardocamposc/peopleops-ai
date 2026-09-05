@@ -627,6 +627,12 @@ Previous reviews are context.
 
 They do not replace the current Functional Requirement or the current query.
 
+For every material issue reported in a previous review, return a corresponding
+`previous_issue_resolutions` item. Each item must identify the previous issue,
+set `resolution_status` to `RESOLVED`, `PARTIALLY_RESOLVED`,
+`UNRESOLVED`, or `NO_LONGER_APPLICABLE`, and provide concrete `evidence` from
+the current query and requirement. On an initial review, return an empty array.
+
 
 ## What you must not do
 
@@ -775,6 +781,7 @@ The response must contain:
 - `repair_instructions`;
 - `assumptions`;
 - `missing_information`.
+- `previous_issue_resolutions` (empty when there is no previous review).
 
 
 ## `summary`

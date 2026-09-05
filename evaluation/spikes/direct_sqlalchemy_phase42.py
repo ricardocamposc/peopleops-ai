@@ -154,6 +154,15 @@ class QuerySemanticsReview(BaseModel):
     comparison_preservation: str
 
 
+class PreviousIssueResolution(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    previous_issue: str
+    resolution_status: Literal[
+        "RESOLVED", "PARTIALLY_RESOLVED", "UNRESOLVED", "NO_LONGER_APPLICABLE"
+    ]
+    evidence: str
+
+
 class QueryProgrammerResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: Literal["QUERY", "NEEDS_INFO", "CANNOT_IMPLEMENT"]
@@ -216,6 +225,7 @@ class SeniorReview(BaseModel):
     assumptions: list[str]
     missing_information: list[str]
     confidence: float = Field(ge=0, le=1)
+    previous_issue_resolutions: list[PreviousIssueResolution] = Field(default_factory=list)
 
 
 class ValidationDiagnostic(TypedDict, total=False):
@@ -251,6 +261,20 @@ class Phase42State(TypedDict, total=False):
     senior_reviews: list[dict[str, Any]]
     technical_repair_attempts: int
     semantic_revision_attempts: int
+    internal_tool_calls: int
+    internal_validation_attempts: int
+    internal_self_repair_attempts: int
+    internal_self_repair_success: int
+    internal_iterations: list[dict[str, Any]]
+    internal_candidates_generated: int
+    internal_candidates_changed: int
+    internal_candidates_unchanged: int
+    syntax_short_circuits: int
+    build_short_circuits: int
+    compile_attempts: int
+    tool_calls_avoided_by_short_circuit: int
+    candidate_valid_before_external_validator: bool
+    external_validator_pass_after_internal_validation: bool
     repair_type: Literal["TECHNICAL", "SEMANTIC"] | None
     final_status: str
     audit_trail: list[dict[str, Any]]
@@ -269,6 +293,7 @@ SENIOR_QUERY_REVIEWER_PROMPT = PHASE42_PROMPTS.joinpath("senior-query-reviewer.m
 
 MAX_TECHNICAL_REPAIR_ATTEMPTS = 2
 MAX_SEMANTIC_REVISION_ATTEMPTS = 1
+MAX_INTERNAL_SELF_REPAIR_ATTEMPTS = 2
 REFERENCE_CONTEXT = {
     "reference_date": "2026-08-30",
     "reference_year": 2026,
@@ -329,6 +354,7 @@ def _human_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
             "previous_query": payload.get("previous_query"),
             "deterministic_validation_result": payload.get("deterministic_validation_result"),
             "senior_review": payload.get("senior_review"),
+            "internal_tool_results": payload.get("internal_tool_results", []),
         }
     return {
         "functional_requirement": payload["functional_requirement"],
@@ -382,6 +408,116 @@ class LangChainAgentRuntime:
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
             "rendered_system_prompt": rendered[0].content,
         }
+
+    def invoke_query_programmer(
+        self, *, input_payload: dict[str, Any], output_model: type[BaseModel],
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Run the programmer's bounded tool-assisted generation loop.
+
+        The tools are deterministic application functions. Their diagnostics are
+        fed back to the programmer as structured repair context; no Python or SQL
+        is executed by the model.
+        """
+        payload = dict(input_payload)
+        tool_events: list[dict[str, Any]] = []
+        internal_iterations: list[dict[str, Any]] = []
+        counters = {
+            "syntax_short_circuits": 0, "build_short_circuits": 0,
+            "compile_attempts": 0, "tool_calls_avoided_by_short_circuit": 0,
+        }
+        internal_repairs = 0
+        previous_candidate: str | None = None
+        while True:
+            repair_input = _human_payload("sqlalchemy_query_developer", payload)
+            result, metadata = self.invoke(
+                role="sqlalchemy_query_developer",
+                input_payload=payload,
+                output_model=output_model,
+            )
+            tools_result, tool_stats = (
+                _run_internal_tools(result.sqlalchemy) if result.status == "QUERY"
+                else ([], {key: 0 for key in counters})
+            )
+            tool_events.extend(tools_result)
+            counters = {key: counters[key] + tool_stats[key] for key in counters}
+            candidate_valid = result.status == "QUERY" and all(
+                item["valid"] for item in tools_result
+            )
+            candidate_changed = (
+                None if previous_candidate is None else result.sqlalchemy != previous_candidate
+            )
+            iteration = {
+                "iteration": len(internal_iterations) + 1,
+                "candidate": result.sqlalchemy,
+                "generation_type": (
+                    "INITIAL" if not internal_iterations else "INTERNAL_TECHNICAL_REPAIR"
+                ),
+                "repair_input": repair_input,
+                "tool_calls": [item["stage"] for item in tools_result],
+                "tool_results": tools_result,
+                "validation_status": (
+                    "VALID" if candidate_valid else "INVALID"
+                    if result.status == "QUERY" else "NOT_APPLICABLE"
+                ),
+                "errors": [item["message"] for item in tools_result if not item["valid"]],
+                "candidate_changed": candidate_changed,
+                "final_iteration": False,
+            }
+            internal_iterations.append(iteration)
+            if result.status != "QUERY" or candidate_valid:
+                iteration["final_iteration"] = True
+                metadata = {
+                    **metadata,
+                    "tool_assisted": True,
+                    "internal_tool_events": tool_events,
+                    "internal_tool_calls": len(tool_events),
+                    "internal_validation_attempts": (
+                        1 + internal_repairs if result.status == "QUERY" else 0
+                    ),
+                    "internal_self_repair_attempts": internal_repairs,
+                    "internal_self_repair_success": (
+                        1 if internal_repairs and candidate_valid and candidate_changed else 0
+                    ),
+                    "candidate_valid_before_external_validator": candidate_valid,
+                    "internal_iterations": internal_iterations,
+                    "internal_candidates_generated": len(internal_iterations),
+                    "internal_candidates_changed": sum(
+                        item["candidate_changed"] is True for item in internal_iterations
+                    ),
+                    "internal_candidates_unchanged": sum(
+                        item["candidate_changed"] is False for item in internal_iterations
+                    ),
+                    **counters,
+                }
+                return result, metadata
+            if internal_repairs >= MAX_INTERNAL_SELF_REPAIR_ATTEMPTS:
+                iteration["final_iteration"] = True
+                metadata = {
+                    **metadata,
+                    "tool_assisted": True,
+                    "internal_tool_events": tool_events,
+                    "internal_tool_calls": len(tool_events),
+                    "internal_validation_attempts": 1 + internal_repairs,
+                    "internal_self_repair_attempts": internal_repairs,
+                    "internal_self_repair_success": 0,
+                    "candidate_valid_before_external_validator": False,
+                    "internal_iterations": internal_iterations,
+                    "internal_candidates_generated": len(internal_iterations),
+                    "internal_candidates_changed": sum(
+                        item["candidate_changed"] is True for item in internal_iterations
+                    ),
+                    "internal_candidates_unchanged": sum(
+                        item["candidate_changed"] is False for item in internal_iterations
+                    ),
+                    **counters,
+                }
+                return result, metadata
+            internal_repairs += 1
+            payload["repair_type"] = "INTERNAL_SELF_REPAIR"
+            payload["repair_attempt"] = internal_repairs
+            payload["previous_query"] = result.model_dump(mode="json")
+            payload["internal_tool_results"] = tools_result
+            previous_candidate = result.sqlalchemy
 
 
 def _chain_variables(payload: dict[str, Any]) -> dict[str, str]:
@@ -596,6 +732,135 @@ def _validation(source: str | None) -> ValidationResult:
     }
 
 
+def _tool_diagnostic(
+    *, stage: str, valid: bool, source: str | None,
+    message: str, exception_type: str | None = None,
+    line: int | None = None, offset: int | None = None,
+    text: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "valid": valid,
+        "exception_type": exception_type,
+        "message": message,
+        "line": line,
+        "offset": offset,
+        "text": text,
+        "source": source,
+    }
+
+
+def validate_python_syntax(source: str | None) -> dict[str, Any]:
+    """Deterministically validate the candidate as one safe Python expression."""
+    if not source:
+        return _tool_diagnostic(
+            stage="PYTHON_SYNTAX", valid=False, source=source,
+            message="No SQLAlchemy expression was provided.",
+        )
+    errors, diagnostics = _syntax_validation(source)
+    if errors:
+        diagnostic = diagnostics[0]
+        return _tool_diagnostic(
+            stage="PYTHON_SYNTAX", valid=False, source=source,
+            message=diagnostic.get("message", errors[0]),
+            exception_type=diagnostic.get("exception_type"),
+            line=diagnostic.get("line"), offset=diagnostic.get("offset"),
+            text=diagnostic.get("text"),
+        )
+    return _tool_diagnostic(
+        stage="PYTHON_SYNTAX", valid=True, source=source,
+        message="Python expression syntax is valid.",
+    )
+
+
+def build_sqlalchemy_query(source: str | None) -> dict[str, Any]:
+    """Build a candidate in the closed SQLAlchemy namespace without executing it."""
+    syntax = validate_python_syntax(source)
+    if not syntax["valid"]:
+        return syntax
+    return _build_sqlalchemy_query(source, syntax_checked=True)[0]
+
+
+def _build_sqlalchemy_query(
+    source: str | None, *, syntax_checked: bool = False,
+) -> tuple[dict[str, Any], Select | CompoundSelect | None]:
+    if not syntax_checked:
+        syntax = validate_python_syntax(source)
+        if not syntax["valid"]:
+            return syntax, None
+    statement, errors = build_statement(source or "")
+    if errors:
+        error = errors[0]
+        return _tool_diagnostic(
+            stage="SQLALCHEMY_BUILD", valid=False, source=source,
+            message=error,
+            exception_type=error.split(":", 2)[1] if error.startswith("BUILD_ERROR:") else None,
+        ), None
+    return _tool_diagnostic(
+        stage="SQLALCHEMY_BUILD", valid=True, source=source,
+        message=f"Built read-only {type(statement).__name__} expression.",
+    ), statement
+
+
+def compile_sqlalchemy_query(
+    source: str | None, statement: Select | CompoundSelect | None = None,
+) -> dict[str, Any]:
+    """Compile a safely built candidate for PostgreSQL without database access."""
+    if statement is None:
+        built, statement = _build_sqlalchemy_query(source)
+    else:
+        built = _tool_diagnostic(
+            stage="SQLALCHEMY_BUILD", valid=True, source=source,
+            message=f"Built read-only {type(statement).__name__} expression.",
+        )
+    if not built["valid"] or statement is None:
+        return {
+            **built,
+            "stage": "SQLALCHEMY_COMPILE",
+            "message": f"Cannot compile candidate: {built['message']}",
+        }
+    compiled, errors = compile_postgresql(statement)
+    if errors:
+        return _tool_diagnostic(
+            stage="SQLALCHEMY_COMPILE", valid=False, source=source,
+            message=errors[0],
+        )
+    return {
+        **_tool_diagnostic(
+            stage="SQLALCHEMY_COMPILE", valid=True, source=source,
+            message="Candidate compiles as read-only PostgreSQL SQLAlchemy.",
+        ),
+        "compiled_sql": compiled,
+    }
+
+
+def _run_internal_tools(
+    source: str | None,
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    events: list[dict[str, Any]] = []
+    stats = {
+        "syntax_short_circuits": 0,
+        "build_short_circuits": 0,
+        "compile_attempts": 0,
+        "tool_calls_avoided_by_short_circuit": 0,
+    }
+    syntax = validate_python_syntax(source)
+    events.append(syntax)
+    if not syntax["valid"]:
+        stats["syntax_short_circuits"] = 1
+        stats["tool_calls_avoided_by_short_circuit"] = 2
+        return events, stats
+    built, statement = _build_sqlalchemy_query(source, syntax_checked=True)
+    events.append(built)
+    if not built["valid"]:
+        stats["build_short_circuits"] = 1
+        stats["tool_calls_avoided_by_short_circuit"] = 1
+        return events, stats
+    stats["compile_attempts"] = 1
+    events.append(compile_sqlalchemy_query(source, statement=statement))
+    return events, stats
+
+
 def _transition(state: Phase42State, stage: str, status: str = "entered") -> None:
     state["current_stage"] = stage
     state.setdefault("stage_history", []).append({"stage": stage, "status": status})
@@ -694,11 +959,29 @@ def _query_developer(state: Phase42State) -> dict[str, Any]:
             (state.get("senior_reviews") or [None])[-1] if repair_type == "SEMANTIC" else None
         ),
     }
-    result = _parse(
-        state, role="sqlalchemy_query_developer",
-        prompt=SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
-        input_payload=input_payload, output_model=QueryProgrammerResponse,
-    )
+    runtime = state["_llm"]
+    if hasattr(runtime, "invoke_query_programmer"):
+        result, metadata = runtime.invoke_query_programmer(
+            input_payload=input_payload, output_model=QueryProgrammerResponse,
+        )
+        _record(
+            state, role="sqlalchemy_query_developer",
+            prompt=SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
+            input_payload=_human_payload("sqlalchemy_query_developer", input_payload),
+            output=result, metadata=metadata,
+        )
+        for iteration in metadata.get("internal_iterations", []):
+            _record(
+                state, role="query_programmer_internal_iteration", prompt=None,
+                input_payload=iteration["repair_input"], output=iteration,
+            )
+    else:
+        result = _parse(
+            state, role="sqlalchemy_query_developer",
+            prompt=SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
+            input_payload=input_payload, output_model=QueryProgrammerResponse,
+        )
+        metadata = {}
     attempts = list(state.get("query_developer_attempts", []))
     attempts.append({
         **result.model_dump(mode="json"),
@@ -710,10 +993,48 @@ def _query_developer(state: Phase42State) -> dict[str, Any]:
         final_status = "NEEDS_INFO"
     elif result.status == "CANNOT_IMPLEMENT":
         final_status = "CANNOT_IMPLEMENT"
+    internal_valid = bool(metadata.get("candidate_valid_before_external_validator", False))
     return {
         "current_query": result.model_dump(mode="json"),
         "query_developer_attempts": attempts,
         "final_status": final_status,
+        "internal_tool_calls": state.get("internal_tool_calls", 0) + metadata.get(
+            "internal_tool_calls", 0
+        ),
+        "internal_validation_attempts": state.get("internal_validation_attempts", 0) + metadata.get(
+            "internal_validation_attempts", 0
+        ),
+        "internal_self_repair_attempts": state.get("internal_self_repair_attempts", 0) + metadata.get(
+            "internal_self_repair_attempts", 0
+        ),
+        "internal_self_repair_success": state.get("internal_self_repair_success", 0) + metadata.get(
+            "internal_self_repair_success", 0
+        ),
+        "internal_iterations": state.get("internal_iterations", []) + metadata.get(
+            "internal_iterations", []
+        ),
+        "internal_candidates_generated": state.get("internal_candidates_generated", 0) + metadata.get(
+            "internal_candidates_generated", 0
+        ),
+        "internal_candidates_changed": state.get("internal_candidates_changed", 0) + metadata.get(
+            "internal_candidates_changed", 0
+        ),
+        "internal_candidates_unchanged": state.get("internal_candidates_unchanged", 0) + metadata.get(
+            "internal_candidates_unchanged", 0
+        ),
+        "syntax_short_circuits": state.get("syntax_short_circuits", 0) + metadata.get(
+            "syntax_short_circuits", 0
+        ),
+        "build_short_circuits": state.get("build_short_circuits", 0) + metadata.get(
+            "build_short_circuits", 0
+        ),
+        "compile_attempts": state.get("compile_attempts", 0) + metadata.get(
+            "compile_attempts", 0
+        ),
+        "tool_calls_avoided_by_short_circuit": state.get(
+            "tool_calls_avoided_by_short_circuit", 0
+        ) + metadata.get("tool_calls_avoided_by_short_circuit", 0),
+        "candidate_valid_before_external_validator": internal_valid,
     }
 
 
@@ -724,7 +1045,12 @@ def _query_validation(state: Phase42State) -> dict[str, Any]:
         state, role="query_validation", prompt=None,
         input_payload=state.get("current_query"), output=result,
     )
-    return {"validation_result": result}
+    return {
+        "validation_result": result,
+        "external_validator_pass_after_internal_validation": bool(
+            state.get("candidate_valid_before_external_validator") and result["technically_valid"]
+        ),
+    }
 
 
 def _senior_query_reviewer(state: Phase42State) -> dict[str, Any]:
@@ -864,6 +1190,20 @@ def initial_state(
         "senior_reviews": [],
         "technical_repair_attempts": 0,
         "semantic_revision_attempts": 0,
+        "internal_tool_calls": 0,
+        "internal_validation_attempts": 0,
+        "internal_self_repair_attempts": 0,
+        "internal_self_repair_success": 0,
+        "internal_iterations": [],
+        "internal_candidates_generated": 0,
+        "internal_candidates_changed": 0,
+        "internal_candidates_unchanged": 0,
+        "syntax_short_circuits": 0,
+        "build_short_circuits": 0,
+        "compile_attempts": 0,
+        "tool_calls_avoided_by_short_circuit": 0,
+        "candidate_valid_before_external_validator": False,
+        "external_validator_pass_after_internal_validation": False,
         "repair_type": None,
         "final_status": "",
         "audit_trail": [],

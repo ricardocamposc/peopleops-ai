@@ -104,7 +104,9 @@ def cannot_implement() -> phase42.QueryProgrammerResponse:
     )
 
 
-def review(status: str = "APPROVED") -> phase42.SeniorReview:
+def review(
+    status: str = "APPROVED", *, previous_issue_resolutions: list[phase42.PreviousIssueResolution] | None = None,
+) -> phase42.SeniorReview:
     issues = []
     instructions = []
     if status == "REVISE":
@@ -141,6 +143,7 @@ def review(status: str = "APPROVED") -> phase42.SeniorReview:
         assumptions=[],
         missing_information=[],
         confidence=1,
+        previous_issue_resolutions=previous_issue_resolutions or [],
     )
 
 
@@ -212,3 +215,22 @@ def test_human_payload_does_not_duplicate_model_or_reference_context() -> None:
     assert "data_model" not in human
     assert "reference_context" not in human
     assert "functional_requirement" in human
+
+
+def test_senior_can_mark_a_previous_issue_resolved() -> None:
+    llm = FakeModel([
+        analyst(), query(), review("REVISE"), query(),
+        review(
+            "APPROVED",
+            previous_issue_resolutions=[phase42.PreviousIssueResolution(
+                previous_issue="grouping missing",
+                resolution_status="RESOLVED",
+                evidence="The repaired query groups by the requested dimension.",
+            )],
+        ),
+    ])
+    result = phase42.build_graph().invoke(
+        phase42.initial_state(mode="AGENT_TEAM", question="test", llm=llm)
+    )
+    assert result["final_status"] == "APPROVED"
+    assert result["senior_reviews"][-1]["previous_issue_resolutions"][0]["resolution_status"] == "RESOLVED"

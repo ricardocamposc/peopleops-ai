@@ -97,8 +97,38 @@ def _row_from_state(
         "first_pass_validation": first_validation,
         "final_validation": final_validation,
         "senior_reviews": state.get("senior_reviews", []),
+        "senior_previous_issues_resolved": sum(
+            item.get("resolution_status") == "RESOLVED"
+            for review in state.get("senior_reviews", [])
+            for item in review.get("previous_issue_resolutions", [])
+        ),
+        "senior_previous_issues_unresolved": sum(
+            item.get("resolution_status") in {"UNRESOLVED", "PARTIALLY_RESOLVED"}
+            for review in state.get("senior_reviews", [])
+            for item in review.get("previous_issue_resolutions", [])
+        ),
         "technical_repair_attempts": state.get("technical_repair_attempts", 0),
         "semantic_revision_attempts": state.get("semantic_revision_attempts", 0),
+        "internal_tool_calls": state.get("internal_tool_calls", 0),
+        "internal_validation_attempts": state.get("internal_validation_attempts", 0),
+        "internal_self_repair_attempts": state.get("internal_self_repair_attempts", 0),
+        "internal_self_repair_success": state.get("internal_self_repair_success", 0),
+        "internal_iterations": state.get("internal_iterations", []),
+        "internal_candidates_generated": state.get("internal_candidates_generated", 0),
+        "internal_candidates_changed": state.get("internal_candidates_changed", 0),
+        "internal_candidates_unchanged": state.get("internal_candidates_unchanged", 0),
+        "syntax_short_circuits": state.get("syntax_short_circuits", 0),
+        "build_short_circuits": state.get("build_short_circuits", 0),
+        "compile_attempts": state.get("compile_attempts", 0),
+        "tool_calls_avoided_by_short_circuit": state.get(
+            "tool_calls_avoided_by_short_circuit", 0
+        ),
+        "candidate_valid_before_external_validator": state.get(
+            "candidate_valid_before_external_validator", False
+        ),
+        "external_validator_pass_after_internal_validation": state.get(
+            "external_validator_pass_after_internal_validation", False
+        ),
         "final_status": final_status,
         "technical_valid": bool(
             final_validation and final_validation.get("technically_valid")
@@ -242,11 +272,48 @@ def _metrics(
             "successful_cases": tech_success,
             "success_rate": _rate(tech_success, tech_attempted),
         },
+        "external_technical_repair_attempts": tech_attempted,
+        "external_technical_repair_success": tech_success,
+        "internal_tool_calls": sum(row["internal_tool_calls"] for row in rows),
+        "internal_candidates_generated": sum(
+            row.get("internal_candidates_generated", 0) for row in rows
+        ),
+        "internal_candidates_changed": sum(
+            row.get("internal_candidates_changed", 0) for row in rows
+        ),
+        "internal_candidates_unchanged": sum(
+            row.get("internal_candidates_unchanged", 0) for row in rows
+        ),
+        "syntax_short_circuits": sum(row.get("syntax_short_circuits", 0) for row in rows),
+        "build_short_circuits": sum(row.get("build_short_circuits", 0) for row in rows),
+        "compile_attempts": sum(row.get("compile_attempts", 0) for row in rows),
+        "tool_calls_avoided_by_short_circuit": sum(
+            row.get("tool_calls_avoided_by_short_circuit", 0) for row in rows
+        ),
+        "internal_validation_attempts": sum(
+            row["internal_validation_attempts"] for row in rows
+        ),
+        "internal_self_repair": {
+            "attempted": sum(row["internal_self_repair_attempts"] for row in rows),
+            "successful": sum(row["internal_self_repair_success"] for row in rows),
+        },
+        "candidate_valid_before_external_validator": sum(
+            row["candidate_valid_before_external_validator"] for row in rows
+        ),
+        "external_validator_pass_after_internal_validation": sum(
+            row["external_validator_pass_after_internal_validation"] for row in rows
+        ),
         "senior_review": {
             "reviewed_cases": senior_reviewed,
             "first_pass_approved": senior_first_approved,
             "first_pass_approval_rate": _rate(senior_first_approved, senior_reviewed),
             "revision_requested_cases": senior_revise,
+            "previous_issues_resolved": sum(
+                row.get("senior_previous_issues_resolved", 0) for row in rows
+            ),
+            "previous_issues_unresolved": sum(
+                row.get("senior_previous_issues_unresolved", 0) for row in rows
+            ),
         },
         "semantic_repair": {
             "attempted_cases": semantic_attempted,
