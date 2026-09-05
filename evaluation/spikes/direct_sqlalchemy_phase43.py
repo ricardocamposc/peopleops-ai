@@ -8,6 +8,7 @@ post-generation loop.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ import direct_sqlalchemy_phase42 as phase42
 
 MAX_CANDIDATE_VALIDATIONS = phase42.MAX_INTERNAL_SELF_REPAIR_ATTEMPTS + 1
 MAX_AGENT_TOOL_ROUNDS = 8
+PHASE43_OPENAI_MAX_RETRIES = int(os.getenv("PHASE43_OPENAI_MAX_RETRIES", "6"))
 
 PHASE43_QUERY_PROGRAMMER_ADDENDUM = """
 
@@ -122,10 +124,45 @@ def _capability_gap_predeclared(input_payload: dict[str, Any]) -> bool:
     return bool(task.get("unsupported_requirements"))
 
 
+def _technical_generation_fallback(reason: str) -> phase42.QueryProgrammerResponse:
+    return phase42.QueryProgrammerResponse(
+        status="QUERY",
+        sqlalchemy="(",
+        interpretation=reason,
+        assumptions=[],
+        missing_information=[],
+        models_used=[],
+        relationships_used=[],
+        retrieved_measures=[],
+        retrieved_dimensions=[],
+        applied_filters=[],
+        applied_temporal_constraints=[],
+        grouping_implemented=[],
+        requirement_coverage=[],
+    )
+
+
 class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
     """Query Programmer runtime whose validation occurs through real model tool calls."""
 
     model_name = "langchain-tool-calling"
+
+    def __init__(self, model_config: dict[str, str] | None = None) -> None:
+        configured = model_config or {
+            role: os.getenv(spec["model_env"], "gpt-4o-mini")
+            for role, spec in phase42.AGENT_SPECS.items()
+        }
+        self.models = {
+            role: phase42.ChatOpenAI(
+                model=model,
+                api_key=os.environ.get("OPENAI_API_KEY"),
+                temperature=0,
+                max_retries=PHASE43_OPENAI_MAX_RETRIES,
+            )
+            for role, model in configured.items()
+        }
+        self.model_config = configured
+        self.templates = phase42._prompt_templates()
 
     def invoke_query_programmer(
         self, *, input_payload: dict[str, Any], output_model: type[BaseModel]
@@ -158,6 +195,7 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
             "compile_attempts": 0,
             "tool_calls_avoided_by_short_circuit": 0,
         }
+        termination_reason: str | None = None
 
         def metadata(*, technical_generation_failed: bool = False) -> dict[str, Any]:
             for item in interactions:
@@ -170,6 +208,14 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 and valid_candidate is not None
                 and any(item.get("candidate_changed") for item in interactions)
             )
+            model_rounds = max(
+                (int(item.get("round", 0) or 0) for item in interactions),
+                default=0,
+            )
+            validation_events = [
+                item for item in interactions
+                if item.get("kind") == "VALIDATION_TOOL_CALL"
+            ]
             return {
                 "agent_id": role,
                 "prompt_id": spec["prompt_id"],
@@ -184,7 +230,7 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 "latency_ms": round((time.perf_counter() - started) * 1000, 2),
                 "tool_assisted": True,
                 "tool_calling_mode": "MODEL_INITIATED",
-                "agent_tool_rounds": len(interactions),
+                "agent_tool_rounds": model_rounds,
                 "agent_submission_attempts": submission_attempts,
                 "agent_submission_rejections": submission_rejections,
                 "internal_tool_calls": tool_calls_total,
@@ -193,14 +239,15 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 "internal_self_repair_success": successful_repair,
                 "candidate_valid_before_external_validator": valid_candidate is not None,
                 "internal_iterations": interactions,
-                "internal_candidates_generated": validation_attempts,
+                "internal_candidates_generated": len(validation_events),
                 "internal_candidates_changed": sum(
-                    item.get("candidate_changed") is True for item in interactions
+                    item.get("candidate_changed") is True for item in validation_events
                 ),
                 "internal_candidates_unchanged": sum(
-                    item.get("candidate_changed") is False for item in interactions
+                    item.get("candidate_changed") is False for item in validation_events
                 ),
                 "technical_generation_failed": technical_generation_failed,
+                "termination_reason": termination_reason,
                 **aggregate_stats,
             }
 
@@ -253,6 +300,23 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                     })
                     previous_candidate = candidate
                     messages.append(_tool_message(call_id, result))
+
+                    if (
+                        validation_attempts >= MAX_CANDIDATE_VALIDATIONS
+                        and not result.get("valid")
+                        and valid_candidate is None
+                    ):
+                        termination_reason = "VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE"
+                        interactions.append({
+                            "round": round_number,
+                            "kind": "EARLY_TERMINATION",
+                            "reason": termination_reason,
+                        })
+                        fallback = _technical_generation_fallback(
+                            "Query Programmer exhausted the candidate-validation budget "
+                            "without producing a technically valid candidate."
+                        )
+                        return fallback, metadata(technical_generation_failed=True)
                     continue
 
                 if name == "SubmitQueryProgrammerResult":
@@ -346,23 +410,10 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 })
                 messages.append(_tool_message(call_id, feedback))
 
-        fallback = phase42.QueryProgrammerResponse(
-            status="QUERY",
-            sqlalchemy="(",
-            interpretation=(
-                "Query Programmer exhausted the bounded tool-calling generation budget "
-                "without a validated final submission."
-            ),
-            assumptions=[],
-            missing_information=[],
-            models_used=[],
-            relationships_used=[],
-            retrieved_measures=[],
-            retrieved_dimensions=[],
-            applied_filters=[],
-            applied_temporal_constraints=[],
-            grouping_implemented=[],
-            requirement_coverage=[],
+        termination_reason = "AGENT_TOOL_ROUND_BUDGET_EXHAUSTED"
+        fallback = _technical_generation_fallback(
+            "Query Programmer exhausted the bounded tool-calling generation budget "
+            "without a validated final submission."
         )
         return fallback, metadata(technical_generation_failed=True)
 
@@ -451,6 +502,7 @@ def assert_phase43_contract() -> None:
     assert "CANNOT_IMPLEMENT" in PHASE43_QUERY_PROGRAMMER_ADDENDUM
     assert "validate_sqlalchemy_candidate" in PHASE43_QUERY_PROGRAMMER_ADDENDUM
     assert MAX_CANDIDATE_VALIDATIONS == 3
+    assert PHASE43_OPENAI_MAX_RETRIES >= 0
 
 
 if __name__ == "__main__":
