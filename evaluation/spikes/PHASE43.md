@@ -69,6 +69,19 @@ The Phase 4.3 audit trail records:
 
 The runner adds Phase 4.3-specific metrics for tool rounds, submission attempts/rejections, self-repair and technical generation failure while retaining the Phase 4.2 metrics for comparison.
 
+Candidate metrics are derived only from `VALIDATION_TOOL_CALL` events. They intentionally distinguish generated validation requests from deterministic validator executions because the model can continue requesting validation after the bounded validation budget has been exhausted:
+
+- `candidate_validation_requests` / `candidates_generated`: every model validation-tool request carrying a candidate;
+- `candidates_initial`: the first candidate in each Query Programmer invocation;
+- `candidates_changed`: a validation request whose candidate differs from the previous request in the same invocation;
+- `candidates_unchanged`: a validation request whose candidate is identical to the previous request in the same invocation;
+- `candidate_validations_executed`: requests that actually reached deterministic syntax/build/compile validation;
+- `candidate_validation_budget_rejections`: requests rejected because the per-invocation validation budget was already exhausted.
+
+Therefore `candidates_initial + candidates_changed + candidates_unchanged = candidates_generated`. `candidate_validations_executed` may be lower than `candidates_generated` when the model keeps requesting validation after the deterministic budget is exhausted.
+
+Tool rounds represent actual model turns. They are not the number of individual tool/interactions: one model turn may emit more than one tool call.
+
 ## Architectural boundary
 
 This remains an evaluation spike. The SQLAlchemy catalog is still local to the experiment and PostgreSQL compilation is still performed locally.
