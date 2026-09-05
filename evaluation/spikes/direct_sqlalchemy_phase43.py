@@ -9,7 +9,7 @@ post-generation loop.
 from __future__ import annotations
 
 import time
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
@@ -150,7 +150,6 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
         valid_candidate: str | None = None
         valid_candidate_round: int | None = None
         previous_candidate: str | None = None
-        last_candidate: str | None = None
         had_technical_error = False
         interactions: list[dict[str, Any]] = []
         aggregate_stats = {
@@ -225,7 +224,6 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
 
                 if name == "validate_sqlalchemy_candidate":
                     candidate = str(args.get("candidate") or "")
-                    last_candidate = candidate
                     changed = None if previous_candidate is None else candidate != previous_candidate
 
                     if validation_attempts >= MAX_CANDIDATE_VALIDATIONS:
