@@ -40,7 +40,7 @@ syntax → build → compile
 
 The independent external validator still runs after the Query Programmer submits a candidate. The Senior Reviewer remains gated behind successful external validation.
 
-## Bounded behavior
+## Bounded behavior and early termination
 
 The agent conversation is bounded by:
 
@@ -49,7 +49,49 @@ The agent conversation is bounded by:
 - existing outer technical repair limit from Phase 4.2;
 - existing semantic revision limit from Phase 4.2.
 
-If the agent cannot complete a validated structured submission within the tool budget, the runtime emits an intentionally invalid fallback candidate only so the mandatory external validator can independently confirm the technical failure. The outer workflow ultimately terminates as `TECHNICAL_GENERATION_FAILED`, not `CANNOT_IMPLEMENT`.
+The runtime now stops a Query Programmer invocation immediately when all three deterministic candidate validations have been consumed, the most recent validation failed, and no previously validated candidate exists. Continuing model rounds after that point cannot produce an admissible `QUERY`, because no further candidate can pass the mandatory validation gate. The runtime therefore returns the technical-generation fallback immediately instead of spending the remaining model-round budget on `TOOL_BUDGET` responses.
+
+The early stop is recorded as:
+
+`VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE`
+
+If the general eight-round interaction budget is exhausted for another reason, the termination reason is:
+
+`AGENT_TOOL_ROUND_BUDGET_EXHAUSTED`
+
+The intentionally invalid fallback candidate still exists only so the mandatory external validator can independently confirm the technical failure. The outer workflow ultimately terminates as `TECHNICAL_GENERATION_FAILED`, not `CANNOT_IMPLEMENT`.
+
+## OpenAI transport retries
+
+Phase 4.3 configures the LangChain/OpenAI clients with bounded transport retries. The default is six retries and can be changed through:
+
+`PHASE43_OPENAI_MAX_RETRIES`
+
+This retry policy applies to transient API failures such as rate limits at the individual model-call level. It does not change prompts, model semantics, tool budgets, or the workflow contract.
+
+## Resumable evaluation runner
+
+The Phase 4.3 runner is designed so a long baseline does not lose all completed work after a transient failure.
+
+The runner now:
+
+- writes `manifest.json` before the first case;
+- appends each completed case immediately to `raw_responses.jsonl`;
+- refreshes `metrics.json` and progress metadata after every completed case;
+- marks interrupted runs as `INTERRUPTED` and preserves completed rows;
+- supports `--resume`, which skips case IDs already checkpointed;
+- validates dataset hash, model configuration, and selected case IDs before resuming;
+- applies an optional delay between cases to reduce sustained TPM pressure.
+
+The default inter-case delay is five seconds and can be configured through:
+
+`PHASE43_INTER_CASE_DELAY_SECONDS`
+
+or the CLI option:
+
+`--inter-case-delay-seconds`
+
+If a model call still fails after transport retries, the current incomplete case has no checkpoint row and may be retried on resume; already completed cases are never rerun.
 
 ## Observability
 
@@ -61,15 +103,16 @@ The Phase 4.3 audit trail records:
 - deterministic tool diagnostics;
 - final submission attempts;
 - rejected submissions and reasons;
-- tool rounds;
+- actual model tool rounds;
 - validation attempts;
 - self-repair attempts/success;
+- termination reason;
 - external validation;
 - Senior reviews.
 
 The runner adds Phase 4.3-specific metrics for tool rounds, submission attempts/rejections, self-repair and technical generation failure while retaining the Phase 4.2 metrics for comparison.
 
-Candidate metrics are derived only from `VALIDATION_TOOL_CALL` events. They intentionally distinguish generated validation requests from deterministic validator executions because the model can continue requesting validation after the bounded validation budget has been exhausted:
+Candidate metrics are derived only from `VALIDATION_TOOL_CALL` events:
 
 - `candidate_validation_requests` / `candidates_generated`: every model validation-tool request carrying a candidate;
 - `candidates_initial`: the first candidate in each Query Programmer invocation;
@@ -78,9 +121,21 @@ Candidate metrics are derived only from `VALIDATION_TOOL_CALL` events. They inte
 - `candidate_validations_executed`: requests that actually reached deterministic syntax/build/compile validation;
 - `candidate_validation_budget_rejections`: requests rejected because the per-invocation validation budget was already exhausted.
 
-Therefore `candidates_initial + candidates_changed + candidates_unchanged = candidates_generated`. `candidate_validations_executed` may be lower than `candidates_generated` when the model keeps requesting validation after the deterministic budget is exhausted.
+Therefore:
+
+`candidates_initial + candidates_changed + candidates_unchanged = candidates_generated`
+
+After the early-termination correction, budget-rejected validation requests should normally disappear in the no-valid-candidate path. The metric remains because it is still useful for detecting unexpected protocol behavior and cases where a previously validated candidate exists.
 
 Tool rounds represent actual model turns. They are not the number of individual tool/interactions: one model turn may emit more than one tool call.
+
+## Context and token usage
+
+Within one Query Programmer invocation, tool calling is conversational: the model receives the prior `AIMessage` and `ToolMessage` history so it can inspect deterministic diagnostics and repair its candidate. That history grows during the invocation and therefore increases token usage in later rounds.
+
+The application audit trail and LangGraph state remain separate from the model context. The current Phase 4.3 baseline deliberately keeps the existing conversation semantics so the early-termination and runner-resilience changes do not alter the model's reasoning inputs.
+
+Context compaction or a rolling repair window is a possible later optimization, but it is intentionally deferred until a clean baseline establishes whether it is needed. Persisting full audit history does not imply that a future production implementation must resend all of it to the LLM.
 
 ## Architectural boundary
 
