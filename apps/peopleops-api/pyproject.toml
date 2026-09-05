@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "PeopleOps AI API foundation"
 authors = ["PeopleOps AI"]
 packages = [{ include = "peopleops_api", from = "src" }]
+include = [
+    { path = "src/peopleops_api/resources/**/*.md", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
@@ -23,6 +26,9 @@ pgvector = "^0.3.6"
 pypdf = "^5.3.1"
 python-multipart = "^0.0.18"
 mcp = {extras = ["cli"], version = "^2.1.1"}
+langchain-core = "^0.3.76"
+langchain-openai = "^0.3.35"
+jinja2 = "^3.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.0"

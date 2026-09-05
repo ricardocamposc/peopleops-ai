@@ -242,7 +242,7 @@ main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh -
 aside { padding: 16px; border-right: 1px solid #374151; overflow: auto; }
 section { padding: 18px 24px; overflow: auto; }
 button, select, input { background: #1f2937; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 6px; padding: 8px; }
-button { cursor: pointer; }
+button { cursor: pointer; width: auto; }
 .run { display: block; width: 100%; text-align: left; margin: 6px 0; }
 .run.active { border-color: #60a5fa; background: #1e3a5f; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -259,31 +259,41 @@ button { cursor: pointer; }
 .case > summary { cursor: pointer; padding: 12px; background: #1f2937; }
 .case-body { padding: 14px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.flow { display: flex; flex-direction: column; gap: 14px; margin: 12px 0; }
+.call-step { border-left: 3px solid #475569; padding-left: 12px; }
+.call-step > summary { cursor: pointer; padding: 8px 10px; background: #1e293b; border-radius: 6px; font-weight: 700; }
+.call-step > summary::marker { color: #93c5fd; }
+.call-step > .step-body { padding-top: 8px; }
+.call-step .panel { margin-top: 8px; }
 .panel { background: #0f172a; border: 1px solid #334155; border-radius: 6px; overflow: hidden; }
 .panel { display: flex; flex-direction: column; }
 .panel h4 { margin: 0; padding: 8px 10px; background: #1e293b; }
 pre, textarea { white-space: pre-wrap; word-break: break-word; padding: 10px; margin: 0; font-size: 12px; line-height: 1.45; }
-.panel pre { flex: 1; }
-textarea { box-sizing: border-box; width: 100%; min-height: 180px; background: #0f172a; color: #e5e7eb; border: 0; resize: vertical; }
+.panel pre { flex: none; height: 120px; min-height: 80px; max-height: 70vh; overflow: auto; resize: vertical; }
+.panel > button { align-self: flex-start; width: auto; margin: 8px 10px; }
+textarea { box-sizing: border-box; width: 100%; height: 120px; min-height: 80px; max-height: 70vh; background: #0f172a; color: #e5e7eb; border: 0; resize: vertical; }
 .copy-source { position: absolute; left: -10000px; width: 1px; height: 1px; opacity: 0; }
 .editor { margin-top: 12px; }
 .editor button { margin: 8px 8px 8px 0; }
 .playground { max-width: 1100px; }
 .playground label { display: block; margin: 12px 0; font-weight: 600; }
 .playground input, .playground select { display: block; width: 100%; box-sizing: border-box; margin-top: 6px; }
-.playground textarea { display: block; width: 100%; min-height: 150px; box-sizing: border-box; margin-top: 6px; border: 1px solid #4b5563; border-radius: 6px; }
+.playground textarea { display: block; width: 100%; height: 120px; min-height: 80px; max-height: 70vh; box-sizing: border-box; margin-top: 6px; border: 1px solid #4b5563; border-radius: 6px; resize: vertical; }
 .ok { color: #86efac; } .bad { color: #fca5a5; } .muted { color: #9ca3af; }
 @media (max-width: 900px) { main { grid-template-columns: 1fr; } aside { border-right: 0; border-bottom: 1px solid #374151; } .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
 <header><h2>PeopleOps Semantic Run Viewer</h2><div class="muted">Local view of evaluation/runs with individual prompt replay</div></header>
-<main><aside><button onclick="loadRuns()">Refresh runs</button><button onclick="showPlayground()">Open generator tester</button><label class="filter">Show <select id="run-filter" onchange="renderRuns()"><option value="phase412">Phase 4.1.2</option><option value="prompt-tests">Prompt tester</option><option value="all">All experiments</option></select></label><div id="runs"></div></aside><section id="content"><p>Select a run.</p></section></main>
+<main><aside><button onclick="loadRuns()">Refresh runs</button><button onclick="showPlayground()">Open generator tester</button><label class="filter">Show <select id="run-filter" onchange="renderRuns()"><option value="phase412">Phase 4.1.2</option><option value="phase42">Phase 4.2</option><option value="clarifier-tests">Clarifier tests</option><option value="prompt-tests">Prompt tester</option><option value="all">All experiments</option></select></label><div id="runs"></div></aside><section id="content"><p>Select a run.</p></section></main>
 <script>
 let runs = [];
 let visibleRuns = [];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const pretty = x => typeof x === 'string' ? x : JSON.stringify(x ?? null, null, 2);
+const pretty = x => {
+  if (typeof x !== 'string') return JSON.stringify(x ?? null, null, 2);
+  try { return JSON.stringify(JSON.parse(x), null, 2); } catch (error) { return x; }
+};
 function panel(title, value, note='', copyText=null, copyId='', copyLabel='', extraCopyText=null, extraCopyId='', extraCopyLabel='') { const copy = copyText === null ? '' : `<textarea class="copy-source" id="${esc(copyId)}">${esc(copyText)}</textarea><button type="button" onclick="copyHidden('${esc(copyId)}', this)">${esc(copyLabel || `Copy ${title.toLowerCase()}`)}</button>`; const extraCopy = extraCopyText === null ? '' : `<textarea class="copy-source" id="${esc(extraCopyId)}">${esc(extraCopyText)}</textarea><button type="button" onclick="copyHidden('${esc(extraCopyId)}', this)">${esc(extraCopyLabel)}</button>`; return `<div class="panel"><h4>${esc(title)} ${note ? `<span class="muted">(${esc(note)})</span>` : ''}</h4><pre>${esc(pretty(value))}</pre>${copy}${extraCopy}</div>`; }
 async function loadRuns() {
   runs = await (await fetch('/api/runs')).json();
@@ -330,11 +340,12 @@ async function sendTestPrompt() {
 }
 function renderRuns() {
   const filter = document.getElementById('run-filter').value;
-  visibleRuns = filter === 'phase412' ? runs.filter(r => r.name.startsWith('direct-sqlalchemy-phase412-')) : filter === 'prompt-tests' ? runs.filter(r => r.name.startsWith('semantic-prompt-playground-tests-')) : runs;
+  visibleRuns = filter === 'phase412' ? runs.filter(r => r.name.startsWith('direct-sqlalchemy-phase412-')) : filter === 'phase42' ? runs.filter(r => r.name.startsWith('direct-sqlalchemy-phase42-')) : filter === 'clarifier-tests' ? runs.filter(r => r.name.startsWith('semantic-clarifier-')) : filter === 'prompt-tests' ? runs.filter(r => r.name.startsWith('semantic-prompt-playground-tests-')) : runs;
   document.getElementById('runs').innerHTML = visibleRuns.map((r, i) => `<button class="run ${i===0?'active':''}" onclick="showRun(${i}, this)"><b>${esc(r.name)}</b><br><span class="muted">${r.rows} filas · creado ${new Date(r.created_at).toLocaleString()}</span></button>`).join('') || '<p class="muted">No hay runs para este filtro.</p>';
   if (visibleRuns.length) {
     const first = document.querySelector('.run');
     if (visibleRuns[0].name.startsWith('semantic-prompt-playground-tests-')) showPromptRun(0, first);
+    else if (visibleRuns[0].name.startsWith('semantic-clarifier-')) showClarifierRun(0, first);
     else showRun(0, first);
   }
 }
@@ -344,7 +355,80 @@ async function showPromptRun(i, button) {
   const rows = data.rows || [];
   document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Prompt tester artifacts from this folder. Each row is one independent API call and preserves its complete instructions, input, and response.</div><div class="cards"><div class="card"><b>${rows.length}</b>Tests</div><div class="card"><b>${esc(data.name.slice(-2))}</b>Folder</div></div>${rows.map((r, n) => { const artifact = r.artifact || ''; const output = r.output_format || 'unknown'; const stamp = r.timestamp ? new Date(r.timestamp).toLocaleString() : 'unknown date'; let request = r.input || ''; try { const parsed = JSON.parse(request); if (parsed && typeof parsed === 'object') request = parsed.original_user_request || parsed.clarified_request_english || request; } catch (error) {} const status = r.response && r.response.status ? ` · ${r.response.status}` : ''; return `<button class="run" onclick="showPromptTest('${esc(data.name + '/' + artifact)}')"><b>${esc(request)}</b>${esc(status)}<br><span class="muted">${esc(stamp)} · ${esc(output)} · ${esc(artifact)}</span></button>`; }).join('') || '<p class="muted">No prompt tests found.</p>'}`;
 }
+function phase42Timeline(events) {
+  if (!events || !events.length) return '<p class="muted">No call audit available.</p>';
+  return `<div class="timeline">${events.map((event, index) => `<div class="panel"><h4>${index + 1}. ${esc(event.role || 'event')}</h4><pre>${esc(JSON.stringify({prompt: event.prompt, input: event.input, output: event.output, latency_ms: event.latency_ms}, null, 2))}</pre></div>`).join('')}</div>`;
+}
+async function showClarifierRun(i, button) {
+  document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const rows = data.rows || [];
+  const needs = rows.filter(r => r.response && r.response.needs_clarification).length;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Functional Analyst / Semantic Clarifier tests. These calls do not generate or validate SQLAlchemy queries.</div><div class="cards"><div class="card"><b>${rows.length}</b>Cases</div><div class="card"><b>${needs}/${rows.length}</b>Needs clarification</div><div class="card"><b>${esc(data.manifest && data.manifest.prompt_version || '')}</b>Prompt version</div></div>${rows.map((r, n) => { const response = r.response || {}; const needsClarification = Boolean(response.needs_clarification); const statusClass = needsClarification ? 'bad' : 'ok'; const suffix = `clarifier-${esc(r.id)}-${n}`; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.question)} <span class="marker ${statusClass}">${needsClarification ? '!' : '✓'} ${needsClarification ? 'NEEDS_CLARIFICATION' : 'CLARIFIED'}</span></summary><div class="case-body"><div class="case-status"><span class="badge ${needsClarification ? 'bad':'ok'}">Needs clarification: ${needsClarification ? 'YES':'NO'}</span><span class="badge">Latency: ${esc(r.latency_ms)} ms</span></div><div class="grid">${panel('Question', r.question, '', r.question, `${suffix}-question`, 'Copy question')}${panel('Prompt', r.prompt, '', r.prompt, `${suffix}-prompt`, 'Copy prompt')}${panel('Input', r.input, '', JSON.stringify(r.input, null, 2), `${suffix}-input`, 'Copy input')}${panel('Response', response, '', JSON.stringify(response, null, 2), `${suffix}-response`, 'Copy response')}${panel('Metadata', r.metadata)}</div></div></details>`; }).join('') || '<p class="muted">No clarifier tests found.</p>'}`;
+}
+async function showPhase42RunLegacy(i, button) {
+  document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const rows = data.rows || []; const m = data.metrics || {};
+  const mode = rows[0] && rows[0].mode ? rows[0].mode : 'mixed';
+  const approved = rows.filter(r => r.final_status === 'APPROVED').length;
+  const technical = rows.filter(r => r.technical_valid).length;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Phase 4.2 audit. Technical validity and Senior approval are shown separately; compilation alone does not establish semantic correctness.</div><div class="cards">${phase42MetricCards(data.metrics, mode, rows)}</div>${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const ok = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE'; const statusClass = ok ? 'ok' : 'bad'; const attempts = r.query_developer_attempts || []; const reviews = r.senior_reviews || []; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body"><div class="case-status"><span class="badge">Query Programmer attempts: ${attempts.length}</span><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge ${reviews.some(x => x.status === 'APPROVED') ? 'ok':'bad'}">Senior reviews: ${reviews.length}</span></div><div class="grid">${panel('Functional Analyst', r.functional_analysis)}${panel('Query task', r.query_task)}${panel('Query Programmer attempts', attempts)}${panel('Validation', {first_pass: r.first_pass_validation, final: r.final_validation})}${panel('Senior reviews', reviews)}${phase42Timeline(r.audit_trail)}${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
+}
+function phase42CallPanel(step, event, key=step) {
+  const role = event.role || 'event';
+  const title = role === 'semantic_clarifier' ? 'Functional Analyst request' : role === 'sqlalchemy_query_developer' ? 'Query Programmer request' : role === 'senior_query_reviewer' ? 'Senior Query Reviewer request' : 'Application validation';
+  const note = role === 'query_validation' ? 'Generated by the application, not by the LLM' : `LLM call · ${role}`;
+  const base = `phase42-${key}-${Math.random().toString(36).slice(2)}`;
+  const metadata = {
+    agent_id: event.agent_id,
+    prompt_id: event.prompt_id,
+    prompt_version: event.prompt_version,
+    model: event.model,
+    schema_version: event.schema_version,
+    latency_ms: event.latency_ms,
+  };
+  const open = step === 1 ? ' open' : '';
+  if (role === 'query_validation') return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy output')}</div></details>`;
+  return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Invocation metadata', metadata, '', JSON.stringify(metadata, null, 2), `${base}-metadata`, 'Copy metadata')}${panel('Prompt template', event.prompt || event.prompt_template, '', event.prompt || event.prompt_template || '', `${base}-prompt`, 'Copy prompt')}${panel('Rendered system prompt', event.rendered_system_prompt, '', event.rendered_system_prompt || '', `${base}-rendered-prompt`, 'Copy rendered prompt')}${panel('Rendered messages', event.rendered_messages, '', JSON.stringify(event.rendered_messages ?? [], null, 2), `${base}-messages`, 'Copy messages')}${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Response', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-response`, 'Copy response')}</div></details>`;
+}
+function phase42MetricCards(metrics, mode, rows) {
+  const card = (label, value) => `<div class="card"><b>${esc(value ?? '—')}</b>${esc(label)}</div>`;
+  const cardsFor = (m) => [
+    card('Cases', m.cases ?? rows.length),
+    card('Executions', m.executions ?? rows.length),
+    card('First-pass QUERY', m.query_developer_first_pass_query),
+    card('First-pass technically valid', m.query_developer_first_pass_technical_valid),
+    card('Technical valid final', m.technical_valid_final),
+    card('Senior reviews', m.senior_reviews),
+    card('Final approved', m.final_approved),
+    card('Revision requested', m.revision_requested),
+    card('Repair success', m.repair_success),
+    card('Needs clarification', m.needs_clarification_final),
+    card('Max revisions', m.max_revisions_reached),
+  ].join('');
+  const modes = [...new Set(rows.map(row => row.mode).filter(Boolean))];
+  if (modes.length > 1) {
+    return modes.map(currentMode => {
+      const key = currentMode === 'QUERY_DEVELOPER_ONLY' ? 'query_developer_only' : 'agent_team';
+      const label = currentMode === 'QUERY_DEVELOPER_ONLY' ? 'Query Developer only' : 'Agent team';
+      return `<h3>${label}</h3><div class="cards">${cardsFor(metrics[key] || {})}</div>`;
+    }).join('');
+  }
+  const key = mode === 'QUERY_DEVELOPER_ONLY' ? 'query_developer_only' : 'agent_team';
+  return cardsFor(metrics[key] || metrics || {});
+}
+async function showPhase42Run(i, button) {
+  document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const rows = data.rows || [];
+  const approved = rows.filter(r => r.final_status === 'APPROVED').length;
+  const technical = rows.filter(r => r.technical_valid).length;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Each case is displayed as an ordered execution flow. “Application validation” is deterministic and is not an LLM call.</div><div class="cards">${phase42MetricCards(data.metrics, rows[0] && rows[0].mode, rows)}</div>${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const analystOnly = r.mode === 'FUNCTIONAL_ANALYST_ONLY'; const flowComplete = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE' || finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE'; const ok = analystOnly ? finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE' || finalStatus === 'NEEDS_CLARIFICATION' : flowComplete && (finalStatus === 'APPROVED' || r.technical_valid); const statusClass = ok ? 'ok' : 'bad'; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body">${analystOnly ? '' : `<div class="case-status"><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge">Revision count: ${esc(r.revision_count)}</span></div>`}<div class="flow">${(r.audit_trail || []).map((event, index) => phase42CallPanel(index + 1, event)).join('')}</div><div class="grid">${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
+}
 async function showRun(i, button) {
+  if (visibleRuns[i] && visibleRuns[i].name.startsWith('direct-sqlalchemy-phase42-')) { showPhase42Run(i, button); return; }
+  if (visibleRuns[i] && visibleRuns[i].name.startsWith('semantic-clarifier-')) { showClarifierRun(i, button); return; }
   if (visibleRuns[i] && visibleRuns[i].name.startsWith('semantic-prompt-playground-tests-')) { showPromptRun(i, button); return; }
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
   const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
