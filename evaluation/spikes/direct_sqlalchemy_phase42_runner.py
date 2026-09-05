@@ -1,15 +1,22 @@
-"""Run the Phase 4.2 query-developer-only and agent-team experiments."""
+"""Run the Phase 4.2 functional, query-programmer, and agent-team experiments."""
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import subprocess
 import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from direct_sqlalchemy_phase42 import (
+    MAX_SEMANTIC_REVISION_ATTEMPTS,
+    MAX_TECHNICAL_REPAIR_ATTEMPTS,
+    SEMANTIC_CLARIFIER_PROMPT,
+    SENIOR_QUERY_REVIEWER_PROMPT,
+    SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
     LangChainAgentRuntime,
     Phase42State,
     _query_developer,
@@ -20,27 +27,101 @@ from direct_sqlalchemy_phase42 import (
     initial_state,
 )
 
-RUNNER_VERSION = "direct-sqlalchemy-phase42-v1"
-
-
+RUNNER_VERSION = "direct-sqlalchemy-phase42-v2"
+DATASET_VERSION = "phase42-v1"
+DEFAULT_CASES = Path(__file__).with_name("direct_sqlalchemy_phase42_cases.jsonl")
 RoleModels = LangChainAgentRuntime
 
 
 def _load_cases(path: Path) -> list[dict[str, Any]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def _sha256_text(content: str) -> str:
+    return _sha256_bytes(content.encode("utf-8"))
+
+
+def _git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 def _clean_state(state: Phase42State) -> dict[str, Any]:
     return {key: value for key, value in state.items() if key != "_llm"}
 
 
+def _row_from_state(
+    *, case: dict[str, Any], mode: str, state: dict[str, Any], started: float,
+) -> dict[str, Any]:
+    attempts = state.get("query_developer_attempts", [])
+    validation_events = [
+        event
+        for event in state.get("audit_trail", [])
+        if event.get("role") == "query_validation"
+    ]
+    first_validation = validation_events[0]["output"] if validation_events else None
+    final_validation = validation_events[-1]["output"] if validation_events else None
+    first = attempts[0] if attempts else None
+    final_status = state.get("final_status") or (
+        "FUNCTIONAL_ANALYST_COMPLETE"
+        if mode == "FUNCTIONAL_ANALYST_ONLY"
+        else "QUERY_DEVELOPER_ONLY_COMPLETE"
+        if mode == "QUERY_DEVELOPER_ONLY"
+        else ""
+    )
+    return {
+        "id": case["id"],
+        "language": case.get("language", "es"),
+        "category": case.get("category"),
+        "mode": mode,
+        "question": case["question"],
+        "accepted_outcomes": case.get("accepted_outcomes", []),
+        "functional_expectation": case.get("functional_expectation"),
+        "query_expectation": case.get("query_expectation"),
+        "functional_analysis": state.get("functional_analysis"),
+        "query_task": state.get("query_task"),
+        "query_developer_attempts": attempts,
+        "first_pass_status": first.get("status") if first else None,
+        "first_pass_validation": first_validation,
+        "final_validation": final_validation,
+        "senior_reviews": state.get("senior_reviews", []),
+        "technical_repair_attempts": state.get("technical_repair_attempts", 0),
+        "semantic_revision_attempts": state.get("semantic_revision_attempts", 0),
+        "final_status": final_status,
+        "technical_valid": bool(
+            final_validation and final_validation.get("technically_valid")
+        ),
+        "semantic_plausibility": (
+            "SENIOR_APPROVED"
+            if final_status == "APPROVED"
+            else "NOT_EVALUATED"
+            if mode in {"FUNCTIONAL_ANALYST_ONLY", "QUERY_DEVELOPER_ONLY"}
+            else "SENIOR_NOT_APPROVED"
+        ),
+        "request_id": state.get("request_id"),
+        "current_stage": state.get("current_stage"),
+        "stage_history": state.get("stage_history", []),
+        "audit_trail": state.get("audit_trail", []),
+        "models": state.get("models", {}),
+        "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+    }
+
+
 def _run_mode(
-    *,
-    mode: str,
-    cases: list[dict[str, Any]],
-    graph: Any,
-    models: dict[str, str],
-    llm: RoleModels,
+    *, mode: str, cases: list[dict[str, Any]], graph: Any,
+    models: dict[str, str], llm: RoleModels,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for case in cases:
@@ -57,52 +138,10 @@ def _run_mode(
             )
         else:
             result = graph.invoke(state)
-        clean = _clean_state(result)
-        attempts = clean.get("query_developer_attempts", [])
-        first = attempts[0] if attempts else None
-        first_validation = None
-        validation_events = [
-            event
-            for event in clean.get("audit_trail", [])
-            if event.get("role") == "query_validation"
-        ]
-        if validation_events:
-            first_validation = validation_events[0]["output"]
-        final_validation = validation_events[-1]["output"] if validation_events else None
-        senior_reviews = clean.get("senior_reviews", [])
-        final_status = clean.get("final_status") or (
-            "FUNCTIONAL_ANALYST_COMPLETE" if mode == "FUNCTIONAL_ANALYST_ONLY" else
-            "QUERY_DEVELOPER_ONLY_COMPLETE" if mode == "QUERY_DEVELOPER_ONLY" else ""
-        )
         rows.append(
-            {
-                "id": case["id"],
-                "language": case.get("language", "es"),
-                "category": case.get("category"),
-                "mode": mode,
-                "question": case["question"],
-                "accepted_outcomes": case.get("accepted_outcomes", []),
-                "functional_analysis": clean.get("functional_analysis"),
-                "query_task": clean.get("query_task"),
-                "query_developer_attempts": attempts,
-                "first_pass_validation": first_validation,
-                "final_validation": final_validation,
-                "senior_reviews": senior_reviews,
-                "revision_count": clean.get("revision_count", 0),
-                "final_status": final_status,
-                "technical_valid": bool(final_validation and final_validation["technically_valid"]),
-                "semantic_plausibility": (
-                    "SENIOR_APPROVED"
-                    if final_status == "APPROVED"
-                    else "NOT_EVALUATED"
-                    if mode in {"FUNCTIONAL_ANALYST_ONLY", "QUERY_DEVELOPER_ONLY"}
-                    else "SENIOR_NOT_APPROVED"
-                ),
-                "audit_trail": clean.get("audit_trail", []),
-                "models": models,
-                "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-                "first_pass_status": first.get("status") if first else None,
-            }
+            _row_from_state(
+                case=case, mode=mode, state=_clean_state(result), started=started
+            )
         )
     return rows
 
@@ -110,10 +149,18 @@ def _run_mode(
 def _resume_developer_validation(
     *, analyst_rows: list[dict[str, Any]], models: dict[str, str], llm: RoleModels
 ) -> list[dict[str, Any]]:
-    """Continue an existing analyst run without invoking the analyst again."""
     rows: list[dict[str, Any]] = []
     for source in analyst_rows:
         started = time.perf_counter()
+        case = {
+            "id": source["id"],
+            "language": source.get("language", "es"),
+            "category": source.get("category"),
+            "question": source["question"],
+            "accepted_outcomes": source.get("accepted_outcomes", []),
+            "functional_expectation": source.get("functional_expectation"),
+            "query_expectation": source.get("query_expectation"),
+        }
         state = initial_state(
             mode="QUERY_DEVELOPER_ONLY", question=source["question"], llm=llm
         )
@@ -121,84 +168,127 @@ def _resume_developer_validation(
         state["functional_analysis"] = source["functional_analysis"]
         state["query_task"] = source.get("query_task")
         state["audit_trail"] = list(source.get("audit_trail", []))
-        state.update(_query_developer(state))
-        state.update(_query_validation(state))
-        clean = _clean_state(state)
-        current_query = clean.get("current_query") or {}
-        validation = clean.get("validation_result")
-        rows.append({
-            "id": source["id"],
-            "language": source.get("language", "es"),
-            "category": source.get("category"),
-            "mode": "QUERY_DEVELOPER_ONLY",
-            "question": source["question"],
-            "accepted_outcomes": source.get("accepted_outcomes", []),
-            "functional_analysis": clean.get("functional_analysis"),
-            "query_task": clean.get("query_task"),
-            "query_developer_attempts": clean.get("query_developer_attempts", []),
-            "first_pass_validation": validation,
-            "final_validation": validation,
-            "senior_reviews": [],
-            "revision_count": 0,
-            "final_status": (
-                "QUERY_DEVELOPER_ONLY_COMPLETE"
-                if current_query.get("status") == "QUERY"
-                else current_query.get("status", "")
-            ),
-            "technical_valid": bool(validation and validation["technically_valid"]),
-            "semantic_plausibility": "NOT_EVALUATED",
-            "audit_trail": clean.get("audit_trail", []),
-            "models": models,
-            "duration_ms": round((time.perf_counter() - started) * 1000, 2),
-            "first_pass_status": current_query.get("status"),
-        })
+        if source.get("functional_analysis", {}).get("needs_clarification"):
+            state["final_status"] = "NEEDS_CLARIFICATION"
+        else:
+            state.update(_query_developer(state))
+            if state.get("current_query", {}).get("status") == "QUERY":
+                state.update(_query_validation(state))
+        rows.append(
+            _row_from_state(
+                case=case, mode="QUERY_DEVELOPER_ONLY",
+                state=_clean_state(state), started=started,
+            )
+        )
     return rows
+
+
+def _rate(numerator: int, denominator: int) -> float:
+    return round(numerator / denominator, 4) if denominator else 0.0
 
 
 def _metrics(
     rows: list[dict[str, Any]], mode: str, *, semantic_clarifier_calls: int | None = None
 ) -> dict[str, Any]:
-    senior_reviews = [review for row in rows for review in row["senior_reviews"]]
-    first_pass_valid = [row for row in rows if row["first_pass_validation"] and row["first_pass_validation"]["technically_valid"]]
-    final_approved = [row for row in rows if row["final_status"] == "APPROVED"]
-    revisions = [review for review in senior_reviews if review["status"] == "REVISE"]
-    repaired = [row for row in rows if row["revision_count"] > 0 and row["final_status"] == "APPROVED"]
+    cases = len(rows)
+    first_pass_valid = sum(
+        bool(row["first_pass_validation"] and row["first_pass_validation"].get("technically_valid"))
+        for row in rows
+    )
+    generated_query = sum(row["first_pass_status"] == "QUERY" for row in rows)
+    tech_attempted = sum(row["technical_repair_attempts"] > 0 for row in rows)
+    tech_success = sum(
+        row["technical_repair_attempts"] > 0 and row["technical_valid"] for row in rows
+    )
+    senior_reviewed = sum(bool(row["senior_reviews"]) for row in rows)
+    senior_first_approved = sum(
+        bool(row["senior_reviews"] and row["senior_reviews"][0].get("status") == "APPROVED")
+        for row in rows
+    )
+    senior_revise = sum(
+        any(review.get("status") == "REVISE" for review in row["senior_reviews"])
+        for row in rows
+    )
+    semantic_attempted = sum(row["semantic_revision_attempts"] > 0 for row in rows)
+    semantic_success = sum(
+        row["semantic_revision_attempts"] > 0 and row["final_status"] == "APPROVED"
+        for row in rows
+    )
+    final_approved = sum(row["final_status"] == "APPROVED" for row in rows)
+    final_technical = sum(row["technical_valid"] for row in rows)
+    error_codes = Counter(
+        diagnostic.get("code", "UNKNOWN")
+        for row in rows
+        for diagnostic in (row["final_validation"] or {}).get("diagnostics", [])
+    )
     return {
         "runner_version": RUNNER_VERSION,
         "mode": mode,
-        "cases": len(rows),
-        "executions": len(rows),
+        "cases": cases,
+        "workflow_completion": sum(bool(row["final_status"]) for row in rows),
         "semantic_clarifier_calls": (
-            len(rows) if semantic_clarifier_calls is None else semantic_clarifier_calls
+            cases if semantic_clarifier_calls is None else semantic_clarifier_calls
         ),
-        "query_developer_initial_attempts": len(rows),
-        "query_developer_first_pass_query": sum(row["first_pass_status"] == "QUERY" for row in rows),
-        "query_developer_first_pass_technical_valid": len(first_pass_valid),
-        "senior_reviews": len(senior_reviews),
-        "final_approved": len(final_approved),
-        "revision_requested": len(revisions),
-        "repair_success": len(repaired),
-        "needs_clarification_final": sum(row["final_status"] == "NEEDS_CLARIFICATION" for row in rows),
-        "max_revisions_reached": sum(row["final_status"] == "MAX_REVISIONS_REACHED" for row in rows),
-        "technical_valid_final": sum(row["technical_valid"] for row in rows),
-        "validation_error_counts": dict(Counter(
-            error
-            for row in rows
-            for error in (row["final_validation"] or {}).get("all_errors", [])
-        )),
+        "query_generation": {
+            "count": generated_query,
+            "rate": _rate(generated_query, cases),
+        },
+        "first_pass_technical_validity": {
+            "count": first_pass_valid,
+            "rate": _rate(first_pass_valid, generated_query),
+        },
+        "technical_repair": {
+            "attempted_cases": tech_attempted,
+            "successful_cases": tech_success,
+            "success_rate": _rate(tech_success, tech_attempted),
+        },
+        "senior_review": {
+            "reviewed_cases": senior_reviewed,
+            "first_pass_approved": senior_first_approved,
+            "first_pass_approval_rate": _rate(senior_first_approved, senior_reviewed),
+            "revision_requested_cases": senior_revise,
+        },
+        "semantic_repair": {
+            "attempted_cases": semantic_attempted,
+            "successful_cases": semantic_success,
+            "success_rate": _rate(semantic_success, semantic_attempted),
+        },
+        "final": {
+            "technical_valid": final_technical,
+            "technical_validity_rate": _rate(final_technical, generated_query),
+            "semantic_approved": final_approved,
+            "semantic_approval_rate": _rate(final_approved, senior_reviewed),
+            "needs_clarification": sum(
+                row["final_status"] == "NEEDS_CLARIFICATION" for row in rows
+            ),
+            "needs_info": sum(row["final_status"] == "NEEDS_INFO" for row in rows),
+            "cannot_implement": sum(
+                row["final_status"] == "CANNOT_IMPLEMENT" for row in rows
+            ),
+            "technical_validation_failed": sum(
+                row["final_status"] == "TECHNICAL_VALIDATION_FAILED" for row in rows
+            ),
+            "max_semantic_revisions_reached": sum(
+                row["final_status"] == "MAX_SEMANTIC_REVISIONS_REACHED"
+                for row in rows
+            ),
+        },
+        "validation_error_codes": dict(error_codes),
         "latency_ms": {
-            "average_case": round(sum(row["duration_ms"] for row in rows) / len(rows), 2)
-            if rows else 0,
+            "average_case": round(
+                sum(row["duration_ms"] for row in rows) / cases, 2
+            ) if cases else 0,
         },
     }
 
 
 def assert_runner_contract() -> None:
     assert_phase42_contract()
-    cases = _load_cases(Path(__file__).with_name("direct_sqlalchemy_phase412_cases.jsonl"))
-    assert len(cases) == 24
-    assert len({case["id"] for case in cases}) == 24
-    assert "FUNCTIONAL_ANALYST_ONLY" in {"FUNCTIONAL_ANALYST_ONLY", "QUERY_DEVELOPER_ONLY", "AGENT_TEAM"}
+    cases = _load_cases(DEFAULT_CASES)
+    assert len(cases) >= 30
+    assert len({case["id"] for case in cases}) == len(cases)
+    assert all(case["id"].startswith("P42-") for case in cases)
+    assert {"es", "en", "pt"}.issubset({case.get("language") for case in cases})
 
 
 def run(
@@ -211,29 +301,35 @@ def run(
 ) -> None:
     assert_runner_contract()
     cases = _load_cases(cases_path)
-    assert len(cases) == 24
+    if not cases:
+        raise ValueError("Phase 4.2 dataset is empty")
     if limit is not None:
         if limit < 1:
             raise ValueError("--limit must be positive")
         cases = cases[:limit]
+
     selected_modes = {
         "analyst": ("FUNCTIONAL_ANALYST_ONLY",),
         "developer": ("QUERY_DEVELOPER_ONLY",),
         "team": ("AGENT_TEAM",),
         "both": ("QUERY_DEVELOPER_ONLY", "AGENT_TEAM"),
     }[mode]
+
     output_dir.mkdir(parents=True, exist_ok=True)
     model_config = {
         "semantic_clarifier": os.getenv("SEMANTIC_CLARIFIER_MODEL", "gpt-4o-mini"),
-        "sqlalchemy_query_developer": os.getenv("SQLALCHEMY_QUERY_DEVELOPER_MODEL", "gpt-4o-mini"),
-        "senior_query_reviewer": os.getenv("SENIOR_QUERY_REVIEWER_MODEL", "gpt-4o-mini"),
+        "sqlalchemy_query_developer": os.getenv(
+            "SQLALCHEMY_QUERY_DEVELOPER_MODEL", "gpt-4o-mini"
+        ),
+        "senior_query_reviewer": os.getenv(
+            "SENIOR_QUERY_REVIEWER_MODEL", "gpt-4o-mini"
+        ),
     }
     llm = RoleModels(model_config)
     all_rows: list[dict[str, Any]] = []
+
     if resume_functional_analysis is not None:
         analyst_rows = _load_cases(resume_functional_analysis)
-        if len(analyst_rows) != 24:
-            raise ValueError("The functional analyst run must contain exactly 24 rows")
         all_rows = _resume_developer_validation(
             analyst_rows=analyst_rows, models=model_config, llm=llm
         )
@@ -244,69 +340,105 @@ def run(
         for repetition in range(1, repetitions + 1):
             for mode_name in selected_modes:
                 mode_rows = _run_mode(
-                    mode=mode_name, cases=cases, graph=graph, models=model_config, llm=llm
+                    mode=mode_name, cases=cases, graph=graph,
+                    models=model_config, llm=llm,
                 )
                 for row in mode_rows:
                     row["repetition"] = repetition
                 all_rows.extend(mode_rows)
-    developer_rows = [row for row in all_rows if row["mode"] == "QUERY_DEVELOPER_ONLY"]
+
+    analyst_rows = [
+        row for row in all_rows if row["mode"] == "FUNCTIONAL_ANALYST_ONLY"
+    ]
+    developer_rows = [
+        row for row in all_rows if row["mode"] == "QUERY_DEVELOPER_ONLY"
+    ]
     team_rows = [row for row in all_rows if row["mode"] == "AGENT_TEAM"]
+
     metrics = {
         "runner_version": RUNNER_VERSION,
+        "dataset_version": DATASET_VERSION,
         "cases": len(cases),
         "repetitions": repetitions,
         "executions": len(all_rows),
+        "functional_analyst_only": (
+            _metrics(analyst_rows, "FUNCTIONAL_ANALYST_ONLY")
+            if analyst_rows else None
+        ),
         "query_developer_only": (
             _metrics(
                 developer_rows,
                 "QUERY_DEVELOPER_ONLY",
                 semantic_clarifier_calls=0 if resume_functional_analysis else None,
             )
-            if developer_rows
-            else None
+            if developer_rows else None
         ),
-        "agent_team": _metrics(team_rows, "AGENT_TEAM") if team_rows else None,
-        "team_approval_uplift_vs_first_pass": (
-            _metrics(team_rows, "AGENT_TEAM")["final_approved"]
-            - _metrics(developer_rows, "QUERY_DEVELOPER_ONLY")["query_developer_first_pass_technical_valid"]
-            if team_rows and developer_rows else None
+        "agent_team": (
+            _metrics(team_rows, "AGENT_TEAM") if team_rows else None
         ),
     }
+
     manifest = {
         "runner_version": RUNNER_VERSION,
+        "dataset_version": DATASET_VERSION,
+        "dataset_path": str(cases_path),
+        "dataset_sha256": _sha256_bytes(cases_path.read_bytes()),
+        "git_commit_sha": _git_commit(),
+        "prompt_sha256": {
+            "functional_analyst": _sha256_text(SEMANTIC_CLARIFIER_PROMPT),
+            "query_programmer": _sha256_text(SQLALCHEMY_QUERY_DEVELOPER_PROMPT),
+            "senior_query_reviewer": _sha256_text(SENIOR_QUERY_REVIEWER_PROMPT),
+        },
         "model_by_role": model_config,
         "cases": len(cases),
         "repetitions": repetitions,
         "mode": mode,
-        "resumed_from_functional_analysis": str(resume_functional_analysis) if resume_functional_analysis else None,
+        "resumed_from_functional_analysis": (
+            str(resume_functional_analysis) if resume_functional_analysis else None
+        ),
         "selected_case_ids": [case["id"] for case in cases],
         "source_date": "2026-08-30",
         "timezone": "UTC",
-        "retries": 0,
+        "llm_retries": 0,
         "mcp": False,
         "database_execution": False,
-        "max_repair_attempts": 1,
-        "pipeline": "semantic clarifier -> SQLAlchemy query developer -> deterministic gate -> senior -> bounded repair",
+        "max_technical_repair_attempts": MAX_TECHNICAL_REPAIR_ATTEMPTS,
+        "max_semantic_revision_attempts": MAX_SEMANTIC_REVISION_ATTEMPTS,
+        "pipeline": (
+            "functional analyst -> query programmer -> deterministic validation -> "
+            "technical repair if invalid -> senior review if valid -> semantic repair"
+        ),
     }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2), encoding="utf-8"
+    )
     (output_dir / "raw_responses.jsonl").write_text(
-        "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in all_rows) + "\n",
+        "\n".join(
+            json.dumps(row, ensure_ascii=False, default=str) for row in all_rows
+        ) + "\n",
         encoding="utf-8",
     )
-    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+    (output_dir / "metrics.json").write_text(
+        json.dumps(metrics, indent=2), encoding="utf-8"
+    )
     print(json.dumps({"output_dir": str(output_dir), "metrics": metrics}, indent=2))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cases", type=Path, required=True)
+    parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--limit", type=int)
-    parser.add_argument("--mode", choices=("analyst", "developer", "team", "both"), default="both")
+    parser.add_argument(
+        "--mode", choices=("analyst", "developer", "team", "both"), default="both"
+    )
     parser.add_argument("--resume-functional-analysis", type=Path)
     args = parser.parse_args()
-    run(args.cases, args.output_dir, args.repetitions, args.limit, args.mode, args.resume_functional_analysis)
+    run(
+        args.cases, args.output_dir, args.repetitions, args.limit,
+        args.mode, args.resume_functional_analysis,
+    )
 
 
 if __name__ == "__main__":
