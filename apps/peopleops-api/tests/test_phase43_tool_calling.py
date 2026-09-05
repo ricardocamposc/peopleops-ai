@@ -202,7 +202,7 @@ def test_capability_gap_is_allowed_without_technical_failure() -> None:
     assert metadata["agent_submission_rejections"] == 0
 
 
-def test_exhausted_agent_returns_invalid_fallback_for_external_validator() -> None:
+def test_validation_budget_exhaustion_stops_model_without_useless_rounds() -> None:
     invalid_calls = [
         _tool_call("validate_sqlalchemy_candidate", {"candidate": "select("}, f"v{i}")
         for i in range(phase43.MAX_AGENT_TOOL_ROUNDS)
@@ -211,9 +211,21 @@ def test_exhausted_agent_returns_invalid_fallback_for_external_validator() -> No
     result, metadata = runtime.invoke_query_programmer(
         input_payload=_payload(), output_model=phase42.QueryProgrammerResponse
     )
+    bound = runtime.models["sqlalchemy_query_developer"].bound
+
     assert result.status == "QUERY"
     assert result.sqlalchemy == "("
     assert metadata["technical_generation_failed"] is True
+    assert metadata["termination_reason"] == (
+        "VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE"
+    )
+    assert metadata["internal_validation_attempts"] == phase43.MAX_CANDIDATE_VALIDATIONS
+    assert metadata["agent_tool_rounds"] == phase43.MAX_CANDIDATE_VALIDATIONS
+    assert bound.calls == phase43.MAX_CANDIDATE_VALIDATIONS
+    assert not any(
+        item.get("result", {}).get("stage") == "TOOL_BUDGET"
+        for item in metadata["internal_iterations"]
+    )
     assert phase42._validation(result.sqlalchemy)["technically_valid"] is False
 
 
