@@ -14,9 +14,12 @@ import direct_sqlalchemy_phase42 as phase42
 import direct_sqlalchemy_phase42_runner as phase42_runner
 import direct_sqlalchemy_phase43 as phase43
 
-RUNNER_VERSION = "direct-sqlalchemy-phase43-v2"
+RUNNER_VERSION = "direct-sqlalchemy-phase43-v3"
 DATASET_VERSION = "phase42-v1"
 DEFAULT_CASES = Path(__file__).with_name("direct_sqlalchemy_phase42_cases.jsonl")
+DEFAULT_INTER_CASE_DELAY_SECONDS = float(
+    os.getenv("PHASE43_INTER_CASE_DELAY_SECONDS", "5")
+)
 
 
 def _git_commit() -> str | None:
@@ -36,6 +39,36 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _load_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        return []
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ids = [row["id"] for row in rows]
+    if len(ids) != len(set(ids)):
+        raise ValueError(f"Duplicate case ids in existing checkpoint: {ids}")
+    return rows
+
+
+def _atomic_write_json(path: Path, payload: Any) -> None:
+    temporary = path.with_suffix(f"{path.suffix}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False, default=str),
+        encoding="utf-8",
+    )
+    temporary.replace(path)
+
+
+def _append_row(path: Path, row: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def _programmer_events(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         event for event in state.get("audit_trail", [])
@@ -44,11 +77,7 @@ def _programmer_events(state: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _event_agent_rounds(event: dict[str, Any]) -> int:
-    """Count actual model turns, not interaction/tool events.
-
-    Phase 4.3 records the model round on every interaction. Multiple tool calls may
-    happen in one model turn, so ``len(internal_iterations)`` over-counts rounds.
-    """
+    """Count actual model turns, not interaction/tool events."""
     rounds = [
         int(item.get("round", 0) or 0)
         for item in event.get("internal_iterations", [])
@@ -70,14 +99,7 @@ def _agent_metadata(state: dict[str, Any]) -> dict[str, int]:
 
 
 def _candidate_metrics(rows: list[dict[str, Any]]) -> dict[str, int]:
-    """Derive candidate metrics from validation tool calls only.
-
-    A model may continue requesting validation after the deterministic validation
-    budget is exhausted. Those requests are still generated candidates, but they
-    are not validator executions. Keeping both counts separate prevents the old
-    inconsistency where changed/unchanged candidates could exceed the reported
-    number of generated candidates.
-    """
+    """Derive candidate metrics from validation tool calls only."""
     validation_requests: list[dict[str, Any]] = [
         item
         for row in rows
@@ -121,10 +143,6 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     base["runner_version"] = RUNNER_VERSION
 
     candidate_metrics = _candidate_metrics(rows)
-
-    # Phase 4.2 names are kept for comparability, but in Phase 4.3 they are
-    # normalized from model-initiated validation requests rather than generic
-    # interaction events.
     base["internal_candidates_generated"] = candidate_metrics["candidates_generated"]
     base["internal_candidates_changed"] = candidate_metrics["candidates_changed"]
     base["internal_candidates_unchanged"] = candidate_metrics["candidates_unchanged"]
@@ -146,6 +164,72 @@ def _metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
         row.get("final_status") == "TECHNICAL_GENERATION_FAILED" for row in rows
     )
     return base
+
+
+def _base_manifest(
+    *, cases_path: Path, cases: list[dict[str, Any]], model_config: dict[str, str],
+    inter_case_delay_seconds: float,
+) -> dict[str, Any]:
+    return {
+        "runner_version": RUNNER_VERSION,
+        "dataset_version": DATASET_VERSION,
+        "dataset_path": str(cases_path),
+        "dataset_sha256": _sha256(cases_path.read_bytes()),
+        "git_commit_sha": _git_commit(),
+        "model_by_role": model_config,
+        "selected_case_ids": [case["id"] for case in cases],
+        "query_programmer_mode": "MODEL_INITIATED_TOOL_CALLING",
+        "query_programmer_tools": [
+            "validate_sqlalchemy_candidate",
+            "SubmitQueryProgrammerResult",
+        ],
+        "max_candidate_validations_per_outer_attempt": phase43.MAX_CANDIDATE_VALIDATIONS,
+        "max_agent_tool_rounds_per_outer_attempt": phase43.MAX_AGENT_TOOL_ROUNDS,
+        "max_external_technical_repair_attempts": phase42.MAX_TECHNICAL_REPAIR_ATTEMPTS,
+        "max_semantic_revision_attempts": phase42.MAX_SEMANTIC_REVISION_ATTEMPTS,
+        "openai_transport_max_retries": phase43.PHASE43_OPENAI_MAX_RETRIES,
+        "inter_case_delay_seconds": inter_case_delay_seconds,
+        "checkpointing": "PER_COMPLETED_CASE",
+        "resume_semantics": "SKIP_COMPLETED_CASE_IDS",
+        "external_validator": True,
+        "senior_reviewer": True,
+        "mcp": False,
+        "database_execution": False,
+        "source_date": phase42.REFERENCE_CONTEXT["reference_date"],
+        "timezone": phase42.REFERENCE_CONTEXT["timezone"],
+        "candidate_metric_semantics": {
+            "candidates_generated": "model validation-tool requests carrying a candidate",
+            "candidates_initial": "first candidate in each Query Programmer invocation",
+            "candidates_changed": "validation requests whose candidate differs from the previous request in the same invocation",
+            "candidates_unchanged": "validation requests whose candidate equals the previous request in the same invocation",
+            "candidate_validations_executed": "requests that actually reached deterministic validation",
+            "candidate_validation_budget_rejections": "validation requests rejected because the per-invocation validation budget was exhausted",
+        },
+    }
+
+
+def _write_progress(
+    *, manifest_path: Path, metrics_path: Path, manifest: dict[str, Any],
+    rows: list[dict[str, Any]], selected_ids: list[str], status: str,
+    error: dict[str, str] | None = None,
+) -> None:
+    completed_ids = [row["id"] for row in rows]
+    completed_set = set(completed_ids)
+    progress_manifest = {
+        **manifest,
+        "run_status": status,
+        "completed_case_ids": completed_ids,
+        "pending_case_ids": [case_id for case_id in selected_ids if case_id not in completed_set],
+        "completed_cases": len(completed_ids),
+        "pending_cases": len(selected_ids) - len(completed_ids),
+        "error": error,
+    }
+    _atomic_write_json(manifest_path, progress_manifest)
+    metrics = _metrics(rows)
+    metrics["run_status"] = status
+    metrics["completed_cases"] = len(completed_ids)
+    metrics["pending_cases"] = len(selected_ids) - len(completed_ids)
+    _atomic_write_json(metrics_path, metrics)
 
 
 def assert_runner_contract() -> None:
@@ -188,9 +272,13 @@ def assert_runner_contract() -> None:
 
 def run(
     *, cases_path: Path, output_dir: Path, case_ids: list[str] | None = None,
-    limit: int | None = None,
+    limit: int | None = None, resume: bool = False,
+    inter_case_delay_seconds: float = DEFAULT_INTER_CASE_DELAY_SECONDS,
 ) -> None:
     assert_runner_contract()
+    if inter_case_delay_seconds < 0:
+        raise ValueError("inter_case_delay_seconds cannot be negative")
+
     cases = _load_cases(cases_path)
     if case_ids:
         requested = set(case_ids)
@@ -206,64 +294,102 @@ def run(
         raise ValueError("No Phase 4.3 cases selected")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    raw_path = output_dir / "raw_responses.jsonl"
+    metrics_path = output_dir / "metrics.json"
+    manifest_path = output_dir / "manifest.json"
+
+    selected_ids = [case["id"] for case in cases]
+    if len(selected_ids) != len(set(selected_ids)):
+        raise ValueError("Selected dataset contains duplicate case ids")
+
+    existing_rows = _load_rows(raw_path)
+    if existing_rows and not resume:
+        raise FileExistsError(
+            f"Checkpoint already exists at {raw_path}; use --resume or a new output directory"
+        )
+    existing_ids = {row["id"] for row in existing_rows}
+    unexpected = existing_ids - set(selected_ids)
+    if unexpected:
+        raise ValueError(f"Checkpoint contains ids outside selected cases: {sorted(unexpected)}")
+
     model_config = {
         "semantic_clarifier": os.getenv("SEMANTIC_CLARIFIER_MODEL", "gpt-4o-mini"),
         "sqlalchemy_query_developer": os.getenv("SQLALCHEMY_QUERY_DEVELOPER_MODEL", "gpt-4o-mini"),
         "senior_query_reviewer": os.getenv("SENIOR_QUERY_REVIEWER_MODEL", "gpt-4o-mini"),
     }
+    manifest = _base_manifest(
+        cases_path=cases_path,
+        cases=cases,
+        model_config=model_config,
+        inter_case_delay_seconds=inter_case_delay_seconds,
+    )
+
+    if resume and manifest_path.exists():
+        previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for field in ("dataset_sha256", "model_by_role", "selected_case_ids"):
+            if previous_manifest.get(field) != manifest.get(field):
+                raise ValueError(
+                    f"Cannot resume: manifest field {field!r} differs from current run"
+                )
+
+    rows = list(existing_rows)
+    _write_progress(
+        manifest_path=manifest_path,
+        metrics_path=metrics_path,
+        manifest=manifest,
+        rows=rows,
+        selected_ids=selected_ids,
+        status="RUNNING",
+    )
+
     runtime = phase43.LangChainToolCallingRuntime(model_config)
     graph = phase43.build_graph()
-    rows: list[dict[str, Any]] = []
+    completed_ids = {row["id"] for row in rows}
+    pending_cases = [case for case in cases if case["id"] not in completed_ids]
 
-    for case in cases:
-        started = time.perf_counter()
-        state = phase43.initial_state(
-            mode="AGENT_TEAM", question=case["question"], llm=runtime
+    try:
+        for index, case in enumerate(pending_cases):
+            if index > 0 and inter_case_delay_seconds:
+                time.sleep(inter_case_delay_seconds)
+
+            started = time.perf_counter()
+            state = phase43.initial_state(
+                mode="AGENT_TEAM", question=case["question"], llm=runtime
+            )
+            state["models"] = model_config
+            result = graph.invoke(state)
+            row = _row(case, result, started)
+            rows.append(row)
+            _append_row(raw_path, row)
+            _write_progress(
+                manifest_path=manifest_path,
+                metrics_path=metrics_path,
+                manifest=manifest,
+                rows=rows,
+                selected_ids=selected_ids,
+                status="RUNNING",
+            )
+    except Exception as exc:  # noqa: BLE001
+        _write_progress(
+            manifest_path=manifest_path,
+            metrics_path=metrics_path,
+            manifest=manifest,
+            rows=rows,
+            selected_ids=selected_ids,
+            status="INTERRUPTED",
+            error={"type": type(exc).__name__, "message": str(exc)},
         )
-        state["models"] = model_config
-        result = graph.invoke(state)
-        rows.append(_row(case, result, started))
+        raise
 
-    metrics = _metrics(rows)
-    manifest = {
-        "runner_version": RUNNER_VERSION,
-        "dataset_version": DATASET_VERSION,
-        "dataset_path": str(cases_path),
-        "dataset_sha256": _sha256(cases_path.read_bytes()),
-        "git_commit_sha": _git_commit(),
-        "model_by_role": model_config,
-        "selected_case_ids": [case["id"] for case in cases],
-        "query_programmer_mode": "MODEL_INITIATED_TOOL_CALLING",
-        "query_programmer_tools": [
-            "validate_sqlalchemy_candidate",
-            "SubmitQueryProgrammerResult",
-        ],
-        "max_candidate_validations_per_outer_attempt": phase43.MAX_CANDIDATE_VALIDATIONS,
-        "max_agent_tool_rounds_per_outer_attempt": phase43.MAX_AGENT_TOOL_ROUNDS,
-        "max_external_technical_repair_attempts": phase42.MAX_TECHNICAL_REPAIR_ATTEMPTS,
-        "max_semantic_revision_attempts": phase42.MAX_SEMANTIC_REVISION_ATTEMPTS,
-        "external_validator": True,
-        "senior_reviewer": True,
-        "mcp": False,
-        "database_execution": False,
-        "source_date": phase42.REFERENCE_CONTEXT["reference_date"],
-        "timezone": phase42.REFERENCE_CONTEXT["timezone"],
-        "candidate_metric_semantics": {
-            "candidates_generated": "model validation-tool requests carrying a candidate",
-            "candidates_initial": "first candidate in each Query Programmer invocation",
-            "candidates_changed": "validation requests whose candidate differs from the previous request in the same invocation",
-            "candidates_unchanged": "validation requests whose candidate equals the previous request in the same invocation",
-            "candidate_validations_executed": "requests that actually reached deterministic validation",
-            "candidate_validation_budget_rejections": "validation requests rejected because the per-invocation validation budget was exhausted",
-        },
-    }
-    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    (output_dir / "raw_responses.jsonl").write_text(
-        "\n".join(json.dumps(row, ensure_ascii=False, default=str) for row in rows) + "\n",
-        encoding="utf-8",
+    _write_progress(
+        manifest_path=manifest_path,
+        metrics_path=metrics_path,
+        manifest=manifest,
+        rows=rows,
+        selected_ids=selected_ids,
+        status="COMPLETE",
     )
-    (output_dir / "metrics.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
-    print(json.dumps({"output_dir": str(output_dir), "metrics": metrics}, indent=2))
+    print(json.dumps({"output_dir": str(output_dir), "metrics": _metrics(rows)}, indent=2))
 
 
 def main() -> None:
@@ -272,12 +398,20 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--case-ids", nargs="*")
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--inter-case-delay-seconds",
+        type=float,
+        default=DEFAULT_INTER_CASE_DELAY_SECONDS,
+    )
     args = parser.parse_args()
     run(
         cases_path=args.cases,
         output_dir=args.output_dir,
         case_ids=args.case_ids,
         limit=args.limit,
+        resume=args.resume,
+        inter_case_delay_seconds=args.inter_case_delay_seconds,
     )
 
 
