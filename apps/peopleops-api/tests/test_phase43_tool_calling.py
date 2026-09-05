@@ -229,6 +229,43 @@ def test_validation_budget_exhaustion_stops_model_without_useless_rounds() -> No
     assert phase42._validation(result.sqlalchemy)["technically_valid"] is False
 
 
+def test_same_round_multiple_tool_calls_are_all_processed_before_early_stop() -> None:
+    multi_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "validate_sqlalchemy_candidate",
+                "args": {"candidate": "select("},
+                "id": f"v{i}",
+                "type": "tool_call",
+            }
+            for i in range(4)
+        ],
+    )
+    runtime = _runtime([multi_call])
+    result, metadata = runtime.invoke_query_programmer(
+        input_payload=_payload(), output_model=phase42.QueryProgrammerResponse
+    )
+    bound = runtime.models["sqlalchemy_query_developer"].bound
+    validations = [
+        item for item in metadata["internal_iterations"]
+        if item.get("kind") == "VALIDATION_TOOL_CALL"
+    ]
+
+    assert bound.calls == 1
+    assert result.status == "QUERY"
+    assert result.sqlalchemy == "("
+    assert metadata["technical_generation_failed"] is True
+    assert metadata["termination_reason"] == (
+        "VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE"
+    )
+    assert metadata["internal_tool_calls"] == 4
+    assert metadata["internal_validation_attempts"] == 3
+    assert len(validations) == 4
+    assert validations[-1]["result"]["stage"] == "TOOL_BUDGET"
+    assert metadata["agent_tool_rounds"] == 1
+
+
 def test_phase43_terminal_technical_failure_is_not_cannot_implement() -> None:
     state: phase43.Phase43State = {"stage_history": []}
     output = phase43._technical_failed(state)
