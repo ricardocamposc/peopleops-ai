@@ -27,6 +27,16 @@ A `QUERY` submission is accepted only when it contains the exact candidate that 
 
 `CANNOT_IMPLEMENT` is reserved for genuine data-model capability gaps. After a technical validation failure, the model cannot use `CANNOT_IMPLEMENT` merely because it failed to repair its Python/SQLAlchemy implementation, unless the Functional Requirement already records an unsupported requirement.
 
+## Tool-call protocol integrity
+
+One assistant message may contain several tool calls. OpenAI requires every `tool_call_id` emitted by that assistant message to receive a corresponding tool response before the conversation can continue.
+
+Phase 4.3 therefore processes the complete set of tool calls in the current model round before returning from the Query Programmer runtime. Successful submission and validation-budget early termination are deferred until every tool call from that `AIMessage` has received its matching `ToolMessage`.
+
+This matters when the model emits several validation calls in one round. The first three may consume the deterministic validation budget and any additional validation call in the same already-emitted assistant message may receive a `TOOL_BUDGET` response. That same-round response is intentional protocol completion; it does not trigger another model round. The runtime then performs the pending early termination.
+
+The same rule applies when an accepted final submission shares a model response with another tool call: all calls are answered before the accepted result is returned.
+
 ## Deterministic validation tool
 
 `validate_sqlalchemy_candidate` remains ordinary application code, not an LLM agent. Internally it executes the existing short-circuit pipeline:
@@ -49,7 +59,9 @@ The agent conversation is bounded by:
 - existing outer technical repair limit from Phase 4.2;
 - existing semantic revision limit from Phase 4.2.
 
-The runtime now stops a Query Programmer invocation immediately when all three deterministic candidate validations have been consumed, the most recent validation failed, and no previously validated candidate exists. Continuing model rounds after that point cannot produce an admissible `QUERY`, because no further candidate can pass the mandatory validation gate. The runtime therefore returns the technical-generation fallback immediately instead of spending the remaining model-round budget on `TOOL_BUDGET` responses.
+The runtime stops a Query Programmer invocation when all three deterministic candidate validations have been consumed, the most recent validation failed, and no previously validated candidate exists. Continuing model rounds after that point cannot produce an admissible `QUERY`, because no further candidate can pass the mandatory validation gate.
+
+Early termination is evaluated only after all tool calls already emitted in the current assistant message have received their matching tool responses. This preserves the OpenAI tool-calling protocol while still preventing any additional model round after the validation budget is exhausted.
 
 The early stop is recorded as:
 
@@ -125,7 +137,7 @@ Therefore:
 
 `candidates_initial + candidates_changed + candidates_unchanged = candidates_generated`
 
-After the early-termination correction, budget-rejected validation requests should normally disappear in the no-valid-candidate path. The metric remains because it is still useful for detecting unexpected protocol behavior and cases where a previously validated candidate exists.
+After the early-termination correction, budget-rejected validation requests should not cause additional model rounds in the no-valid-candidate path. A budget rejection can still occur for an additional validation call that was already emitted in the same `AIMessage` that exhausted the budget; this is required to answer every tool call and preserve protocol validity.
 
 Tool rounds represent actual model turns. They are not the number of individual tool/interactions: one model turn may emit more than one tool call.
 
