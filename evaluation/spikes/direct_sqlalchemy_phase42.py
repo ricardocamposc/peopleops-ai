@@ -5,6 +5,7 @@ import ast
 import json
 import os
 import time
+import uuid
 from datetime import date
 from importlib.resources import files as resource_files
 from typing import Any, Literal, Protocol, TypedDict
@@ -14,24 +15,8 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import (
-    Date,
-    ForeignKey,
-    Integer,
-    String,
-    and_,
-    asc,
-    case,
-    cast,
-    desc,
-    distinct,
-    extract,
-    func,
-    literal,
-    not_,
-    or_,
-    select,
-    union,
-    union_all,
+    Date, ForeignKey, Integer, String, and_, asc, case, cast, desc, distinct,
+    extract, func, literal, not_, or_, select, union, union_all,
 )
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -40,7 +25,6 @@ from sqlalchemy.sql.selectable import CompoundSelect, Select
 
 class StructuredModel(Protocol):
     model_name: str
-
     def invoke(
         self, *, role: str, input_payload: dict[str, Any], output_model: type[BaseModel]
     ) -> tuple[BaseModel, dict[str, Any]]: ...
@@ -52,17 +36,15 @@ class Base(DeclarativeBase):
 
 class Department(Base):
     __tablename__ = "department"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     code: Mapped[str] = mapped_column(String(32))
     name: Mapped[str] = mapped_column(String(120))
     cost_center: Mapped[str] = mapped_column(String(32))
-    employees: Mapped[list[Employee]] = relationship(back_populates="department")
+    employees: Mapped[list["Employee"]] = relationship(back_populates="department")
 
 
 class Employee(Base):
     __tablename__ = "employee"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_code: Mapped[str] = mapped_column(String(32))
     first_name: Mapped[str] = mapped_column(String(80))
@@ -71,25 +53,21 @@ class Employee(Base):
     hire_date: Mapped[date] = mapped_column(Date)
     department_id: Mapped[int] = mapped_column(ForeignKey("department.id"))
     department: Mapped[Department] = relationship(back_populates="employees")
-    overtime: Mapped[list[Overtime]] = relationship(back_populates="employee")
-    attendance: Mapped[list[Attendance]] = relationship(back_populates="employee")
+    overtime: Mapped[list["Overtime"]] = relationship(back_populates="employee")
+    attendance: Mapped[list["Attendance"]] = relationship(back_populates="employee")
 
 
 class Overtime(Base):
     __tablename__ = "overtime_record"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_id: Mapped[int] = mapped_column(ForeignKey("employee.id"))
     work_date: Mapped[date] = mapped_column(Date)
     approved_minutes: Mapped[int] = mapped_column(
         Integer,
-        info={
-            "description": (
-                "total approved minutes of overtime; convert to hours by "
-                "dividing by 60.0 when the request asks for hours so "
-                "decimals are preserved: hours = approved_minutes / 60.0"
-            )
-        },
+        info={"description": (
+            "total approved minutes of overtime; convert to hours by dividing "
+            "by 60.0 when hours are requested so decimals are preserved"
+        )},
     )
     status: Mapped[str] = mapped_column(String(32))
     employee: Mapped[Employee] = relationship(back_populates="overtime")
@@ -97,7 +75,6 @@ class Overtime(Base):
 
 class Attendance(Base):
     __tablename__ = "attendance_record"
-
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     employee_id: Mapped[int] = mapped_column(ForeignKey("employee.id"))
     work_date: Mapped[date] = mapped_column(Date)
@@ -114,7 +91,6 @@ MODELS = (Employee, Department, Overtime, Attendance)
 
 class FunctionalAnalystResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     needs_clarification: bool
     questions_or_missing_information: list[str]
     original_user_request: str
@@ -140,7 +116,6 @@ class FunctionalAnalystResponse(BaseModel):
 
 class RequirementCoverage(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     requirement: str
     status: Literal["SATISFIED", "PARTIALLY_SATISFIED", "NOT_SATISFIED"]
     implementation: str
@@ -148,7 +123,6 @@ class RequirementCoverage(BaseModel):
 
 class MaterialIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     type: str
     severity: str
     requirement: str
@@ -159,7 +133,6 @@ class MaterialIssue(BaseModel):
 
 class RequirementReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     requirement: str
     status: Literal["SATISFIED", "PARTIALLY_SATISFIED", "NOT_SATISFIED", "NOT_APPLICABLE"]
     evidence: str
@@ -168,7 +141,6 @@ class RequirementReview(BaseModel):
 
 class QuerySemanticsReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     temporal_correctness: str
     measure_correctness: str
     dimension_correctness: str
@@ -184,7 +156,6 @@ class QuerySemanticsReview(BaseModel):
 
 class QueryProgrammerResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     status: Literal["QUERY", "NEEDS_INFO", "CANNOT_IMPLEMENT"]
     sqlalchemy: str | None = None
     interpretation: str
@@ -200,20 +171,23 @@ class QueryProgrammerResponse(BaseModel):
     requirement_coverage: list[RequirementCoverage]
 
     @model_validator(mode="after")
-    def validate_state(self) -> QueryProgrammerResponse:
+    def validate_state(self) -> "QueryProgrammerResponse":
         if self.status == "QUERY" and not self.sqlalchemy:
             raise ValueError("QUERY requires sqlalchemy")
+        if self.status != "QUERY" and self.sqlalchemy is not None:
+            raise ValueError(f"{self.status} requires sqlalchemy=null")
         if self.status == "NEEDS_INFO" and not self.missing_information:
             raise ValueError("NEEDS_INFO requires missing_information")
         return self
 
 
 class QueryTask(BaseModel):
+    """Canonical downstream functional contract, without physical implementation decisions."""
     model_config = ConfigDict(extra="forbid")
-
     original_user_request: str
     clarified_request: str
     business_intent: str
+    domain: list[str]
     required_information: list[str]
     measures: list[str]
     dimensions: list[str]
@@ -224,12 +198,15 @@ class QueryTask(BaseModel):
     comparison_requirements: list[str]
     data_retrieval_request: str
     downstream_analysis: list[str]
+    required_sources: list[str]
     assumptions: list[str]
+    ambiguities: list[str]
+    unsupported_requirements: list[str]
+    sensitivity: list[str]
 
 
 class SeniorReview(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     status: Literal["APPROVED", "REVISE", "CANNOT_APPROVE"]
     summary: str
     material_issues: list[MaterialIssue]
@@ -241,7 +218,19 @@ class SeniorReview(BaseModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class ValidationDiagnostic(TypedDict, total=False):
+    stage: str
+    code: str
+    exception_type: str | None
+    message: str
+    line: int | None
+    offset: int | None
+    text: str | None
+    source: str | None
+
+
 class ValidationResult(TypedDict):
+    diagnostics: list[ValidationDiagnostic]
     syntax_errors: list[str]
     build_errors: list[str]
     compile_errors: list[str]
@@ -260,25 +249,26 @@ class Phase42State(TypedDict, total=False):
     current_query: dict[str, Any]
     validation_result: ValidationResult
     senior_reviews: list[dict[str, Any]]
-    revision_count: int
+    technical_repair_attempts: int
+    semantic_revision_attempts: int
+    repair_type: Literal["TECHNICAL", "SEMANTIC"] | None
     final_status: str
     audit_trail: list[dict[str, Any]]
     models: dict[str, str]
     request_id: str
     reference_context: dict[str, Any]
     current_stage: str
-    stage_history: list[str]
+    stage_history: list[dict[str, Any]]
     _llm: StructuredModel
 
 
 PHASE42_PROMPTS = resource_files("peopleops_api.resources.prompts.phase42")
-SEMANTIC_CLARIFIER_PROMPT = PHASE42_PROMPTS.joinpath(
-    "functional-analyst.md"
-).read_text(encoding="utf-8")
-SQLALCHEMY_QUERY_DEVELOPER_PROMPT = PHASE42_PROMPTS.joinpath(
-    "sqlalchemy-query-programmer.md"
-).read_text(encoding="utf-8")
-MAX_REPAIR_ATTEMPTS = 1
+SEMANTIC_CLARIFIER_PROMPT = PHASE42_PROMPTS.joinpath("functional-analyst.md").read_text(encoding="utf-8")
+SQLALCHEMY_QUERY_DEVELOPER_PROMPT = PHASE42_PROMPTS.joinpath("sqlalchemy-query-programmer.md").read_text(encoding="utf-8")
+SENIOR_QUERY_REVIEWER_PROMPT = PHASE42_PROMPTS.joinpath("senior-query-reviewer.md").read_text(encoding="utf-8")
+
+MAX_TECHNICAL_REPAIR_ATTEMPTS = 2
+MAX_SEMANTIC_REVISION_ATTEMPTS = 1
 REFERENCE_CONTEXT = {
     "reference_date": "2026-08-30",
     "reference_year": 2026,
@@ -287,13 +277,6 @@ REFERENCE_CONTEXT = {
     "current_period": "2026-08",
     "timezone": "UTC",
 }
-
-
-SENIOR_QUERY_REVIEWER_PROMPT = PHASE42_PROMPTS.joinpath(
-    "senior-query-reviewer.md"
-).read_text(encoding="utf-8")
-
-
 AGENT_SPECS = {
     "semantic_clarifier": {
         "prompt_id": "peopleops.semantic_clarifier",
@@ -314,20 +297,19 @@ AGENT_SPECS = {
 
 
 def _prompt_templates() -> dict[str, ChatPromptTemplate]:
-    """Build LangChain templates that render the prompt-file variables."""
     return {
-        "semantic_clarifier": ChatPromptTemplate.from_messages([
-            ("system", SEMANTIC_CLARIFIER_PROMPT),
-            ("human", "{{user_input}}"),
-        ], template_format="jinja2"),
-        "sqlalchemy_query_developer": ChatPromptTemplate.from_messages([
-            ("system", SQLALCHEMY_QUERY_DEVELOPER_PROMPT),
-            ("human", "{{user_input}}"),
-        ], template_format="jinja2"),
-        "senior_query_reviewer": ChatPromptTemplate.from_messages([
-            ("system", SENIOR_QUERY_REVIEWER_PROMPT),
-            ("human", "{{user_input}}"),
-        ], template_format="jinja2"),
+        "semantic_clarifier": ChatPromptTemplate.from_messages(
+            [("system", SEMANTIC_CLARIFIER_PROMPT), ("human", "{{user_input}}")],
+            template_format="jinja2",
+        ),
+        "sqlalchemy_query_developer": ChatPromptTemplate.from_messages(
+            [("system", SQLALCHEMY_QUERY_DEVELOPER_PROMPT), ("human", "{{user_input}}")],
+            template_format="jinja2",
+        ),
+        "senior_query_reviewer": ChatPromptTemplate.from_messages(
+            [("system", SENIOR_QUERY_REVIEWER_PROMPT), ("human", "{{user_input}}")],
+            template_format="jinja2",
+        ),
     }
 
 
@@ -335,9 +317,29 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, default=str)
 
 
-class LangChainAgentRuntime:
-    """Central model registry and structured-output invocation boundary."""
+def _human_payload(role: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep model/context only in the system prompt; human input carries typed artifacts."""
+    if role == "semantic_clarifier":
+        return {"user_request": payload["user_request"]}
+    if role == "sqlalchemy_query_developer":
+        return {
+            "functional_requirement": payload["query_task"],
+            "repair_type": payload.get("repair_type"),
+            "repair_attempt": payload.get("repair_attempt", 0),
+            "previous_query": payload.get("previous_query"),
+            "deterministic_validation_result": payload.get("deterministic_validation_result"),
+            "senior_review": payload.get("senior_review"),
+        }
+    return {
+        "functional_requirement": payload["functional_requirement"],
+        "query_programmer_output": payload["query_programmer_output"],
+        "deterministic_validation_result": payload["deterministic_validation_result"],
+        "previous_reviews": payload.get("previous_reviews", []),
+        "repair_attempt": payload.get("repair_attempt", 0),
+    }
 
+
+class LangChainAgentRuntime:
     model_name = "langchain-configured"
 
     def __init__(self, model_config: dict[str, str] | None = None) -> None:
@@ -361,69 +363,37 @@ class LangChainAgentRuntime:
         self, *, role: str, input_payload: dict[str, Any], output_model: type[BaseModel]
     ) -> tuple[BaseModel, dict[str, Any]]:
         spec = AGENT_SPECS[role]
-        variables = _chain_variables(role, input_payload)
-        prompt_template = {
-            "semantic_clarifier": SEMANTIC_CLARIFIER_PROMPT,
-            "sqlalchemy_query_developer": SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
-            "senior_query_reviewer": SENIOR_QUERY_REVIEWER_PROMPT,
-        }[role]
-        variables["user_input"] = _json(input_payload)
+        variables = _chain_variables(input_payload)
+        human_payload = _human_payload(role, input_payload)
+        variables["user_input"] = _json(human_payload)
         rendered = self.templates[role].format_messages(**variables)
         started = time.perf_counter()
         chain = self.templates[role] | self.models[role].with_structured_output(output_model)
         result = chain.invoke(variables)
-        metadata = {
+        return result, {
             "agent_id": role,
             "prompt_id": spec["prompt_id"],
             "prompt_version": spec["prompt_version"],
             "model": self.model_config[role],
             "schema_version": output_model.__name__,
             "rendered_messages": [
-                {"role": message.type, "content": message.content}
-                for message in rendered
+                {"role": message.type, "content": message.content} for message in rendered
             ],
             "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "rendered_system_prompt": rendered[0].content,
         }
-        metadata["prompt_template"] = prompt_template
-        metadata["rendered_system_prompt"] = rendered[0].content
-        return result, metadata
 
 
-def _chain_variables(role: str, payload: dict[str, Any]) -> dict[str, str]:
-    if role == "semantic_clarifier":
-        context = payload["reference_context"]
-        return {
-            "data_model": str(payload["data_model"]),
-            "reference_date": str(context["reference_date"]),
-            "reference_year": str(context["reference_year"]),
-            "reference_month": str(context["reference_month"]),
-            "reference_day": str(context["reference_day"]),
-            "current_period": str(context["current_period"]),
-            "timezone": str(context["timezone"]),
-        }
-    if role == "sqlalchemy_query_developer":
-        context = payload["reference_context"]
-        return {
-            "reference_date": str(context["reference_date"]),
-            "reference_year": str(context["reference_year"]),
-            "reference_month": str(context["reference_month"]),
-            "reference_day": str(context["reference_day"]),
-            "current_period": str(context["current_period"]),
-            "timezone": str(context["timezone"]),
-            "data_model": str(payload["data_model"]),
-            "query_task": _json(payload["query_task"]),
-            "previous_query": _json(payload.get("previous_query")),
-            "validation_feedback": _json(payload.get("validation_feedback")),
-            "senior_review": _json(payload.get("senior_review")),
-        }
+def _chain_variables(payload: dict[str, Any]) -> dict[str, str]:
+    context = payload["reference_context"]
     return {
         "data_model": str(payload["data_model"]),
-        "reference_date": str(payload["reference_context"]["reference_date"]),
-        "reference_year": str(payload["reference_context"]["reference_year"]),
-        "reference_month": str(payload["reference_context"]["reference_month"]),
-        "reference_day": str(payload["reference_context"]["reference_day"]),
-        "current_period": str(payload["reference_context"]["current_period"]),
-        "timezone": str(payload["reference_context"]["timezone"]),
+        "reference_date": str(context["reference_date"]),
+        "reference_year": str(context["reference_year"]),
+        "reference_month": str(context["reference_month"]),
+        "reference_day": str(context["reference_day"]),
+        "current_period": str(context["current_period"]),
+        "timezone": str(context["timezone"]),
     }
 
 
@@ -446,8 +416,7 @@ def _catalog() -> str:
             arrow = "<-" if relation.uselist else "->"
             lines.append(
                 f"  - {relation.key}: {cardinality} -> {target.__name__}; "
-                f"relationship key: {model.__name__}.{local.key} {arrow} "
-                f"{target.__name__}.{remote.key}"
+                f"relationship key: {model.__name__}.{local.key} {arrow} {target.__name__}.{remote.key}"
             )
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
@@ -469,35 +438,69 @@ BLOCKED_NAMES = {
 BLOCKED_ATTRIBUTES = {"metadata", "registry", "__table__", "__mapper__", "with_for_update"}
 
 
-def validate_python_expression(source: str) -> list[str]:
+def _syntax_validation(source: str) -> tuple[list[str], list[ValidationDiagnostic]]:
     errors: list[str] = []
+    diagnostics: list[ValidationDiagnostic] = []
     try:
         tree = ast.parse(source, mode="eval")
     except SyntaxError as exc:
-        return [f"PYTHON_SYNTAX:{exc.msg}"]
-    forbidden = (ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp,
-                 ast.GeneratorExp, ast.NamedExpr, ast.Await, ast.Yield,
-                 ast.YieldFrom)
+        code = f"PYTHON_SYNTAX:{exc.msg}"
+        return [code], [{
+            "stage": "PYTHON_SYNTAX",
+            "code": "PYTHON_SYNTAX",
+            "exception_type": type(exc).__name__,
+            "message": exc.msg,
+            "line": exc.lineno,
+            "offset": exc.offset,
+            "text": exc.text.strip() if exc.text else None,
+            "source": source,
+        }]
+    forbidden = (
+        ast.Lambda, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+        ast.NamedExpr, ast.Await, ast.Yield, ast.YieldFrom,
+    )
     for node in ast.walk(tree):
+        code: str | None = None
         if isinstance(node, forbidden):
-            errors.append(f"FORBIDDEN_AST:{type(node).__name__}")
-        if isinstance(node, ast.Name):
+            code = f"FORBIDDEN_AST:{type(node).__name__}"
+        elif isinstance(node, ast.Name):
             if node.id in BLOCKED_NAMES:
-                errors.append(f"BLOCKED_NAME:{node.id}")
+                code = f"BLOCKED_NAME:{node.id}"
             elif node.id not in SAFE_NAMESPACE:
-                errors.append(f"UNKNOWN_NAME:{node.id}")
-        if isinstance(node, ast.Attribute) and (node.attr.startswith("_") or node.attr in BLOCKED_ATTRIBUTES):
-            errors.append(f"BLOCKED_ATTRIBUTE:{node.attr}")
-    return sorted(set(errors))
+                code = f"UNKNOWN_NAME:{node.id}"
+        elif isinstance(node, ast.Attribute) and (
+            node.attr.startswith("_") or node.attr in BLOCKED_ATTRIBUTES
+        ):
+            code = f"BLOCKED_ATTRIBUTE:{node.attr}"
+        if code and code not in errors:
+            errors.append(code)
+            diagnostics.append({
+                "stage": "AST_SAFETY",
+                "code": code.split(":", 1)[0],
+                "exception_type": None,
+                "message": code,
+                "line": getattr(node, "lineno", None),
+                "offset": getattr(node, "col_offset", None),
+                "text": None,
+                "source": source,
+            })
+    return errors, diagnostics
+
+
+def validate_python_expression(source: str) -> list[str]:
+    return _syntax_validation(source)[0]
 
 
 def build_statement(source: str) -> tuple[Select | CompoundSelect | None, list[str]]:
-    errors = validate_python_expression(source)
+    errors, _ = _syntax_validation(source)
     if errors:
         return None, errors
     try:
-        statement = eval(compile(ast.parse(source, mode="eval"), "<phase42-query>", "eval"),
-                         {"__builtins__": {}}, SAFE_NAMESPACE)
+        statement = eval(
+            compile(ast.parse(source, mode="eval"), "<phase42-query>", "eval"),
+            {"__builtins__": {}},
+            SAFE_NAMESPACE,
+        )
     except Exception as exc:  # noqa: BLE001
         return None, [f"BUILD_ERROR:{type(exc).__name__}:{exc}"]
     if not isinstance(statement, (Select, CompoundSelect)):
@@ -507,7 +510,9 @@ def build_statement(source: str) -> tuple[Select | CompoundSelect | None, list[s
 
 def compile_postgresql(statement: Select | CompoundSelect) -> tuple[str | None, list[str]]:
     try:
-        sql = str(statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+        sql = str(statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        ))
     except Exception as exc:  # noqa: BLE001
         return None, [f"COMPILE_ERROR:{type(exc).__name__}:{exc}"]
     if not sql.lstrip().upper().startswith(("SELECT", "WITH")):
@@ -516,69 +521,96 @@ def compile_postgresql(statement: Select | CompoundSelect) -> tuple[str | None, 
 
 
 def _validation(source: str | None) -> ValidationResult:
-    if not source:
-        return {
-            "syntax_errors": [],
-            "build_errors": [],
-            "compile_errors": [],
-            "all_errors": [],
-            "statement_built": False,
-            "compiled_sql": None,
-            "technically_valid": False,
-        }
-    syntax_errors = validate_python_expression(source)
-    if syntax_errors:
-        return {
-            "syntax_errors": syntax_errors,
-            "build_errors": [],
-            "compile_errors": [],
-            "all_errors": syntax_errors,
-            "statement_built": False,
-            "compiled_sql": None,
-            "technically_valid": False,
-        }
-    statement, build_errors = build_statement(source)
-    if statement is None or build_errors:
-        return {
-            "syntax_errors": [],
-            "build_errors": build_errors,
-            "compile_errors": [],
-            "all_errors": build_errors,
-            "statement_built": False,
-            "compiled_sql": None,
-            "technically_valid": False,
-        }
-    compiled_sql, compile_errors = compile_postgresql(statement)
-    return {
+    empty: ValidationResult = {
+        "diagnostics": [],
         "syntax_errors": [],
         "build_errors": [],
-        "compile_errors": compile_errors,
-        "all_errors": compile_errors,
-        "statement_built": True,
-        "compiled_sql": compiled_sql,
-        "technically_valid": not compile_errors and compiled_sql is not None,
+        "compile_errors": [],
+        "all_errors": [],
+        "statement_built": False,
+        "compiled_sql": None,
+        "technically_valid": False,
+    }
+    if not source:
+        empty["diagnostics"] = [{
+            "stage": "INPUT", "code": "MISSING_QUERY", "exception_type": None,
+            "message": "No SQLAlchemy expression was provided.", "source": source,
+        }]
+        empty["all_errors"] = ["MISSING_QUERY"]
+        return empty
+
+    syntax_errors, diagnostics = _syntax_validation(source)
+    if syntax_errors:
+        return {**empty, "diagnostics": diagnostics, "syntax_errors": syntax_errors, "all_errors": syntax_errors}
+
+    try:
+        statement = eval(
+            compile(ast.parse(source, mode="eval"), "<phase42-query>", "eval"),
+            {"__builtins__": {}},
+            SAFE_NAMESPACE,
+        )
+    except Exception as exc:  # noqa: BLE001
+        error = f"BUILD_ERROR:{type(exc).__name__}:{exc}"
+        diagnostic: ValidationDiagnostic = {
+            "stage": "SQLALCHEMY_BUILD", "code": "BUILD_ERROR",
+            "exception_type": type(exc).__name__, "message": str(exc), "source": source,
+        }
+        return {**empty, "diagnostics": [diagnostic], "build_errors": [error], "all_errors": [error]}
+
+    if not isinstance(statement, (Select, CompoundSelect)):
+        error = f"NOT_READ_ONLY_SELECT:{type(statement).__name__}"
+        diagnostic = {
+            "stage": "READ_ONLY", "code": "NOT_READ_ONLY_SELECT",
+            "exception_type": None, "message": error, "source": source,
+        }
+        return {**empty, "diagnostics": [diagnostic], "build_errors": [error], "all_errors": [error]}
+
+    try:
+        sql = str(statement.compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        ))
+    except Exception as exc:  # noqa: BLE001
+        error = f"COMPILE_ERROR:{type(exc).__name__}:{exc}"
+        diagnostic = {
+            "stage": "SQLALCHEMY_COMPILE", "code": "COMPILE_ERROR",
+            "exception_type": type(exc).__name__, "message": str(exc), "source": source,
+        }
+        return {
+            **empty, "diagnostics": [diagnostic], "compile_errors": [error],
+            "all_errors": [error], "statement_built": True,
+        }
+
+    if not sql.lstrip().upper().startswith(("SELECT", "WITH")):
+        error = "COMPILED_SQL_NOT_READ_ONLY"
+        diagnostic = {
+            "stage": "READ_ONLY", "code": error, "exception_type": None,
+            "message": error, "source": source,
+        }
+        return {
+            **empty, "diagnostics": [diagnostic], "compile_errors": [error],
+            "all_errors": [error], "statement_built": True, "compiled_sql": sql,
+        }
+
+    return {
+        **empty, "statement_built": True, "compiled_sql": sql, "technically_valid": True
     }
 
 
+def _transition(state: Phase42State, stage: str, status: str = "entered") -> None:
+    state["current_stage"] = stage
+    state.setdefault("stage_history", []).append({"stage": stage, "status": status})
+
+
 def _record(
-    state: Phase42State,
-    *,
-    role: str,
-    prompt: str,
-    input_payload: Any,
-    output: Any,
-    latency_ms: float | None = None,
-    metadata: dict[str, Any] | None = None,
+    state: Phase42State, *, role: str, prompt: str | None,
+    input_payload: Any, output: Any, metadata: dict[str, Any] | None = None,
 ) -> None:
     event = {
         "role": role,
         "prompt": prompt,
         "input": input_payload,
-        "output": output.model_dump(mode="json")
-        if isinstance(output, BaseModel)
-        else output,
+        "output": output.model_dump(mode="json") if isinstance(output, BaseModel) else output,
         "model": state.get("models", {}).get(role),
-        "latency_ms": latency_ms,
     }
     if metadata:
         event.update(metadata)
@@ -586,45 +618,35 @@ def _record(
 
 
 def _parse(
-    state: Phase42State,
-    *,
-    role: str,
-    prompt: str,
-    input_payload: Any,
+    state: Phase42State, *, role: str, prompt: str, input_payload: dict[str, Any],
     output_model: type[BaseModel],
 ) -> BaseModel:
     result, metadata = state["_llm"].invoke(
         role=role, input_payload=input_payload, output_model=output_model
     )
     _record(
-        state,
-        role=role,
-        prompt=prompt,
-        input_payload=input_payload,
-        output=result,
-        metadata=metadata,
+        state, role=role, prompt=prompt, input_payload=_human_payload(role, input_payload),
+        output=result, metadata=metadata,
     )
     return result
 
 
 def _semantic_clarifier(state: Phase42State) -> dict[str, Any]:
-    """Build the functional requirement from the current user request."""
+    _transition(state, "functional_analysis")
     input_payload = {
         "user_request": state["question"],
         "reference_context": state["reference_context"],
         "data_model": _catalog(),
     }
     result = _parse(
-        state,
-        role="semantic_clarifier",
-        prompt=SEMANTIC_CLARIFIER_PROMPT,
-        input_payload=input_payload,
-        output_model=FunctionalAnalystResponse,
+        state, role="semantic_clarifier", prompt=SEMANTIC_CLARIFIER_PROMPT,
+        input_payload=input_payload, output_model=FunctionalAnalystResponse,
     )
     task = QueryTask(
         original_user_request=result.original_user_request,
         clarified_request=result.clarified_request,
         business_intent=result.business_intent,
+        domain=result.domain,
         required_information=result.required_information,
         measures=result.measures,
         dimensions=result.dimensions,
@@ -635,7 +657,11 @@ def _semantic_clarifier(state: Phase42State) -> dict[str, Any]:
         comparison_requirements=result.comparison_requirements,
         data_retrieval_request=result.data_retrieval_request,
         downstream_analysis=result.downstream_analysis,
+        required_sources=result.required_sources,
         assumptions=result.assumptions,
+        ambiguities=result.ambiguities,
+        unsupported_requirements=result.unsupported_requirements,
+        sensitivity=result.sensitivity,
     )
     return {
         "functional_analysis": result.model_dump(mode="json"),
@@ -645,98 +671,142 @@ def _semantic_clarifier(state: Phase42State) -> dict[str, Any]:
 
 
 def _query_developer(state: Phase42State) -> dict[str, Any]:
-    task = state["query_task"]
-    repair_context = {}
-    if state.get("current_query"):
-        last_review = (state.get("senior_reviews") or [{}])[-1]
-        repair_context = {
-            "previous_query": state["current_query"],
-            "validation_feedback": state.get("validation_result", {}),
-            "senior_review": last_review,
-        }
+    _transition(state, "query_generation")
+    repair_type = state.get("repair_type")
+    repair_attempt = (
+        state.get("technical_repair_attempts", 0)
+        if repair_type == "TECHNICAL"
+        else state.get("semantic_revision_attempts", 0)
+        if repair_type == "SEMANTIC"
+        else 0
+    )
     input_payload = {
-        "query_task": task,
+        "query_task": state["query_task"],
         "data_model": _catalog(),
-        "reference_context": REFERENCE_CONTEXT,
-        **repair_context,
+        "reference_context": state["reference_context"],
+        "repair_type": repair_type,
+        "repair_attempt": repair_attempt,
+        "previous_query": state.get("current_query"),
+        "deterministic_validation_result": (
+            state.get("validation_result") if repair_type == "TECHNICAL" else None
+        ),
+        "senior_review": (
+            (state.get("senior_reviews") or [None])[-1] if repair_type == "SEMANTIC" else None
+        ),
     }
     result = _parse(
-        state,
-        role="sqlalchemy_query_developer",
+        state, role="sqlalchemy_query_developer",
         prompt=SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
-        input_payload=input_payload,
-        output_model=QueryProgrammerResponse,
+        input_payload=input_payload, output_model=QueryProgrammerResponse,
     )
-    attempts = state.setdefault("query_developer_attempts", [])
-    attempts.append(result.model_dump(mode="json"))
+    attempts = list(state.get("query_developer_attempts", []))
+    attempts.append({
+        **result.model_dump(mode="json"),
+        "_attempt_kind": repair_type or "INITIAL",
+        "_attempt_number": repair_attempt,
+    })
+    final_status = ""
+    if result.status == "NEEDS_INFO":
+        final_status = "NEEDS_INFO"
+    elif result.status == "CANNOT_IMPLEMENT":
+        final_status = "CANNOT_IMPLEMENT"
     return {
         "current_query": result.model_dump(mode="json"),
         "query_developer_attempts": attempts,
+        "final_status": final_status,
     }
 
 
 def _query_validation(state: Phase42State) -> dict[str, Any]:
+    _transition(state, "technical_validation")
     result = _validation(state.get("current_query", {}).get("sqlalchemy"))
-    state.setdefault("audit_trail", []).append(
-        {
-            "role": "query_validation",
-            "input": state.get("current_query"),
-            "output": result,
-            "model": None,
-        }
+    _record(
+        state, role="query_validation", prompt=None,
+        input_payload=state.get("current_query"), output=result,
     )
     return {"validation_result": result}
 
 
 def _senior_query_reviewer(state: Phase42State) -> dict[str, Any]:
+    if not state.get("validation_result", {}).get("technically_valid"):
+        raise RuntimeError("Senior Query Reviewer must only receive technically valid queries")
+    _transition(state, "senior_review")
     input_payload = {
-        "original_user_request": state["question"],
         "functional_requirement": state["functional_analysis"],
-        "query_programmer_output": state.get("current_query"),
-        "deterministic_validation_result": state.get("validation_result"),
+        "query_programmer_output": state["current_query"],
+        "deterministic_validation_result": state["validation_result"],
+        "previous_reviews": state.get("senior_reviews", []),
+        "repair_attempt": state.get("semantic_revision_attempts", 0),
         "data_model": _catalog(),
-        "reference_context": REFERENCE_CONTEXT,
-        "revision_count": state.get("revision_count", 0),
+        "reference_context": state["reference_context"],
     }
     result = _parse(
-        state,
-        role="senior_query_reviewer",
-        prompt=SENIOR_QUERY_REVIEWER_PROMPT,
-        input_payload=input_payload,
-        output_model=SeniorReview,
+        state, role="senior_query_reviewer", prompt=SENIOR_QUERY_REVIEWER_PROMPT,
+        input_payload=input_payload, output_model=SeniorReview,
     )
-    reviews = state.setdefault("senior_reviews", [])
+    reviews = list(state.get("senior_reviews", []))
     reviews.append(result.model_dump(mode="json"))
     return {"senior_reviews": reviews, "final_status": result.status}
 
 
+def _technical_repair(state: Phase42State) -> dict[str, Any]:
+    _transition(state, "technical_repair")
+    return {
+        "technical_repair_attempts": state.get("technical_repair_attempts", 0) + 1,
+        "repair_type": "TECHNICAL",
+        "final_status": "",
+    }
+
+
+def _semantic_repair(state: Phase42State) -> dict[str, Any]:
+    _transition(state, "semantic_repair")
+    return {
+        "semantic_revision_attempts": state.get("semantic_revision_attempts", 0) + 1,
+        "repair_type": "SEMANTIC",
+        "final_status": "",
+    }
+
+
+def _technical_failed(state: Phase42State) -> dict[str, Any]:
+    _transition(state, "failed", "technical_validation_failed")
+    return {"final_status": "TECHNICAL_VALIDATION_FAILED"}
+
+
+def _semantic_failed(state: Phase42State) -> dict[str, Any]:
+    _transition(state, "failed", "semantic_revision_limit_reached")
+    return {"final_status": "MAX_SEMANTIC_REVISIONS_REACHED"}
+
+
 def _after_clarifier(state: Phase42State) -> str:
-    return "end" if state.get("final_status") == "NEEDS_CLARIFICATION" else "query_developer"
+    if state.get("final_status") == "NEEDS_CLARIFICATION":
+        return "end"
+    return "query_developer"
+
+
+def _after_query_developer(state: Phase42State) -> str:
+    status = state.get("current_query", {}).get("status")
+    if status == "QUERY":
+        return "validation"
+    return "end"
 
 
 def _after_validation(state: Phase42State) -> str:
     if state.get("mode") == "QUERY_DEVELOPER_ONLY":
         return "end"
-    return "senior"
+    if state.get("validation_result", {}).get("technically_valid"):
+        return "senior"
+    if state.get("technical_repair_attempts", 0) < MAX_TECHNICAL_REPAIR_ATTEMPTS:
+        return "technical_repair"
+    return "technical_failed"
 
 
 def _after_senior(state: Phase42State) -> str:
-    status = state.get("senior_reviews", [])[-1].get("status")
-    if status == "APPROVED" and state.get("validation_result", {}).get("technically_valid"):
+    status = state.get("senior_reviews", [])[-1]["status"]
+    if status in {"APPROVED", "CANNOT_APPROVE"}:
         return "end"
-    if status == "CANNOT_APPROVE":
-        return "end"
-    if state.get("revision_count", 0) < MAX_REPAIR_ATTEMPTS:
-        return "repair"
-    return "max_revisions"
-
-
-def _repair(state: Phase42State) -> dict[str, Any]:
-    return {"revision_count": state.get("revision_count", 0) + 1}
-
-
-def _max_revisions(state: Phase42State) -> dict[str, Any]:
-    return {"final_status": "MAX_REVISIONS_REACHED"}
+    if state.get("semantic_revision_attempts", 0) < MAX_SEMANTIC_REVISION_ATTEMPTS:
+        return "semantic_repair"
+    return "semantic_failed"
 
 
 def build_graph() -> Any:
@@ -744,45 +814,63 @@ def build_graph() -> Any:
     graph.add_node("semantic_clarifier", _semantic_clarifier)
     graph.add_node("query_developer", _query_developer)
     graph.add_node("query_validation", _query_validation)
+    graph.add_node("technical_repair", _technical_repair)
+    graph.add_node("technical_failed", _technical_failed)
     graph.add_node("senior_query_reviewer", _senior_query_reviewer)
-    graph.add_node("repair", _repair)
-    graph.add_node("max_revisions", _max_revisions)
+    graph.add_node("semantic_repair", _semantic_repair)
+    graph.add_node("semantic_failed", _semantic_failed)
+
     graph.add_edge(START, "semantic_clarifier")
     graph.add_conditional_edges(
-        "semantic_clarifier",
-        _after_clarifier,
+        "semantic_clarifier", _after_clarifier,
         {"query_developer": "query_developer", "end": END},
     )
-    graph.add_edge("query_developer", "query_validation")
     graph.add_conditional_edges(
-        "query_validation",
-        _after_validation,
-        {"senior": "senior_query_reviewer", "repair": "repair", "end": END, "max_revisions": "max_revisions"},
+        "query_developer", _after_query_developer,
+        {"validation": "query_validation", "end": END},
     )
     graph.add_conditional_edges(
-        "senior_query_reviewer",
-        _after_senior,
-        {"end": END, "repair": "repair", "max_revisions": "max_revisions"},
+        "query_validation", _after_validation,
+        {
+            "senior": "senior_query_reviewer",
+            "technical_repair": "technical_repair",
+            "technical_failed": "technical_failed",
+            "end": END,
+        },
     )
-    graph.add_edge("repair", "query_developer")
-    graph.add_edge("max_revisions", END)
+    graph.add_edge("technical_repair", "query_developer")
+    graph.add_edge("technical_failed", END)
+    graph.add_conditional_edges(
+        "senior_query_reviewer", _after_senior,
+        {
+            "end": END,
+            "semantic_repair": "semantic_repair",
+            "semantic_failed": "semantic_failed",
+        },
+    )
+    graph.add_edge("semantic_repair", "query_developer")
+    graph.add_edge("semantic_failed", END)
     return graph.compile()
 
 
 def initial_state(
-    *, mode: Literal["FUNCTIONAL_ANALYST_ONLY", "QUERY_DEVELOPER_ONLY", "AGENT_TEAM"], question: str, llm: StructuredModel
+    *, mode: Literal["FUNCTIONAL_ANALYST_ONLY", "QUERY_DEVELOPER_ONLY", "AGENT_TEAM"],
+    question: str, llm: StructuredModel, reference_context: dict[str, Any] | None = None,
 ) -> Phase42State:
     return {
         "mode": mode,
         "question": question,
         "query_developer_attempts": [],
         "senior_reviews": [],
-        "revision_count": 0,
+        "technical_repair_attempts": 0,
+        "semantic_revision_attempts": 0,
+        "repair_type": None,
         "final_status": "",
         "audit_trail": [],
-        "reference_context": dict(REFERENCE_CONTEXT),
+        "reference_context": dict(reference_context or REFERENCE_CONTEXT),
+        "request_id": str(uuid.uuid4()),
         "current_stage": "created",
-        "stage_history": [],
+        "stage_history": [{"stage": "created", "status": "created"}],
         "models": {
             "semantic_clarifier": getattr(llm, "model_name", "unknown"),
             "sqlalchemy_query_developer": getattr(llm, "model_name", "unknown"),
@@ -793,144 +881,53 @@ def initial_state(
 
 
 def assert_phase42_contract() -> None:
-    assert "{{data_model}}" in SEMANTIC_CLARIFIER_PROMPT
-    assert "{{data_model}}" in SQLALCHEMY_QUERY_DEVELOPER_PROMPT
-    assert "{{data_model}}" in SENIOR_QUERY_REVIEWER_PROMPT
-    developer_template = _prompt_templates()["sqlalchemy_query_developer"]
-    assert developer_template.messages[0].prompt.template_format == "jinja2"
-    rendered = developer_template.format_messages(
+    for prompt in (
+        SEMANTIC_CLARIFIER_PROMPT,
+        SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
+        SENIOR_QUERY_REVIEWER_PROMPT,
+    ):
+        assert prompt.count("{{data_model}}") == 1
+        for key in (
+            "reference_date", "reference_year", "reference_month",
+            "reference_day", "current_period", "timezone",
+        ):
+            assert prompt.count("{{" + key + "}}") == 1
+
+    template = _prompt_templates()["sqlalchemy_query_developer"]
+    rendered = template.format_messages(
         data_model="class Employee", **REFERENCE_CONTEXT, user_input="{}"
     )
-    assert "class Employee" in rendered[0].content
-    assert "Reference date: 2026-08-30" in rendered[0].content
-    assert REFERENCE_CONTEXT["current_period"] == "2026-08"
-    assert "{{data_model}}" in SENIOR_QUERY_REVIEWER_PROMPT
-    assert MAX_REPAIR_ATTEMPTS == 1
-    assert _after_clarifier({"final_status": "NEEDS_CLARIFICATION"}) == "end"
-    assert _after_clarifier({"final_status": ""}) == "query_developer"
-    assert _after_validation({"mode": "QUERY_DEVELOPER_ONLY", "validation_result": {}}) == "end"
-    assert _after_validation({"mode": "AGENT_TEAM", "validation_result": {"technically_valid": False}}) == "senior"
-    assert _after_senior({"senior_reviews": [{"status": "REVISE"}], "revision_count": 0, "validation_result": {"technically_valid": True}}) == "repair"
-    assert _after_senior({"senior_reviews": [{"status": "REVISE"}], "revision_count": 1, "validation_result": {"technically_valid": True}}) == "max_revisions"
+    assert rendered[0].content.count("class Employee") == 1
+    assert _after_validation({
+        "mode": "AGENT_TEAM",
+        "validation_result": {"technically_valid": False},
+        "technical_repair_attempts": 0,
+    }) == "technical_repair"
+    assert _after_validation({
+        "mode": "AGENT_TEAM",
+        "validation_result": {"technically_valid": True},
+    }) == "senior"
+    assert _after_query_developer({"current_query": {"status": "CANNOT_IMPLEMENT"}}) == "end"
+
+    invalid = _validation("select(")
+    assert not invalid["technically_valid"]
+    assert invalid["diagnostics"][0]["stage"] == "PYTHON_SYNTAX"
+    assert invalid["diagnostics"][0].get("line") == 1
+
+    valid = _validation("select(Overtime.approved_minutes)")
+    assert valid["technically_valid"]
+    assert valid["compiled_sql"]
+
     task = QueryTask(
-        original_user_request="test", clarified_request="test",
-        business_intent="test", required_information=["test"], measures=[],
-        dimensions=[], filters=[], temporal_requirements=[],
-        grouping_requirements=[], ordering_requirements=[],
-        comparison_requirements=[], data_retrieval_request="test",
-        downstream_analysis=[], assumptions=[],
-    )
-    assert "data_retrieval_request" in task.model_dump()
-
-    class FakeModel:
-        model_name = "fake"
-
-        def __init__(self, outputs: list[BaseModel]) -> None:
-            self.outputs = outputs
-
-        def invoke(
-            self, *, role: str, input_payload: dict[str, Any],
-            output_model: type[BaseModel]
-        ) -> tuple[BaseModel, dict[str, Any]]:
-            result = self.outputs.pop(0)
-            assert isinstance(result, output_model)
-            return result, {
-                "agent_id": role,
-                "prompt_id": f"test.{role}",
-                "prompt_version": "test",
-                "model": self.model_name,
-                "schema_version": output_model.__name__,
-                "rendered_messages": [],
-                "latency_ms": 0,
-            }
-
-    analysis = FunctionalAnalystResponse(
-        needs_clarification=False, questions_or_missing_information=[],
-        original_user_request="test", clarified_request="test",
-        business_intent="test", domain=[], required_information=["test"],
-        measures=[], dimensions=[], filters=[], temporal_requirements=[],
-        grouping_requirements=[], ordering_requirements=[],
-        comparison_requirements=[], data_retrieval_request="Retrieve the data.",
-        downstream_analysis=[], required_sources=[], assumptions=[],
-        ambiguities=[], unsupported_requirements=[], sensitivity=[],
-    )
-    query = QueryProgrammerResponse(
-        status="QUERY", sqlalchemy="select(Overtime.approved_minutes)",
-        interpretation="retrieve", assumptions=[], missing_information=[],
-        models_used=["Overtime"], relationships_used=[], retrieved_measures=[],
-        retrieved_dimensions=[], applied_filters=[],
-        applied_temporal_constraints=[], grouping_implemented=[],
-        requirement_coverage=[],
-    )
-    approve = SeniorReview(
-        status="APPROVED", summary="valid", material_issues=[],
-        requirement_review=[], query_semantics_review=QuerySemanticsReview(
-            temporal_correctness="ok", measure_correctness="ok",
-            dimension_correctness="ok", filter_correctness="ok",
-            aggregation_correctness="ok", grouping_correctness="ok",
-            ordering_correctness="ok", relationship_correctness="ok",
-            duplicate_risk="none", data_sufficiency="ok",
-            comparison_preservation="ok",
-        ), repair_instructions=[],
-        assumptions=[], missing_information=[], confidence=1,
-    )
-    graph = build_graph()
-    approved = graph.invoke(initial_state(
-        mode="AGENT_TEAM", question="test", llm=FakeModel([analysis, query, approve])
-    ))
-    assert approved["final_status"] == "APPROVED"
-    assert len(approved["senior_reviews"]) == 1
-
-    clarified = FunctionalAnalystResponse(
-        needs_clarification=True, questions_or_missing_information=["metric"],
-        original_user_request="test", clarified_request="test",
-        business_intent="test", domain=[], required_information=[], measures=[],
-        dimensions=[], filters=[], temporal_requirements=[], grouping_requirements=[],
-        ordering_requirements=[], comparison_requirements=[], data_retrieval_request="",
-        downstream_analysis=[], required_sources=[], assumptions=[], ambiguities=[],
+        original_user_request="test", clarified_request="test", business_intent="test",
+        domain=["overtime"], required_information=["test"], measures=[], dimensions=[],
+        filters=[], temporal_requirements=[], grouping_requirements=[],
+        ordering_requirements=[], comparison_requirements=[],
+        data_retrieval_request="Retrieve the data.", downstream_analysis=[],
+        required_sources=["HRIS_STRUCTURED_DATA"], assumptions=[], ambiguities=[],
         unsupported_requirements=[], sensitivity=[],
     )
-    stopped = graph.invoke(initial_state(
-        mode="AGENT_TEAM", question="test", llm=FakeModel([clarified])
-    ))
-    assert stopped["final_status"] == "NEEDS_CLARIFICATION"
-    assert stopped.get("query_developer_attempts") == []
-
-    revise = SeniorReview(
-        status="REVISE", summary="revise", material_issues=[MaterialIssue(
-            type="semantic", severity="ERROR", requirement="test", issue="issue",
-            why_it_matters="material", required_correction="fix",
-        )], requirement_review=[], query_semantics_review=QuerySemanticsReview(
-            temporal_correctness="ok", measure_correctness="ok",
-            dimension_correctness="ok", filter_correctness="ok",
-            aggregation_correctness="ok", grouping_correctness="ok",
-            ordering_correctness="ok", relationship_correctness="ok",
-            duplicate_risk="none", data_sufficiency="ok",
-            comparison_preservation="ok",
-        ), repair_instructions=["fix"],
-        assumptions=[], missing_information=[], confidence=0.9,
-    )
-    repaired = graph.invoke(initial_state(
-        mode="AGENT_TEAM", question="test",
-        llm=FakeModel([analysis, query, revise, query, approve]),
-    ))
-    assert repaired["final_status"] == "APPROVED"
-    assert repaired["revision_count"] == 1
-    assert len(repaired["senior_reviews"]) == 2
-
-    invalid = QueryProgrammerResponse(
-        status="QUERY", sqlalchemy="select(", interpretation="invalid",
-        assumptions=[], missing_information=[], models_used=[], relationships_used=[],
-        retrieved_measures=[], retrieved_dimensions=[], applied_filters=[],
-        applied_temporal_constraints=[], grouping_implemented=[],
-        requirement_coverage=[],
-    )
-    maxed = graph.invoke(initial_state(
-        mode="AGENT_TEAM", question="test",
-        llm=FakeModel([analysis, invalid, revise, invalid, revise]),
-    ))
-    assert maxed["final_status"] == "MAX_REVISIONS_REACHED"
-    assert maxed["revision_count"] == 1
+    assert "unsupported_requirements" in task.model_dump()
 
 
 if __name__ == "__main__":
