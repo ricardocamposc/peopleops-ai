@@ -263,6 +263,9 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                 })
                 continue
 
+            early_termination_pending = False
+            accepted_result: phase42.QueryProgrammerResponse | None = None
+
             for call in calls:
                 tool_calls_total += 1
                 name = call["name"]
@@ -306,17 +309,7 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                         and not result.get("valid")
                         and valid_candidate is None
                     ):
-                        termination_reason = "VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE"
-                        interactions.append({
-                            "round": round_number,
-                            "kind": "EARLY_TERMINATION",
-                            "reason": termination_reason,
-                        })
-                        fallback = _technical_generation_fallback(
-                            "Query Programmer exhausted the candidate-validation budget "
-                            "without producing a technically valid candidate."
-                        )
-                        return fallback, metadata(technical_generation_failed=True)
+                        early_termination_pending = True
                     continue
 
                 if name == "SubmitQueryProgrammerResult":
@@ -395,7 +388,8 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                         "status": result.status,
                     })
                     messages.append(_tool_message(call_id, {"accepted": True}))
-                    return result, metadata()
+                    accepted_result = result
+                    continue
 
                 submission_rejections += 1
                 feedback = {
@@ -409,6 +403,26 @@ class LangChainToolCallingRuntime(phase42.LangChainAgentRuntime):
                     "tool": name,
                 })
                 messages.append(_tool_message(call_id, feedback))
+
+            # OpenAI requires every tool_call in one assistant message to receive a
+            # matching ToolMessage before the conversation can continue or terminate.
+            # We therefore defer both successful submission and early termination until
+            # every call emitted in this model round has been answered.
+            if accepted_result is not None:
+                return accepted_result, metadata()
+
+            if early_termination_pending and valid_candidate is None:
+                termination_reason = "VALIDATION_BUDGET_EXHAUSTED_WITHOUT_VALID_CANDIDATE"
+                interactions.append({
+                    "round": round_number,
+                    "kind": "EARLY_TERMINATION",
+                    "reason": termination_reason,
+                })
+                fallback = _technical_generation_fallback(
+                    "Query Programmer exhausted the candidate-validation budget "
+                    "without producing a technically valid candidate."
+                )
+                return fallback, metadata(technical_generation_failed=True)
 
         termination_reason = "AGENT_TOOL_ROUND_BUDGET_EXHAUSTED"
         fallback = _technical_generation_fallback(
