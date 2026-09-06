@@ -59,6 +59,38 @@ The human payload continues to contain typed artifacts only:
 
 This experiment intentionally does not redesign context sharing yet. Prompt specialization is isolated first so its effect can be measured independently.
 
+## Routing contract
+
+The Query Programmer remains one logical agent. The workflow selects one skill per LLM invocation:
+
+- initial generation -> `GENERATE`;
+- internal deterministic self-repair -> `TECHNICAL_REPAIR`;
+- outer deterministic repair -> `TECHNICAL_REPAIR`;
+- Senior-requested revision -> `SEMANTIC_REPAIR`.
+
+Unknown repair types fail fast instead of silently falling back to generation.
+
+## Invocation audit
+
+Every Query Programmer LLM invocation is recorded independently so a run can be reconstructed without inferring which prompt produced a candidate.
+
+The audit metadata records:
+
+- invocation sequence;
+- `agent_id`;
+- selected skill;
+- prompt id and version;
+- model;
+- output schema;
+- repair type and attempt;
+- latency;
+- relevant typed input artifacts;
+- output status.
+
+Internal generation/repair iterations are also annotated with the skill, prompt id/version, model, and LLM latency that produced the corresponding candidate.
+
+This is required for the experiment because a single outer Query Programmer call may contain an initial `GENERATE` invocation followed by one or more `TECHNICAL_REPAIR` invocations.
+
 ## Runner
 
 Use:
@@ -73,6 +105,19 @@ Example:
 
 The generated manifest records hashes for all three Query Programmer skill prompts.
 
+## Pre-baseline verification
+
+Before running the controlled baseline:
+
+1. run the Phase 4.2 skill-routing tests;
+2. run the existing Phase 4.2/Phase 4.3 deterministic/tooling tests;
+3. run the repository unit-test suite;
+4. run a small team-mode smoke experiment;
+5. inspect at least one case that exercises internal technical repair and confirm the invocation audit shows `GENERATE -> TECHNICAL_REPAIR`;
+6. inspect at least one Senior revision, when present, and confirm the invocation audit records `SEMANTIC_REPAIR`.
+
+Do not change the dataset, model configuration, validation logic, Senior Review logic, or repair budgets while measuring the prompt-skill hypothesis.
+
 ## Evaluation intent
 
 This variant should be compared against the existing Phase 4.2 runner using the same cases and model configuration.
@@ -85,7 +130,7 @@ Primary comparison dimensions:
 - Senior first-pass approval;
 - final semantic approval;
 - number of LLM calls/repair attempts;
-- latency;
+- per-skill invocation counts and latency;
 - failure category.
 
 The immediate purpose is not to maximize the score. It is to determine whether separating Query Programmer skills improves reliability without adding more agentic complexity.
