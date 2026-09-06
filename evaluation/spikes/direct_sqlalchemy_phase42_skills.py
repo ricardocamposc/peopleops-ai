@@ -13,6 +13,7 @@ without introducing a new phase or changing the surrounding workflow.
 from __future__ import annotations
 
 import time
+from contextvars import ContextVar
 from importlib.resources import files as resource_files
 from typing import Any
 
@@ -51,14 +52,20 @@ QUERY_PROGRAMMER_SKILLS = {
     },
 }
 
+_QUERY_PROGRAMMER_INVOCATION_TRACE: ContextVar[list[dict[str, Any]] | None] = (
+    ContextVar("phase42_query_programmer_invocation_trace", default=None)
+)
+
 
 def select_query_programmer_skill(repair_type: str | None) -> str:
-    """Map workflow state to one focused Query Programmer skill."""
-    if repair_type == "SEMANTIC":
-        return "SEMANTIC_REPAIR"
+    """Map a known workflow repair type to one focused Query Programmer skill."""
+    if repair_type is None:
+        return "GENERATE"
     if repair_type in {"TECHNICAL", "INTERNAL_SELF_REPAIR"}:
         return "TECHNICAL_REPAIR"
-    return "GENERATE"
+    if repair_type == "SEMANTIC":
+        return "SEMANTIC_REPAIR"
+    raise ValueError(f"Unsupported Query Programmer repair_type: {repair_type!r}")
 
 
 def _skill_templates() -> dict[str, ChatPromptTemplate]:
@@ -69,6 +76,23 @@ def _skill_templates() -> dict[str, ChatPromptTemplate]:
         )
         for skill, spec in QUERY_PROGRAMMER_SKILLS.items()
     }
+
+
+def _relevant_input_artifacts(human_payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep the artifacts needed to explain/reproduce one programmer invocation."""
+    keys = (
+        "functional_requirement",
+        "previous_query",
+        "deterministic_validation_result",
+        "senior_review",
+        "internal_tool_results",
+    )
+    artifacts: dict[str, Any] = {}
+    for key in keys:
+        value = human_payload.get(key)
+        if value not in (None, [], {}):
+            artifacts[key] = value
+    return artifacts
 
 
 class SkillPromptRuntime(phase42.LangChainAgentRuntime):
@@ -100,10 +124,9 @@ class SkillPromptRuntime(phase42.LangChainAgentRuntime):
         started = time.perf_counter()
         chain = template | self.models[role].with_structured_output(output_model)
         result = chain.invoke(variables)
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
 
-        # `prompt` intentionally overrides the legacy prompt argument recorded by
-        # phase42._record so the audit artifact contains the actual skill prompt.
-        return result, {
+        metadata = {
             "agent_id": role,
             "prompt": skill_spec["prompt"],
             "prompt_id": skill_spec["prompt_id"],
@@ -115,14 +138,74 @@ class SkillPromptRuntime(phase42.LangChainAgentRuntime):
                 {"role": message.type, "content": message.content}
                 for message in rendered
             ],
-            "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+            "latency_ms": latency_ms,
             "rendered_system_prompt": rendered[0].content,
+        }
+
+        trace = _QUERY_PROGRAMMER_INVOCATION_TRACE.get()
+        if trace is not None:
+            trace.append(
+                {
+                    "sequence": len(trace) + 1,
+                    "agent_id": role,
+                    "skill": skill,
+                    "prompt_id": skill_spec["prompt_id"],
+                    "prompt_version": skill_spec["prompt_version"],
+                    "model": self.model_config[role],
+                    "schema_version": output_model.__name__,
+                    "repair_type": input_payload.get("repair_type"),
+                    "repair_attempt": input_payload.get("repair_attempt", 0),
+                    "latency_ms": latency_ms,
+                    "input_artifacts": _relevant_input_artifacts(human_payload),
+                    "output_status": getattr(result, "status", None),
+                }
+            )
+
+        # `prompt` intentionally overrides the legacy prompt argument recorded by
+        # phase42._record so the audit artifact contains the actual skill prompt.
+        return result, metadata
+
+    def invoke_query_programmer(
+        self, *, input_payload: dict[str, Any], output_model: type[BaseModel]
+    ) -> tuple[BaseModel, dict[str, Any]]:
+        """Run the inherited Phase 4.2 loop and retain metadata for every LLM call."""
+        token = _QUERY_PROGRAMMER_INVOCATION_TRACE.set([])
+        try:
+            result, metadata = super().invoke_query_programmer(
+                input_payload=input_payload,
+                output_model=output_model,
+            )
+            invocation_trace = list(_QUERY_PROGRAMMER_INVOCATION_TRACE.get() or [])
+        finally:
+            _QUERY_PROGRAMMER_INVOCATION_TRACE.reset(token)
+
+        enriched_iterations: list[dict[str, Any]] = []
+        for index, iteration in enumerate(metadata.get("internal_iterations", [])):
+            enriched = dict(iteration)
+            if index < len(invocation_trace):
+                invocation = invocation_trace[index]
+                enriched.update(
+                    {
+                        "prompt_skill": invocation["skill"],
+                        "prompt_id": invocation["prompt_id"],
+                        "prompt_version": invocation["prompt_version"],
+                        "model": invocation["model"],
+                        "llm_latency_ms": invocation["latency_ms"],
+                    }
+                )
+            enriched_iterations.append(enriched)
+
+        return result, {
+            **metadata,
+            "query_programmer_invocation_count": len(invocation_trace),
+            "query_programmer_invocations": invocation_trace,
+            "internal_iterations": enriched_iterations,
         }
 
 
 # Re-export the existing Phase 4.2 graph/state helpers. The graph calls the
-# runtime polymorphically, so inherited invoke_query_programmer() automatically
-# uses GENERATE / TECHNICAL_REPAIR / SEMANTIC_REPAIR at the proper stages.
+# runtime polymorphically, so inherited workflow logic uses
+# GENERATE / TECHNICAL_REPAIR / SEMANTIC_REPAIR at the proper stages.
 build_graph = phase42.build_graph
 initial_state = phase42.initial_state
 assert_phase42_contract = phase42.assert_phase42_contract
