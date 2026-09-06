@@ -39,7 +39,7 @@ line-length = 100
 target-version = "py311"
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "../reference-mcp-server/src"]
+pythonpath = ["src", "../reference-mcp-server/src", "../../evaluation/spikes"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0"]
