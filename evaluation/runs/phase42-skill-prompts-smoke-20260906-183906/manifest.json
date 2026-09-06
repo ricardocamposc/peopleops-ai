@@ -1,0 +1,45 @@
+{
+  "runner_version": "direct-sqlalchemy-phase42-skill-prompts-v1",
+  "dataset_version": "phase42-v1",
+  "dataset_path": "/Users/ricardocamposc/Projects/peopleops-ai/evaluation/spikes/direct_sqlalchemy_phase42_cases.jsonl",
+  "dataset_sha256": "072e75435fb7a561f855f973f67729218873e63b44a56c5b83a2a4219464cb4b",
+  "git_commit_sha": "010679e255ee1b59e520e025d99c8e11a40de4a0",
+  "prompt_sha256": {
+    "functional_analyst": "ebbef821cb9d2686fc6a5b89b27ebb6c8561727033f09d7ba949492073a2a528",
+    "query_programmer": "120fd1cd461e21fafb30e847365e89aa6c3aa1351b99df1220d983be743f1b9b",
+    "senior_query_reviewer": "e6a3dc41acca34f748a78e01b899b64a384c71e251617b199be3ad0828f1ec19",
+    "query_programmer_generate": "120fd1cd461e21fafb30e847365e89aa6c3aa1351b99df1220d983be743f1b9b",
+    "query_programmer_technical_repair": "f46ae81fc16408ba7dfebff6e28ebc6eac780c997991be53971b598c42e88163",
+    "query_programmer_semantic_repair": "c2759a835562c82ecdc24d3c5935b0d39e7fe0a5bd9ec0fe4203e26d3af0e9fb"
+  },
+  "model_by_role": {
+    "semantic_clarifier": "gpt-4o-mini",
+    "sqlalchemy_query_developer": "gpt-4o-mini",
+    "senior_query_reviewer": "gpt-4o-mini"
+  },
+  "cases": 5,
+  "repetitions": 1,
+  "mode": "team",
+  "resumed_from_functional_analysis": null,
+  "selected_case_ids": [
+    "P42-001",
+    "P42-002",
+    "P42-003",
+    "P42-004",
+    "P42-005"
+  ],
+  "source_date": "2026-08-30",
+  "timezone": "UTC",
+  "llm_retries": 0,
+  "mcp": false,
+  "database_execution": false,
+  "max_technical_repair_attempts": 2,
+  "max_semantic_revision_attempts": 1,
+  "pipeline": "functional analyst -> query programmer -> deterministic validation -> technical repair if invalid -> senior review if valid -> semantic repair",
+  "query_programmer_prompt_strategy": "skill_specific",
+  "query_programmer_skills": [
+    "GENERATE",
+    "TECHNICAL_REPAIR",
+    "SEMANTIC_REPAIR"
+  ]
+}

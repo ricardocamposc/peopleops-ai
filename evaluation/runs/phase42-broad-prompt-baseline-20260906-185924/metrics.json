@@ -1,0 +1,145 @@
+{
+  "runner_version": "direct-sqlalchemy-phase42-v2",
+  "dataset_version": "phase42-v1",
+  "cases": 36,
+  "repetitions": 1,
+  "executions": 72,
+  "functional_analyst_only": null,
+  "query_developer_only": {
+    "runner_version": "direct-sqlalchemy-phase42-v2",
+    "mode": "QUERY_DEVELOPER_ONLY",
+    "cases": 36,
+    "workflow_completion": 36,
+    "semantic_clarifier_calls": 36,
+    "query_generation": {
+      "count": 30,
+      "rate": 0.8333
+    },
+    "first_pass_technical_validity": {
+      "count": 22,
+      "rate": 0.7333
+    },
+    "technical_repair": {
+      "attempted_cases": 0,
+      "successful_cases": 0,
+      "success_rate": 0.0
+    },
+    "external_technical_repair_attempts": 0,
+    "external_technical_repair_success": 0,
+    "internal_tool_calls": 99,
+    "internal_candidates_generated": 53,
+    "internal_candidates_changed": 10,
+    "internal_candidates_unchanged": 9,
+    "syntax_short_circuits": 21,
+    "build_short_circuits": 6,
+    "compile_attempts": 22,
+    "tool_calls_avoided_by_short_circuit": 48,
+    "internal_validation_attempts": 47,
+    "internal_self_repair": {
+      "attempted": 19,
+      "successful": 1
+    },
+    "candidate_valid_before_external_validator": 22,
+    "external_validator_pass_after_internal_validation": 22,
+    "senior_review": {
+      "reviewed_cases": 0,
+      "first_pass_approved": 0,
+      "first_pass_approval_rate": 0.0,
+      "revision_requested_cases": 0,
+      "previous_issues_resolved": 0,
+      "previous_issues_unresolved": 0
+    },
+    "semantic_repair": {
+      "attempted_cases": 0,
+      "successful_cases": 0,
+      "success_rate": 0.0
+    },
+    "final": {
+      "technical_valid": 22,
+      "technical_validity_rate": 0.7333,
+      "semantic_approved": 0,
+      "semantic_approval_rate": 0.0,
+      "needs_clarification": 2,
+      "needs_info": 0,
+      "cannot_implement": 4,
+      "technical_validation_failed": 0,
+      "max_semantic_revisions_reached": 0
+    },
+    "validation_error_codes": {
+      "PYTHON_SYNTAX": 6,
+      "BUILD_ERROR": 2
+    },
+    "latency_ms": {
+      "average_case": 6623.82
+    }
+  },
+  "agent_team": {
+    "runner_version": "direct-sqlalchemy-phase42-v2",
+    "mode": "AGENT_TEAM",
+    "cases": 36,
+    "workflow_completion": 36,
+    "semantic_clarifier_calls": 36,
+    "query_generation": {
+      "count": 31,
+      "rate": 0.8611
+    },
+    "first_pass_technical_validity": {
+      "count": 23,
+      "rate": 0.7419
+    },
+    "technical_repair": {
+      "attempted_cases": 10,
+      "successful_cases": 0,
+      "success_rate": 0.0
+    },
+    "external_technical_repair_attempts": 10,
+    "external_technical_repair_success": 0,
+    "internal_tool_calls": 195,
+    "internal_candidates_generated": 126,
+    "internal_candidates_changed": 21,
+    "internal_candidates_unchanged": 41,
+    "syntax_short_circuits": 82,
+    "build_short_circuits": 10,
+    "compile_attempts": 31,
+    "tool_calls_avoided_by_short_circuit": 174,
+    "internal_validation_attempts": 123,
+    "internal_self_repair": {
+      "attempted": 62,
+      "successful": 2
+    },
+    "candidate_valid_before_external_validator": 21,
+    "external_validator_pass_after_internal_validation": 21,
+    "senior_review": {
+      "reviewed_cases": 23,
+      "first_pass_approved": 13,
+      "first_pass_approval_rate": 0.5652,
+      "revision_requested_cases": 10,
+      "previous_issues_resolved": 0,
+      "previous_issues_unresolved": 0
+    },
+    "semantic_repair": {
+      "attempted_cases": 10,
+      "successful_cases": 0,
+      "success_rate": 0.0
+    },
+    "final": {
+      "technical_valid": 21,
+      "technical_validity_rate": 0.6774,
+      "semantic_approved": 13,
+      "semantic_approval_rate": 0.5652,
+      "needs_clarification": 2,
+      "needs_info": 0,
+      "cannot_implement": 3,
+      "technical_validation_failed": 10,
+      "max_semantic_revisions_reached": 8
+    },
+    "validation_error_codes": {
+      "PYTHON_SYNTAX": 8,
+      "UNKNOWN_NAME": 1,
+      "BUILD_ERROR": 1
+    },
+    "latency_ms": {
+      "average_case": 15763.29
+    }
+  }
+}
