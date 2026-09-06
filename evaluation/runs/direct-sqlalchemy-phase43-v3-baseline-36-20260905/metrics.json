@@ -1,0 +1,88 @@
+{
+  "runner_version": "direct-sqlalchemy-phase43-v3",
+  "mode": "AGENT_TEAM",
+  "cases": 36,
+  "workflow_completion": 36,
+  "semantic_clarifier_calls": 36,
+  "query_generation": {
+    "count": 33,
+    "rate": 0.9167
+  },
+  "first_pass_technical_validity": {
+    "count": 12,
+    "rate": 0.3636
+  },
+  "technical_repair": {
+    "attempted_cases": 21,
+    "successful_cases": 7,
+    "success_rate": 0.3333
+  },
+  "external_technical_repair_attempts": 21,
+  "external_technical_repair_success": 7,
+  "internal_tool_calls": 232,
+  "internal_candidates_generated": 187,
+  "internal_candidates_changed": 78,
+  "internal_candidates_unchanged": 30,
+  "syntax_short_circuits": 149,
+  "build_short_circuits": 5,
+  "compile_attempts": 32,
+  "tool_calls_avoided_by_short_circuit": 303,
+  "internal_validation_attempts": 186,
+  "internal_self_repair": {
+    "attempted": 107,
+    "successful": 7
+  },
+  "candidate_valid_before_external_validator": 20,
+  "external_validator_pass_after_internal_validation": 19,
+  "senior_review": {
+    "reviewed_cases": 21,
+    "first_pass_approved": 12,
+    "first_pass_approval_rate": 0.5714,
+    "revision_requested_cases": 8,
+    "previous_issues_resolved": 0,
+    "previous_issues_unresolved": 0
+  },
+  "semantic_repair": {
+    "attempted_cases": 8,
+    "successful_cases": 0,
+    "success_rate": 0.0
+  },
+  "final": {
+    "technical_valid": 19,
+    "technical_validity_rate": 0.5758,
+    "semantic_approved": 12,
+    "semantic_approval_rate": 0.5714,
+    "needs_clarification": 3,
+    "needs_info": 0,
+    "cannot_implement": 0,
+    "technical_validation_failed": 0,
+    "max_semantic_revisions_reached": 6,
+    "technical_generation_failed": 14
+  },
+  "validation_error_codes": {
+    "PYTHON_SYNTAX": 14
+  },
+  "latency_ms": {
+    "average_case": 19256.67
+  },
+  "agent_tool_calling": {
+    "model_initiated_tool_calls": 232,
+    "validation_attempts": 186,
+    "tool_rounds": 226,
+    "submission_attempts": 45,
+    "submission_rejections": 18,
+    "self_repair_attempts": 107,
+    "self_repair_success": 7,
+    "technical_generation_failed": 14,
+    "candidate_validation_requests": 187,
+    "candidates_generated": 187,
+    "candidates_initial": 79,
+    "candidates_changed": 78,
+    "candidates_unchanged": 30,
+    "candidate_validations_executed": 186,
+    "candidate_validation_budget_rejections": 1
+  },
+  "run_status": "COMPLETE",
+  "completed_cases": 36,
+  "pending_cases": 0
+}
