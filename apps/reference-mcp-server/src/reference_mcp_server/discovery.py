@@ -630,7 +630,7 @@ def build_catalog(catalog_version: str = "2026.08") -> CatalogMetadata:
                     "overtime_record",
                     "approved_minutes",
                     "Approved overtime",
-                    "Approved overtime duration.",
+                    "Total approved overtime in minutes; when hours are requested, convert by dividing by 60.0 so decimal hours are preserved.",
                     "integer",
                     "quantity",
                     "internal",

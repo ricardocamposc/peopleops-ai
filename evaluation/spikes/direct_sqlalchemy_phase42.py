@@ -449,6 +449,7 @@ class LangChainAgentRuntime:
             iteration = {
                 "iteration": len(internal_iterations) + 1,
                 "candidate": result.sqlalchemy,
+                "llm_metadata": metadata,
                 "generation_type": (
                     "INITIAL" if not internal_iterations else "INTERNAL_TECHNICAL_REPAIR"
                 ),
@@ -972,8 +973,12 @@ def _query_developer(state: Phase42State) -> dict[str, Any]:
         )
         for iteration in metadata.get("internal_iterations", []):
             _record(
-                state, role="query_programmer_internal_iteration", prompt=None,
-                input_payload=iteration["repair_input"], output=iteration,
+                state,
+                role="query_programmer_internal_iteration",
+                prompt=SQLALCHEMY_QUERY_DEVELOPER_PROMPT,
+                input_payload=iteration["repair_input"],
+                output=iteration,
+                metadata=iteration.get("llm_metadata"),
             )
     else:
         result = _parse(

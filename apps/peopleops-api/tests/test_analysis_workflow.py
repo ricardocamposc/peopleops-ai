@@ -2,7 +2,13 @@ from dataclasses import dataclass
 from datetime import date
 from uuid import uuid4
 
-from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
+from peopleops_api.analysis_contracts import (
+    AnalysisPlan,
+    SeniorReview,
+    SeniorReviewIssue,
+    SemanticRequest,
+    StructuredAnswer,
+)
 from peopleops_api.analysis_workflow import (
     AnalysisWorkflow,
     _catalog_conceptual_validation_errors,
@@ -37,6 +43,36 @@ def test_deterministic_result_facts_expose_numeric_totals_to_synthesis() -> None
     }
 
 
+def test_deterministic_result_facts_expose_declared_metric_conversion() -> None:
+    result = QueryResult(
+        request_id="req",
+        validation=QueryValidation(valid=True, query_hash="hash", catalog_version="v1"),
+        columns=["approved_minutes"],
+        rows=[{"approved_minutes": 60}, {"approved_minutes": 120}],
+    )
+    query = ConceptualQuery(
+        entities=["overtime"],
+        metrics=[
+            QueryMetric(
+                field="overtime.approved_minutes",
+                function="sum",
+                alias="total_overtime_hours",
+                conversion={
+                    "from_unit": "minutes",
+                    "to_unit": "hours",
+                    "operation": "divide",
+                    "factor": 60.0,
+                },
+            )
+        ],
+    )
+
+    facts = _deterministic_result_facts(result, query=query)
+
+    assert facts["numeric_sums"] == {"approved_minutes": 180}
+    assert facts["derived_numeric_values"] == {"total_overtime_hours": 3.0}
+
+
 @dataclass
 class FakeModel:
     outputs: list[object]
@@ -59,6 +95,14 @@ class FakeModel:
         if index is None:
             output = self._last_by_type.get(output_model)
             if output is None:
+                if output_model is SeniorReview:
+                    output = SeniorReview(
+                        status="APPROVE",
+                        summary="Fake reviewer approval for existing workflow fixture.",
+                        confidence=1.0,
+                    )
+                    self._last_by_type[output_model] = output
+                    return output
                 raise AssertionError(f"no fake output for {output_model.__name__}")
         else:
             output = self.outputs.pop(index)
@@ -281,6 +325,59 @@ def test_evaluation_trace_records_replanning_attempts_and_feedback(db_session):
     assert trace["replan_count"] == 1
 
 
+def test_final_senior_revise_is_persisted_as_failed_after_replan_budget(db_session):
+    revision = SeniorReview(
+        status="REVISE",
+        issues=[
+            SeniorReviewIssue(
+                category="logic",
+                severity="high",
+                issue="The plan needs correction.",
+                correction_guidance="Return a corrected plan.",
+            )
+        ],
+        summary="The plan needs correction.",
+        confidence=0.9,
+    )
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="active employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            revision,
+            _plan(),
+            revision.model_copy(deep=True),
+            StructuredAnswer(answer="No executable plan was approved."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        max_replans=1,
+    ).run(interaction)
+
+    senior_reviews = result.evaluation_trace["senior_reviews"]
+    assert [item["status"] for item in senior_reviews] == ["REVISE", "FAILED"]
+    assert senior_reviews[-1]["model_status"] == "REVISE"
+    assert senior_reviews[-1]["failure_reason"] == "SENIOR_REVIEW_REPAIR_BUDGET_EXHAUSTED"
+    assert len(result.evaluation_trace["planning_attempts"]) == 2
+    senior_stage_statuses = [
+        event["status"]
+        for event in result.stage_history
+        if event["stage"] == "senior_review" and event["status"] != "running"
+    ]
+    # The first REVISE is an intermediate transition; the final decision is
+    # the second review and must be terminal FAILED.
+    assert senior_stage_statuses[-1] == "failed"
+
+
 def test_evaluation_trace_persists_authorization_decision(db_session):
     model = FakeModel(
         [
@@ -435,6 +532,32 @@ def test_empty_structured_result_is_insufficient_data(db_session):
     assert result.status == "completed"
     assert "No employees matched" in result.response["answer"]
     assert result.evidence[0]["result_verification"]["status"] == "ZERO_ROWS"
+
+
+def test_nonempty_result_below_requested_limit_is_completed(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="recent employees", required_capabilities=["workforce"], entities=["employee"]
+            ),
+            _plan(),
+            StructuredAnswer(
+                answer="Only four employees were found.",
+                status="insufficient_data",
+            ),
+        ]
+    )
+    interaction = _interaction(question="List the 5 most recent employees.")
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=model, security=SecurityContext()
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.response["status"] == "completed"
+    assert "four employees" in result.response["answer"]
 
 
 def test_plan_preserves_unknown_fields_for_provider_feedback(db_session):

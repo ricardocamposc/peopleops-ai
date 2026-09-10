@@ -18,7 +18,7 @@ def test_contract_lists_generic_capabilities_and_negotiates_protocol() -> None:
 
     protocol, tools = asyncio.run(check())
     assert protocol
-    assert {"discover_catalog", "validate_conceptual_query", "execute_conceptual_query"} <= set(tools)
+    assert {"discover_catalog", "discover_scoped_catalog", "validate_conceptual_query", "execute_conceptual_query"} <= set(tools)
 
 
 def test_conceptual_validation_and_authorization_are_structured() -> None:

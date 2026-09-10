@@ -3,7 +3,12 @@ from uuid import uuid4
 
 import pytest
 
-from peopleops_api.analysis_contracts import AnalysisPlan, SemanticRequest, StructuredAnswer
+from peopleops_api.analysis_contracts import (
+    AnalysisPlan,
+    SemanticRequest,
+    SeniorReview,
+    StructuredAnswer,
+)
 from peopleops_api.analysis_workflow import AnalysisWorkflow
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction
@@ -71,6 +76,11 @@ def _paused_interaction(db_session) -> AnalysisInteraction:
                             },
                         }
                     ],
+                ),
+                SeniorReview(
+                    status="APPROVE",
+                    summary="The restricted analysis is ready for human review.",
+                    confidence=1,
                 ),
             ]
         ),

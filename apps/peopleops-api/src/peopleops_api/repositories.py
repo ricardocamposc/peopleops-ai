@@ -38,7 +38,13 @@ def create_interaction(
     session.flush()
     from peopleops_api.audit import transition
 
-    transition(session, interaction, stage="received", status="received")
+    transition(
+        session,
+        interaction,
+        stage="received",
+        status="received",
+        context={"request": {"question": question, "metadata": metadata}},
+    )
     session.commit()
     session.refresh(interaction)
     return interaction

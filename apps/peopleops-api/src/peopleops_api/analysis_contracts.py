@@ -33,6 +33,26 @@ class SemanticRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     goal: str = Field(min_length=1, max_length=255)
+    original_user_request: str = Field(default="", max_length=2000)
+    clarified_request_english: str = Field(default="", max_length=2000)
+    business_intent: str = Field(default="", max_length=1000)
+    needs_clarification: bool = False
+    questions_or_missing_information: list[str] = Field(default_factory=list, max_length=12)
+    required_information: list[str] = Field(default_factory=list, max_length=24)
+    measures: list[str] = Field(default_factory=list, max_length=24)
+    dimensions: list[str] = Field(default_factory=list, max_length=24)
+    filters: list[str] = Field(default_factory=list, max_length=24)
+    temporal_requirements: list[str] = Field(default_factory=list, max_length=12)
+    grouping_requirements: list[str] = Field(default_factory=list, max_length=12)
+    ordering_requirements: list[str] = Field(default_factory=list, max_length=12)
+    comparison_requirements: list[str] = Field(default_factory=list, max_length=12)
+    data_retrieval_request: str = Field(default="", max_length=2000)
+    downstream_analysis: list[str] = Field(default_factory=list, max_length=12)
+    assumptions: list[str] = Field(default_factory=list, max_length=12)
+    ambiguities: list[str] = Field(default_factory=list, max_length=12)
+    unsupported_requirements: list[str] = Field(default_factory=list, max_length=12)
+    required_sources: list[str] = Field(default_factory=list, max_length=8)
+    requires_catalog: bool = True
     required_capabilities: list[str] = Field(default_factory=list, max_length=8)
     entities: list[str] = Field(default_factory=list, max_length=8)
     sensitivity: Literal["standard", "restricted"] = "standard"
@@ -44,6 +64,24 @@ class SemanticRequest(BaseModel):
     policy_query: str | None = Field(default=None, max_length=1000)
     policy_as_of: date | None = None
     policy_filters: PolicyFilterContract = Field(default_factory=PolicyFilterContract)
+
+
+class SeniorReviewIssue(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str = Field(min_length=1, max_length=64)
+    severity: Literal["low", "medium", "high"]
+    issue: str = Field(min_length=1, max_length=1000)
+    correction_guidance: str = Field(min_length=1, max_length=1000)
+
+
+class SeniorReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["APPROVE", "REVISE", "FAILED", "NEEDS_CLARIFICATION"]
+    issues: list[SeniorReviewIssue] = Field(default_factory=list, max_length=8)
+    summary: str = Field(min_length=1, max_length=2000)
+    confidence: float = Field(ge=0, le=1)
 
 
 class TemporalIntent(BaseModel):

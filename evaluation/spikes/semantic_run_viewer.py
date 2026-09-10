@@ -12,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
 import sys
 import tempfile
 import uuid
@@ -26,6 +28,7 @@ RUNS_DIR = ROOT / "evaluation" / "runs"
 SPIKES_DIR = ROOT / "evaluation" / "spikes"
 PEOPLEOPS_SRC = ROOT / "apps" / "peopleops-api" / "src"
 PROMPT_TESTS_PREFIX = "semantic-prompt-playground-tests-"
+PHASE_DIR_PATTERN = re.compile(r"^phase\d+(?:\.\d+)*$", re.IGNORECASE)
 PROMPT_FILES = {
     "clarification": ROOT / "prompts" / "evaluations" / "prompt-clarificator.md",
 }
@@ -62,10 +65,11 @@ def _phase412_case(case_id: str) -> dict | None:
 
 
 def _prompt_test_dirs() -> list[Path]:
+    prompt_parent = RUNS_DIR / "phase42"
     return sorted(
         (
             path
-            for path in RUNS_DIR.glob(f"{PROMPT_TESTS_PREFIX}*")
+            for path in prompt_parent.glob(f"{PROMPT_TESTS_PREFIX}*")
             if path.is_dir()
         ),
         key=lambda path: (path.stat().st_mtime, path.name),
@@ -80,13 +84,31 @@ def _current_prompt_tests_dir() -> Path:
     candidates = [path for path in _prompt_test_dirs() if path.name.startswith(prefix)]
     if candidates:
         return candidates[0]
-    directory = RUNS_DIR / f"{prefix}1"
+    phase_dir = RUNS_DIR / "phase42"
+    phase_dir.mkdir(parents=True, exist_ok=True)
+    directory = phase_dir / f"{prefix}1"
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 
+def _prompt_test_description(payload: dict) -> str:
+    raw_input = payload.get("input") or payload.get("user_input")
+    if isinstance(raw_input, str):
+        try:
+            raw_input = json.loads(raw_input)
+        except json.JSONDecodeError:
+            pass
+    if isinstance(raw_input, dict):
+        for key in ("original_user_request", "clarified_request_english", "question"):
+            if raw_input.get(key):
+                return str(raw_input[key])
+    if raw_input:
+        return str(raw_input)
+    return str(payload.get("purpose") or payload.get("output_format") or "prompt test")
+
+
 def _sync_prompt_tests_raw(directory: Path) -> None:
-    """Consolidate one prompt-test folder into its local JSONL index."""
+    """Write an index for prompt-test artifacts without duplicating payloads."""
     if not directory.is_dir():
         return
 
@@ -96,9 +118,16 @@ def _sync_prompt_tests_raw(directory: Path) -> None:
             payload = _read_json(path)
         except (OSError, json.JSONDecodeError):
             continue
-        row = dict(payload)
-        row["artifact"] = path.name
-        rows.append(row)
+        rows.append(
+            {
+                "artifact": path.name,
+                "test_description": _prompt_test_description(payload),
+                "timestamp": payload.get("timestamp"),
+                "output_format": payload.get("output_format", "unknown"),
+                "input_format": payload.get("input_format", "unknown"),
+                "model": payload.get("model"),
+            }
+        )
 
     rows.sort(key=lambda row: str(row.get("timestamp", row["artifact"])))
     content = "".join(
@@ -112,18 +141,106 @@ def _sync_prompt_tests_raw(directory: Path) -> None:
     os.replace(temporary_path, directory / "raw_responses.jsonl")
 
 
-def _run_dirs() -> list[Path]:
+def _phase_dirs() -> list[Path]:
     return sorted(
-        (path for path in RUNS_DIR.iterdir() if path.is_dir()),
+        (
+            path
+            for path in RUNS_DIR.iterdir()
+            if path.is_dir() and PHASE_DIR_PATTERN.fullmatch(path.name)
+        ),
+        key=lambda path: tuple(
+            int(part) for part in re.findall(r"\d+", path.name.lower())
+        ),
+    )
+
+
+def _run_dirs(phase: str | None = None) -> list[Path]:
+    parents = [RUNS_DIR / phase] if phase else _phase_dirs()
+    return sorted(
+        (
+            path
+            for parent in parents
+            if parent.is_dir()
+            for path in parent.iterdir()
+            if path.is_dir()
+        ),
         key=lambda path: (path.stat().st_mtime, path.name),
         reverse=True,
     )
 
 
+def _phase_name(path: Path) -> str:
+    try:
+        return path.parent.relative_to(RUNS_DIR).as_posix()
+    except ValueError:
+        return "legacy"
+
+
+def _safe_artifact_path(run_dir: Path, artifact: str) -> Path | None:
+    candidate = (run_dir / artifact).resolve()
+    try:
+        candidate.relative_to(run_dir.resolve())
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+def _safe_run_directory(relative_name: str) -> Path | None:
+    """Resolve only a listed test directory below evaluation/runs."""
+    raw_candidate = RUNS_DIR / relative_name
+    if raw_candidate.is_symlink():
+        return None
+    candidate = raw_candidate.resolve()
+    try:
+        candidate.relative_to(RUNS_DIR.resolve())
+    except ValueError:
+        return None
+    if not candidate.is_dir() or candidate.is_symlink():
+        return None
+    if candidate.parent == RUNS_DIR.resolve() and PHASE_DIR_PATTERN.fullmatch(candidate.name):
+        return None
+    if candidate.parent != RUNS_DIR.resolve() and not PHASE_DIR_PATTERN.fullmatch(candidate.parent.name):
+        return None
+    return candidate
+
+
+def _read_run_rows(run_dir: Path) -> list[dict]:
+    raw_path = run_dir / "raw_responses.jsonl"
+    if not raw_path.exists():
+        return []
+    rows = _read_jsonl(raw_path)
+    resolved: list[dict] = []
+    for index_row in rows:
+        artifact = index_row.get("artifact")
+        artifact_path = _safe_artifact_path(run_dir, artifact) if artifact else None
+        if artifact_path:
+            try:
+                payload = _read_json(artifact_path)
+            except (OSError, json.JSONDecodeError):
+                payload = dict(index_row)
+            if isinstance(payload, dict):
+                payload.setdefault("artifact", artifact)
+                if index_row.get("test_description"):
+                    payload.setdefault("test_description", index_row["test_description"])
+                resolved.append(payload)
+                continue
+        resolved.append(index_row)
+    return resolved
+
+
 def _run_summary(path: Path) -> dict:
     raw_path = path / "raw_responses.jsonl"
+    index_rows = _read_jsonl(raw_path) if raw_path.exists() else []
+    manifest = _read_json(path / "manifest.json") if (path / "manifest.json").exists() else {}
+    description = manifest.get("test_description") or next(
+        (row.get("test_description") for row in index_rows if row.get("test_description")),
+        None,
+    )
     return {
         "name": path.name,
+        "path": path.relative_to(RUNS_DIR).as_posix(),
+        "phase": _phase_name(path),
+        "test_description": description,
         "rows": sum(1 for _ in raw_path.open(encoding="utf-8"))
         if raw_path.exists()
         else 0,
@@ -156,11 +273,55 @@ def _reconstructed_prompts(row: dict) -> dict[str, str | None]:
         return {"clarifier": None, "generator": None}
 
 
+def _enrich_phase44_events(row: dict) -> None:
+    """Expose prompt/context fields for Phase 4.4 artifacts from any run version."""
+    if row.get("mode") != "QUERY_PROGRAMMER_SUBGRAPH_ONLY":
+        return
+    programmer_metadata = row.get("programmer_metadata") or {}
+    messages = programmer_metadata.get("messages") or []
+    initial_messages = messages[:2]
+    rendered_system_prompt = programmer_metadata.get("rendered_system_prompt")
+    if not rendered_system_prompt:
+        rendered_system_prompt = next(
+            (
+                message.get("content")
+                for message in messages
+                if isinstance(message, dict)
+                and message.get("type") == "system"
+                and message.get("content")
+            ),
+            None,
+        )
+    prompt_template = programmer_metadata.get("prompt_template")
+    if not prompt_template:
+        try:
+            _ensure_project_imports()
+            sys.path.insert(0, str(SPIKES_DIR))
+            import direct_sqlalchemy_phase44 as phase44
+
+            prompt_template = (
+                phase44.PHASE44_QUERY_PROGRAMMER_PROMPT
+            )
+        except (ImportError, AttributeError):
+            prompt_template = None
+    for event in row.get("audit_trail", []):
+        if event.get("role") != "query_programmer":
+            continue
+        event["prompt"] = event.get("prompt") or prompt_template
+        event["prompt_template"] = event.get("prompt_template") or prompt_template
+        event["rendered_system_prompt"] = (
+            event.get("rendered_system_prompt") or rendered_system_prompt
+        )
+        # Older Phase 4.4 artifacts stored the final conversation here. The
+        # first request should show only system prompt + functional input;
+        # per-round accumulated context is shown by query_programmer_model.
+        event["rendered_messages"] = initial_messages
+
+
 def _run_payload(run_dir: Path) -> dict:
     manifest_path = run_dir / "manifest.json"
-    raw_path = run_dir / "raw_responses.jsonl"
     metrics_path = run_dir / "metrics.json"
-    rows = _read_jsonl(raw_path) if raw_path.exists() else []
+    rows = _read_run_rows(run_dir)
     for row in rows:
         reconstructed = _reconstructed_prompts(row)
         row["viewer_prompts"] = {
@@ -169,6 +330,7 @@ def _run_payload(run_dir: Path) -> dict:
             "clarifier_persisted": "clarifier_prompt" in row,
             "generator_persisted": "generator_prompt" in row,
         }
+        _enrich_phase44_events(row)
     return {
         "name": run_dir.name,
         "manifest": _read_json(manifest_path) if manifest_path.exists() else {},
@@ -200,19 +362,29 @@ def _persist_manual_replay(
     rows = _read_jsonl(raw_path)
     for row in rows:
         if row.get("id") == case_id and row.get("repetition") == repetition:
-            row.setdefault("manual_replays", []).append(replay)
+            artifact_path = _safe_artifact_path(run_dir, row.get("artifact", ""))
+            if artifact_path:
+                payload = _read_json(artifact_path)
+                payload.setdefault("manual_replays", []).append(replay)
+                artifact_path.write_text(
+                    json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                row.setdefault("manual_replays", []).append(replay)
+                content = "\n".join(
+                    json.dumps(item, ensure_ascii=False, default=str) for item in rows
+                ) + "\n"
+                with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=run_dir, delete=False
+                ) as temporary:
+                    temporary.write(content)
+                    temporary_path = Path(temporary.name)
+                os.replace(temporary_path, raw_path)
             break
     else:
         raise KeyError(f"Case not found: {case_id}/{repetition}")
-    content = "\n".join(
-        json.dumps(row, ensure_ascii=False, default=str) for row in rows
-    ) + "\n"
-    with tempfile.NamedTemporaryFile(
-        mode="w", encoding="utf-8", dir=run_dir, delete=False
-    ) as temporary:
-        temporary.write(content)
-        temporary_path = Path(temporary.name)
-    os.replace(temporary_path, raw_path)
 
 
 def _persist_playground_result(payload: dict) -> str:
@@ -239,12 +411,18 @@ HTML = r"""<!doctype html>
 body { margin: 0; background: #111827; color: #e5e7eb; }
 header { padding: 18px 24px; border-bottom: 1px solid #374151; }
 main { display: grid; grid-template-columns: 300px 1fr; min-height: calc(100vh - 74px); }
-aside { padding: 16px; border-right: 1px solid #374151; overflow: auto; }
+aside { position: sticky; top: 0; align-self: start; height: 100vh; box-sizing: border-box; padding: 16px; border-right: 1px solid #374151; overflow-y: auto; }
 section { padding: 18px 24px; overflow: auto; }
 button, select, input { background: #1f2937; color: #e5e7eb; border: 1px solid #4b5563; border-radius: 6px; padding: 8px; }
 button { cursor: pointer; width: auto; }
 .run { display: block; width: 100%; text-align: left; margin: 6px 0; }
+.run-row { display: flex; gap: 6px; align-items: stretch; margin: 6px 0; }
+.run-row .run { flex: 1; margin: 0; }
+.delete-run { width: 38px; padding: 6px; color: #fca5a5; font-size: 18px; }
 .run.active { border-color: #60a5fa; background: #1e3a5f; }
+.metrics-section { margin: 18px 0 22px; border: 1px solid #374151; border-radius: 8px; padding: 10px; }
+.metrics-section > summary { cursor: pointer; font-size: 1.1rem; font-weight: 700; padding: 4px; }
+.metrics-section h3 { margin: 14px 0 8px; }
 .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
 .cards { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; }
 .card { background: #1f2937; border: 1px solid #374151; border-radius: 8px; padding: 10px 14px; min-width: 120px; }
@@ -254,12 +432,16 @@ button { cursor: pointer; width: auto; }
 .badge { border-radius: 12px; padding: 3px 8px; font-size: 12px; border: 1px solid #4b5563; }
 .badge.ok { background: #12351f; } .badge.bad { background: #431b1b; }
 .marker { margin-left: 8px; font-weight: 700; }
-.marker.ok { color: #86efac; } .marker.bad { color: #fca5a5; }
+.marker.ok { color: #86efac; } .marker.warn { color: #fcd34d; } .marker.bad { color: #fca5a5; }
 .case { border: 1px solid #374151; border-radius: 8px; margin: 10px 0; overflow: hidden; }
 .case > summary { cursor: pointer; padding: 12px; background: #1f2937; }
 .case-body { padding: 14px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .flow { display: flex; flex-direction: column; gap: 14px; margin: 12px 0; }
+.node-group { border: 1px solid #334155; border-radius: 8px; padding: 6px 10px 10px; background: #0f172a; }
+.node-group > summary { cursor: pointer; padding: 9px 10px; background: #1e293b; border-radius: 6px; font-weight: 700; color: #e2e8f0; }
+.node-group > summary::marker { color: #93c5fd; }
+.node-group-body { display: flex; flex-direction: column; gap: 14px; padding-top: 10px; }
 .call-step { border-left: 3px solid #475569; padding-left: 12px; }
 .call-step > summary { cursor: pointer; padding: 8px 10px; background: #1e293b; border-radius: 6px; font-weight: 700; }
 .call-step > summary::marker { color: #93c5fd; }
@@ -285,22 +467,49 @@ textarea { box-sizing: border-box; width: 100%; height: 120px; min-height: 80px;
 </head>
 <body>
 <header><h2>PeopleOps Semantic Run Viewer</h2><div class="muted">Local view of evaluation/runs with individual prompt replay</div></header>
-<main><aside><button onclick="loadRuns()">Refresh runs</button><button onclick="showPlayground()">Open generator tester</button><label class="filter">Show <select id="run-filter" onchange="renderRuns()"><option value="phase412">Phase 4.1.2</option><option value="phase42">Phase 4.2</option><option value="clarifier-tests">Clarifier tests</option><option value="prompt-tests">Prompt tester</option><option value="all">All experiments</option></select></label><div id="runs"></div></aside><section id="content"><p>Select a run.</p></section></main>
+<main><aside><button onclick="loadRuns()">Refresh runs</button><button onclick="showPlayground()">Open generator tester</button><h3>Evaluation runs</h3><label class="filter">Phase <select id="run-filter" onchange="renderRuns()"><option value="all">All phases</option></select></label><div id="runs"></div></aside><section id="content"><p>Select a run.</p></section></main>
 <script>
 let runs = [];
 let visibleRuns = [];
+let phases = [];
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const readableEscapes = value => String(value ?? '')
+  .replace(/\\n/g, '\n')
+  .replace(/\\r/g, '\r')
+  .replace(/\\t/g, '\t');
+const normalizeForDisplay = value => {
+  if (Array.isArray(value)) return value.map(normalizeForDisplay);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (key === 'content' && typeof item === 'string') {
+        try { return [key, normalizeForDisplay(JSON.parse(item))]; }
+        catch (_) { return [key, readableEscapes(item)]; }
+      }
+      return [key, normalizeForDisplay(item)];
+    }));
+  }
+  return typeof value === 'string' ? readableEscapes(value) : value;
+};
 const pretty = x => {
-  if (typeof x !== 'string') return JSON.stringify(x ?? null, null, 2);
-  try { return JSON.stringify(JSON.parse(x), null, 2); } catch (error) { return x; }
+  if (typeof x === 'string') {
+    try { return JSON.stringify(normalizeForDisplay(JSON.parse(x)), null, 2); }
+    catch (error) { return readableEscapes(x); }
+  }
+  return readableEscapes(JSON.stringify(normalizeForDisplay(x ?? null), null, 2));
 };
 function panel(title, value, note='', copyText=null, copyId='', copyLabel='', extraCopyText=null, extraCopyId='', extraCopyLabel='') { const copy = copyText === null ? '' : `<textarea class="copy-source" id="${esc(copyId)}">${esc(copyText)}</textarea><button type="button" onclick="copyHidden('${esc(copyId)}', this)">${esc(copyLabel || `Copy ${title.toLowerCase()}`)}</button>`; const extraCopy = extraCopyText === null ? '' : `<textarea class="copy-source" id="${esc(extraCopyId)}">${esc(extraCopyText)}</textarea><button type="button" onclick="copyHidden('${esc(extraCopyId)}', this)">${esc(extraCopyLabel)}</button>`; return `<div class="panel"><h4>${esc(title)} ${note ? `<span class="muted">(${esc(note)})</span>` : ''}</h4><pre>${esc(pretty(value))}</pre>${copy}${extraCopy}</div>`; }
 async function loadRuns() {
-  runs = await (await fetch('/api/runs')).json();
+  const [runResponse, phaseResponse] = await Promise.all([fetch('/api/runs'), fetch('/api/phases')]);
+  runs = await runResponse.json();
+  phases = await phaseResponse.json();
+  const filter = document.getElementById('run-filter');
+  const previous = filter.value;
+  filter.innerHTML = `<option value="all">All phases</option>` + phases.map(p => `<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('');
+  if ([...filter.options].some(option => option.value === previous)) filter.value = previous;
   renderRuns();
 }
 function showPlayground() {
-  document.getElementById('content').innerHTML = `<h2>Generator prompt tester</h2><div class="summary-note">This sends one independent structured request to the generator. The clarifier is shown only in stored run details; this tester defaults to SQLAlchemyGenerationResponse. Instructions and user input are sent through separate API fields. Each test is saved as its own JSON file in a daily folder named <code>evaluation/runs/semantic-prompt-playground-tests-YYYYMMDD-N/</code>. Use the “Prompt tester” filter to inspect those folders.</div><div class="playground"><label>Model<input id="test-model" value="gpt-4o-mini"></label><label>Purpose (optional)<input id="test-purpose" value="semantic-prompt-playground"></label><label>Output format<select id="test-format" onchange="loadDefaultInstructions()"><option value="generation" selected>SQLAlchemyGenerationResponse (generator)</option><option value="clarification">ClarificationResponse (clarifier)</option></select></label><label>Instructions<textarea id="test-instructions" placeholder="Rules and context for the generator"></textarea><button type="button" onclick="copyTextarea('test-instructions', this)">Copy instructions</button></label><label>User input format<select id="test-input-format" onchange="toggleUserInput()"><option value="none">None</option><option value="json" selected>JSON</option><option value="text">Text</option></select></label><label>User input (optional)<textarea id="test-input" placeholder="Enter the clarifier JSON or the user's request"></textarea><button type="button" onclick="copyTextarea('test-input', this)">Copy user input</button></label><button onclick="sendTestPrompt()">Send generator prompt</button><div id="test-result"></div></div>`;
+  document.getElementById('content').innerHTML = `<h2>Generator prompt tester</h2><div class="summary-note">This sends one independent structured request to the generator. The clarifier is shown only in stored run details; this tester defaults to SQLAlchemyGenerationResponse. Instructions and user input are sent through separate API fields. Each test is saved as its own JSON file under <code>evaluation/runs/phase42/semantic-prompt-playground-tests-YYYYMMDD-N/</code>. Use the <code>phase42</code> filter to inspect those folders.</div><div class="playground"><label>Model<input id="test-model" value="gpt-4o-mini"></label><label>Purpose (optional)<input id="test-purpose" value="semantic-prompt-playground"></label><label>Output format<select id="test-format" onchange="loadDefaultInstructions()"><option value="generation" selected>SQLAlchemyGenerationResponse (generator)</option><option value="clarification">ClarificationResponse (clarifier)</option></select></label><label>Instructions<textarea id="test-instructions" placeholder="Rules and context for the generator"></textarea><button type="button" onclick="copyTextarea('test-instructions', this)">Copy instructions</button></label><label>User input format<select id="test-input-format" onchange="toggleUserInput()"><option value="none">None</option><option value="json" selected>JSON</option><option value="text">Text</option></select></label><label>User input (optional)<textarea id="test-input" placeholder="Enter the clarifier JSON or the user's request"></textarea><button type="button" onclick="copyTextarea('test-input', this)">Copy user input</button></label><button onclick="sendTestPrompt()">Send generator prompt</button><div id="test-result"></div></div>`;
   loadDefaultInstructions();
 }
 async function showPromptTest(name) {
@@ -340,8 +549,8 @@ async function sendTestPrompt() {
 }
 function renderRuns() {
   const filter = document.getElementById('run-filter').value;
-  visibleRuns = filter === 'phase412' ? runs.filter(r => r.name.startsWith('direct-sqlalchemy-phase412-')) : filter === 'phase42' ? runs.filter(r => r.name.startsWith('direct-sqlalchemy-phase42-')) : filter === 'clarifier-tests' ? runs.filter(r => r.name.startsWith('semantic-clarifier-')) : filter === 'prompt-tests' ? runs.filter(r => r.name.startsWith('semantic-prompt-playground-tests-')) : runs;
-  document.getElementById('runs').innerHTML = visibleRuns.map((r, i) => `<button class="run ${i===0?'active':''}" onclick="showRun(${i}, this)"><b>${esc(r.name)}</b><br><span class="muted">${r.rows} filas · creado ${new Date(r.created_at).toLocaleString()}</span></button>`).join('') || '<p class="muted">No hay runs para este filtro.</p>';
+  visibleRuns = filter === 'all' ? runs : runs.filter(r => r.phase === filter);
+  document.getElementById('runs').innerHTML = visibleRuns.map((r, i) => `<div class="run-row"><button class="run ${i===0?'active':''}" onclick="showRun(${i}, this)"><b>${esc(r.test_description || r.name)}</b><br><span class="muted">${esc(r.name)} · ${r.rows} filas · creado ${new Date(r.created_at).toLocaleString()}</span></button><button class="delete-run" title="Eliminar esta prueba" aria-label="Eliminar ${esc(r.name)}" onclick="deleteRun('${esc(r.path || r.name)}', '${esc(r.name)}', event)">🗑</button></div>`).join('') || '<p class="muted">No hay runs para este filtro.</p>';
   if (visibleRuns.length) {
     const first = document.querySelector('.run');
     if (visibleRuns[0].name.startsWith('semantic-prompt-playground-tests-')) showPromptRun(0, first);
@@ -349,11 +558,21 @@ function renderRuns() {
     else showRun(0, first);
   }
 }
+async function deleteRun(path, name, event) {
+  event.stopPropagation();
+  if (!window.confirm(`¿Eliminar permanentemente la carpeta de prueba "${name}" y todos sus archivos?\n\n${path}`)) return;
+  const response = await fetch('/api/run', {method: 'DELETE', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({path})});
+  const data = await response.json().catch(() => ({error: response.statusText}));
+  if (!response.ok) { window.alert(data.error || 'No se pudo eliminar la prueba.'); return; }
+  document.getElementById('content').innerHTML = '<p class="muted">Prueba eliminada.</p>';
+  await loadRuns();
+}
 async function showPromptRun(i, button) {
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
-  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
   const rows = data.rows || [];
-  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Prompt tester artifacts from this folder. Each row is one independent API call and preserves its complete instructions, input, and response.</div><div class="cards"><div class="card"><b>${rows.length}</b>Tests</div><div class="card"><b>${esc(data.name.slice(-2))}</b>Folder</div></div>${rows.map((r, n) => { const artifact = r.artifact || ''; const output = r.output_format || 'unknown'; const stamp = r.timestamp ? new Date(r.timestamp).toLocaleString() : 'unknown date'; let request = r.input || ''; try { const parsed = JSON.parse(request); if (parsed && typeof parsed === 'object') request = parsed.original_user_request || parsed.clarified_request_english || request; } catch (error) {} const status = r.response && r.response.status ? ` · ${r.response.status}` : ''; return `<button class="run" onclick="showPromptTest('${esc(data.name + '/' + artifact)}')"><b>${esc(request)}</b>${esc(status)}<br><span class="muted">${esc(stamp)} · ${esc(output)} · ${esc(artifact)}</span></button>`; }).join('') || '<p class="muted">No prompt tests found.</p>'}`;
+  const runPath = visibleRuns[i].path || visibleRuns[i].name;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Prompt tester artifacts from this folder. Each row is one independent API call and preserves its complete instructions, input, and response.</div><div class="cards"><div class="card"><b>${rows.length}</b>Tests</div><div class="card"><b>${esc(data.name.slice(-2))}</b>Folder</div></div>${rows.map((r, n) => { const artifact = r.artifact || ''; const output = r.output_format || 'unknown'; const stamp = r.timestamp ? new Date(r.timestamp).toLocaleString() : 'unknown date'; let request = r.input || ''; try { const parsed = JSON.parse(request); if (parsed && typeof parsed === 'object') request = parsed.original_user_request || parsed.clarified_request_english || request; } catch (error) {} const status = r.response && r.response.status ? ` · ${r.response.status}` : ''; return `<button class="run" onclick="showPromptTest('${esc(runPath + '/' + artifact)}')"><b>${esc(request || r.test_description || 'Prompt test')}</b>${esc(status)}<br><span class="muted">${esc(stamp)} · ${esc(output)} · ${esc(artifact)}</span></button>`; }).join('') || '<p class="muted">No prompt tests found.</p>'}`;
 }
 function phase42Timeline(events) {
   if (!events || !events.length) return '<p class="muted">No call audit available.</p>';
@@ -361,24 +580,71 @@ function phase42Timeline(events) {
 }
 async function showClarifierRun(i, button) {
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
-  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
   const rows = data.rows || [];
   const needs = rows.filter(r => r.response && r.response.needs_clarification).length;
   document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Functional Analyst / Semantic Clarifier tests. These calls do not generate or validate SQLAlchemy queries.</div><div class="cards"><div class="card"><b>${rows.length}</b>Cases</div><div class="card"><b>${needs}/${rows.length}</b>Needs clarification</div><div class="card"><b>${esc(data.manifest && data.manifest.prompt_version || '')}</b>Prompt version</div></div>${rows.map((r, n) => { const response = r.response || {}; const needsClarification = Boolean(response.needs_clarification); const statusClass = needsClarification ? 'bad' : 'ok'; const suffix = `clarifier-${esc(r.id)}-${n}`; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.question)} <span class="marker ${statusClass}">${needsClarification ? '!' : '✓'} ${needsClarification ? 'NEEDS_CLARIFICATION' : 'CLARIFIED'}</span></summary><div class="case-body"><div class="case-status"><span class="badge ${needsClarification ? 'bad':'ok'}">Needs clarification: ${needsClarification ? 'YES':'NO'}</span><span class="badge">Latency: ${esc(r.latency_ms)} ms</span></div><div class="grid">${panel('Question', r.question, '', r.question, `${suffix}-question`, 'Copy question')}${panel('Prompt', r.prompt, '', r.prompt, `${suffix}-prompt`, 'Copy prompt')}${panel('Input', r.input, '', JSON.stringify(r.input, null, 2), `${suffix}-input`, 'Copy input')}${panel('Response', response, '', JSON.stringify(response, null, 2), `${suffix}-response`, 'Copy response')}${panel('Metadata', r.metadata)}</div></div></details>`; }).join('') || '<p class="muted">No clarifier tests found.</p>'}`;
 }
 async function showPhase42RunLegacy(i, button) {
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
-  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
-  const rows = data.rows || []; const m = data.metrics || {};
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
+  const rows = data.rows || []; const m = data.metrics || {}; const productionSmoke = rows[0] && rows[0].mode === 'PRODUCTION_QUERY_PROGRAMMER_SUBGRAPH';
   const mode = rows[0] && rows[0].mode ? rows[0].mode : 'mixed';
   const approved = rows.filter(r => r.final_status === 'APPROVED').length;
   const technical = rows.filter(r => r.technical_valid).length;
-  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Phase 4.2 audit. Technical validity and Senior approval are shown separately; compilation alone does not establish semantic correctness.</div><div class="cards">${phase42MetricCards(data.metrics, mode, rows)}</div>${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const ok = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE'; const statusClass = ok ? 'ok' : 'bad'; const attempts = r.query_developer_attempts || []; const reviews = r.senior_reviews || []; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body"><div class="case-status"><span class="badge">Query Programmer attempts: ${attempts.length}</span><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge ${reviews.some(x => x.status === 'APPROVED') ? 'ok':'bad'}">Senior reviews: ${reviews.length}</span></div><div class="grid">${panel('Functional Analyst', r.functional_analysis)}${panel('Query task', r.query_task)}${panel('Query Programmer attempts', attempts)}${panel('Validation', {first_pass: r.first_pass_validation, final: r.final_validation})}${panel('Senior reviews', reviews)}${phase42Timeline(r.audit_trail)}${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Phase 4.2 audit. Technical validity and Senior approval are shown separately; compilation alone does not establish semantic correctness.</div>${phase42MetricCards(data.metrics, mode, rows)}${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const ok = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE'; const statusClass = ok ? 'ok' : 'bad'; const attempts = r.query_developer_attempts || []; const reviews = r.senior_reviews || []; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body"><div class="case-status"><span class="badge">Query Programmer attempts: ${attempts.length}</span><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge ${reviews.some(x => x.status === 'APPROVED') ? 'ok':'bad'}">Senior reviews: ${reviews.length}</span></div><div class="grid">${panel('Functional Analyst', r.functional_analysis)}${panel('Query task', r.query_task)}${panel('Query Programmer attempts', attempts)}${panel('Validation', {first_pass: r.first_pass_validation, final: r.final_validation})}${panel('Senior reviews', reviews)}${phase42Timeline(r.audit_trail)}${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
+}
+function phase44ToolPanel(step, event) {
+  const base = `phase44-${step}-${Math.random().toString(36).slice(2)}`;
+  const tool = event.tool_name || event.tool || 'application tool';
+  const round = event.round == null ? '' : ` · model round ${event.round}`;
+  return `<details class="call-step"><summary>Step ${step}: ${esc(tool)}${esc(round)}</summary><div class="step-body"><div class="muted">Executed by the application after an LLM tool call.</div>${panel('Tool input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy tool input')}${panel('Tool output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy tool output')}</div></details>`;
+}
+function phase44ModelPanel(step, event) {
+  const base = `phase44-model-${step}-${Math.random().toString(36).slice(2)}`;
+  const round = event.round == null ? '' : ` · model round ${event.round}`;
+  const actor = event.role === 'senior_query_reviewer' ? 'Senior Reviewer LLM' : 'Query Programmer LLM';
+  return `<details class="call-step"><summary>Step ${step}: ${actor}${esc(round)}</summary><div class="step-body"><div class="muted">The input is separated into the new messages for this call and the complete accumulated context.</div>${panel('Prompt template', event.prompt_template, '', event.prompt_template || '', `${base}-prompt`, 'Copy prompt')}${panel('Rendered system prompt', event.rendered_system_prompt, '', event.rendered_system_prompt || '', `${base}-rendered-prompt`, 'Copy rendered prompt')}${panel('Input de esta llamada', event.incremental_input, '', JSON.stringify(event.incremental_input ?? null, null, 2), `${base}-incremental-input`, 'Copy input')}${panel('Contexto completo enviado al LLM', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy full context')}${panel('LLM response', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy LLM response')}</div></details>`;
+}
+function phase44NodeForEvent(event) {
+  return event.graph_node || 'unassigned';
+}
+function phase44NodeLabel(node) {
+  const labels = {received: 'received', workflow: 'workflow', understand_request: 'understand_request · Functional Analyst', discover_catalog: 'discover_catalog', plan_queries: 'plan_queries · Query Programmer subgraph', senior_review_node: 'senior_review_node · Senior Reviewer', execute_queries: 'execute_queries', retrieve_policy: 'retrieve_policy', hr_assistant: 'hr_assistant · HR Assistant subgraph', finalize_response: 'finalize_response', human_review: 'human_review', unassigned: 'unassigned · event without graph_node'};
+  return labels[node] || node;
+}
+function phase44GroupedFlow(events, caseId) {
+  const groups = [];
+  const byNode = new Map();
+  events.forEach(event => {
+    const node = phase44NodeForEvent(event);
+    let group = byNode.get(node);
+    if (!group) { group = {node, events: []}; byNode.set(node, group); groups.push(group); }
+    group.events.push(event);
+  });
+  let step = 0;
+  return groups.map((group, groupIndex) => {
+    const body = group.events.map(event => {
+      step += 1;
+      return event.role === 'query_programmer_tool' || event.role === 'senior_reviewer_tool' ? phase44ToolPanel(step, event) : event.role === 'query_programmer_model' ? phase44ModelPanel(step, event) : phase42CallPanel(step, event, `p44-${caseId}-${groupIndex}-${step}`);
+    }).join('');
+    return `<details class="node-group"><summary>Node ${groupIndex + 1}: ${esc(phase44NodeLabel(group.node))} · ${group.events.length} event${group.events.length === 1 ? '' : 's'}</summary><div class="node-group-body">${body}</div></details>`;
+  }).join('');
+}
+async function showPhase44Run(i, button) {
+  document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
+  const rows = data.rows || []; const m = data.metrics || {};
+  const productionSmoke = rows[0] && rows[0].mode === 'PRODUCTION_QUERY_PROGRAMMER_SUBGRAPH';
+  const card = (label, value) => `<div class="card"><b>${esc(value ?? '—')}</b>${esc(label)}</div>`;
+  const cards = [card('Cases', m.cases ?? rows.length), card(productionSmoke ? 'Completed' : 'Subgraph completed', productionSmoke ? m.completed : m.query_programmer_subgraph_completed), card(productionSmoke ? 'Model rounds' : 'Technically valid', productionSmoke ? m.model_rounds : m.technical_valid), card(productionSmoke ? 'Tool calls' : 'Tool rounds', productionSmoke ? m.tool_calls : m.tool_rounds), card(productionSmoke ? 'Validation calls' : 'Tool calls', productionSmoke ? m.validation_calls : m.tool_calls), card('Senior reviews', productionSmoke ? m.senior_reviews : m.senior_reviews)].join('');
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">${productionSmoke ? 'Production smoke: Functional Analyst → MCP catalog → Query Programmer subgraph → Senior Reviewer → MCP execution → synthesize.' : 'Phase 4.4: QueryTask → Query Programmer subgraph with model-initiated tools → external deterministic validation. The Functional Analyst is not invoked in this run.'} Each case shows the exact ordered LLM request, LLM response, application tool execution, tool result, and next LLM request with accumulated context. Events are grouped by LangGraph node; open a node to inspect its ordered calls.</div><details class="metrics-section" open><summary>Metrics</summary><div class="cards">${cards}</div></details>${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const ok = productionSmoke ? finalStatus === 'completed' : finalStatus === 'QUERY_PROGRAMMER_COMPLETE'; const statusClass = ok ? 'ok' : finalStatus === 'insufficient_data' ? 'warn' : 'bad'; const marker = ok ? '✓' : finalStatus === 'insufficient_data' ? '!' : '✖'; const events = (r.audit_trail || []).filter(event => event.role !== 'query_programmer'); return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.question)} <span class="marker ${statusClass}">${marker} ${esc(finalStatus)}</span></summary><div class="case-body"><div class="case-status"><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge">Model rounds: ${esc(r.programmer_metadata && (r.programmer_metadata.model_rounds ?? r.programmer_metadata.agent_tool_rounds))}</span><span class="badge">Tool calls: ${esc(r.programmer_metadata && (r.programmer_metadata.tool_calls ?? r.programmer_metadata.internal_tool_calls))}</span></div><div class="flow">${phase44GroupedFlow(events, r.id)}</div><div class="grid">${panel('Functional requirement', r.query_task)}${panel('Query Programmer output', r.query_programmer_output)}${panel('MCP validation', r.validation)}${panel('Final response', r.response)}${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.4 cases found.</p>'}`;
 }
 function phase42CallPanel(step, event, key=step) {
   const role = event.role || 'event';
-  const title = role === 'semantic_clarifier' ? 'Functional Analyst request' : role === 'sqlalchemy_query_developer' ? 'Query Programmer request' : role === 'senior_query_reviewer' ? 'Senior Query Reviewer request' : 'Application validation';
-  const note = role === 'query_validation' ? 'Generated by the application, not by the LLM' : `LLM call · ${role}`;
+  const internal = role === 'query_programmer_internal_iteration';
+  const title = role === 'workflow_transition' ? `Workflow · ${event.stage || 'transition'}` : role === 'functional_analyst' || role === 'semantic_clarifier' ? 'Functional Analyst request' : role === 'functional_analyst_tool' ? `Functional Analyst tool · ${event.tool_name || event.tool || 'MCP'}` : role === 'functional_analyst_error' ? 'Functional Analyst LLM error' : role === 'sqlalchemy_query_developer' || role === 'query_programmer' ? 'Query Programmer LLM request' : role === 'senior_query_reviewer' ? 'Senior Query Reviewer LLM request' : role === 'hr_assistant_model' ? 'HR Assistant LLM request' : internal ? 'Query Programmer LLM internal iteration' : 'Application validation';
+  const note = role === 'workflow_transition' ? `LangGraph transition · ${event.status || 'unknown status'}` : role === 'functional_analyst_tool' || role === 'senior_reviewer_tool' ? 'Executed by the application after an LLM tool call.' : role === 'functional_analyst_error' ? 'The LLM call failed before returning a response. The original request context and error are preserved below.' : role === 'query_validation' ? 'Generated by the application, not by the LLM' : internal ? `LLM call · internal Query Programmer iteration${event.prompt ? '' : ' · prompt metadata not persisted in this artifact'}` : `LLM call · ${role}`;
   const base = `phase42-${key}-${Math.random().toString(36).slice(2)}`;
   const metadata = {
     agent_id: event.agent_id,
@@ -388,50 +654,82 @@ function phase42CallPanel(step, event, key=step) {
     schema_version: event.schema_version,
     latency_ms: event.latency_ms,
   };
+  const hasMetadata = Object.values(metadata).some(value => value !== null && value !== undefined);
   const open = step === 1 ? ' open' : '';
-  if (role === 'query_validation') return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy output')}</div></details>`;
-  return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Invocation metadata', metadata, '', JSON.stringify(metadata, null, 2), `${base}-metadata`, 'Copy metadata')}${panel('Prompt template', event.prompt || event.prompt_template, '', event.prompt || event.prompt_template || '', `${base}-prompt`, 'Copy prompt')}${panel('Rendered system prompt', event.rendered_system_prompt, '', event.rendered_system_prompt || '', `${base}-rendered-prompt`, 'Copy rendered prompt')}${panel('Rendered messages', event.rendered_messages, '', JSON.stringify(event.rendered_messages ?? [], null, 2), `${base}-messages`, 'Copy messages')}${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Response', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-response`, 'Copy response')}</div></details>`;
+  const prompt = event.prompt || event.prompt_template;
+  const messages = event.rendered_messages;
+  const common = `${hasMetadata ? panel('Invocation metadata', metadata, '', JSON.stringify(metadata, null, 2), `${base}-metadata`, 'Copy metadata') : ''}${prompt ? panel('Prompt template', prompt, '', prompt, `${base}-prompt`, 'Copy prompt') : ''}${event.rendered_system_prompt ? panel('Rendered system prompt', event.rendered_system_prompt, '', event.rendered_system_prompt, `${base}-rendered-prompt`, 'Copy rendered prompt') : ''}${messages && (Array.isArray(messages) ? messages.length : true) ? panel('Rendered messages', messages, '', JSON.stringify(messages, null, 2), `${base}-messages`, 'Copy messages') : ''}`;
+  if (role === 'workflow_transition') {
+    return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Lifecycle', event.lifecycle || [event.status])}${panel('Status', event.status)}${panel('Snapshots', event.snapshots)}</div></details>`;
+  }
+  if (role === 'query_validation') {
+    const output = event.output || {};
+    const diagnostics = output.diagnostics || [];
+    const details = diagnostics.map(item => ({stage: item.stage, code: item.code, exception_type: item.exception_type, message: item.message, line: item.line, offset: item.offset, text: item.text, source: item.source}));
+    return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Output', output, '', JSON.stringify(output, null, 2), `${base}-output`, 'Copy output')}${details.length ? panel('Diagnostic details', details, '', JSON.stringify(details, null, 2), `${base}-diagnostics`, 'Copy diagnostic details') : ''}</div></details>`;
+  }
+  if (role === 'functional_analyst_tool') {
+    return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Tool input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy tool input')}${panel('Tool output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy tool output')}</div></details>`;
+  }
+  if (role === 'senior_reviewer_tool') {
+    return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${panel('Tool input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy tool input')}${panel('Tool output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy tool output')}</div></details>`;
+  }
+  if (role === 'functional_analyst_error') {
+    return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${common}${panel('Error', event.error, '', JSON.stringify(event.error ?? null, null, 2), `${base}-error`, 'Copy error')}</div></details>`;
+  }
+  if (internal) return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${common}${panel('Internal input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy internal input')}${panel('Internal output', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-output`, 'Copy internal output')}</div></details>`;
+  return `<details class="call-step"${open}><summary>Step ${step}: ${esc(title)}</summary><div class="step-body"><div class="muted">${esc(note)}</div>${common}${panel('Input', event.input, '', JSON.stringify(event.input ?? null, null, 2), `${base}-input`, 'Copy input')}${panel('Response', event.output, '', JSON.stringify(event.output ?? null, null, 2), `${base}-response`, 'Copy response')}</div></details>`;
 }
 function phase42MetricCards(metrics, mode, rows) {
   const card = (label, value) => `<div class="card"><b>${esc(value ?? '—')}</b>${esc(label)}</div>`;
-  const cardsFor = (m) => [
-    card('Cases', m.cases ?? rows.length),
-    card('Executions', m.executions ?? rows.length),
-    card('First-pass QUERY', m.query_developer_first_pass_query),
-    card('First-pass technically valid', m.query_developer_first_pass_technical_valid),
-    card('Technical valid final', m.technical_valid_final),
-    card('Senior reviews', m.senior_reviews),
-    card('Final approved', m.final_approved),
-    card('Revision requested', m.revision_requested),
-    card('Repair success', m.repair_success),
-    card('Needs clarification', m.needs_clarification_final),
-    card('Max revisions', m.max_revisions_reached),
-  ].join('');
+  const cardsFor = (m) => {
+    const queryGeneration = m.query_generation || {};
+    const firstPass = m.first_pass_technical_validity || {};
+    const technicalRepair = m.technical_repair || {};
+    const senior = m.senior_review || {};
+    const semanticRepair = m.semantic_repair || {};
+    const final = m.final || {};
+    return [
+      card('Cases', m.cases ?? rows.length),
+      card('Executions', m.executions ?? m.cases ?? rows.length),
+      card('Queries generated', queryGeneration.count),
+      card('First-pass technically valid', firstPass.count),
+      card('Technical valid final', final.technical_valid),
+      card('Senior reviews', senior.reviewed_cases),
+      card('Final approved', final.semantic_approved),
+      card('Revision requested', senior.revision_requested_cases),
+      card('Repair success', (technicalRepair.successful_cases || 0) + (semanticRepair.successful_cases || 0)),
+      card('Needs clarification', final.needs_clarification),
+      card('Max revisions', final.max_semantic_revisions_reached),
+    ].join('');
+  };
   const modes = [...new Set(rows.map(row => row.mode).filter(Boolean))];
   if (modes.length > 1) {
-    return modes.map(currentMode => {
+    const content = modes.map(currentMode => {
       const key = currentMode === 'QUERY_DEVELOPER_ONLY' ? 'query_developer_only' : 'agent_team';
       const label = currentMode === 'QUERY_DEVELOPER_ONLY' ? 'Query Developer only' : 'Agent team';
       return `<h3>${label}</h3><div class="cards">${cardsFor(metrics[key] || {})}</div>`;
     }).join('');
+    return `<details class="metrics-section" open><summary>Execution metrics</summary>${content}</details>`;
   }
   const key = mode === 'QUERY_DEVELOPER_ONLY' ? 'query_developer_only' : 'agent_team';
-  return cardsFor(metrics[key] || metrics || {});
+  return `<details class="metrics-section" open><summary>Execution metrics</summary><div class="cards">${cardsFor(metrics[key] || metrics || {})}</div></details>`;
 }
 async function showPhase42Run(i, button) {
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
-  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
   const rows = data.rows || [];
   const approved = rows.filter(r => r.final_status === 'APPROVED').length;
   const technical = rows.filter(r => r.technical_valid).length;
-  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Each case is displayed as an ordered execution flow. “Application validation” is deterministic and is not an LLM call.</div><div class="cards">${phase42MetricCards(data.metrics, rows[0] && rows[0].mode, rows)}</div>${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const analystOnly = r.mode === 'FUNCTIONAL_ANALYST_ONLY'; const flowComplete = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE' || finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE'; const ok = analystOnly ? finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE' || finalStatus === 'NEEDS_CLARIFICATION' : flowComplete && (finalStatus === 'APPROVED' || r.technical_valid); const statusClass = ok ? 'ok' : 'bad'; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body">${analystOnly ? '' : `<div class="case-status"><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge">Revision count: ${esc(r.revision_count)}</span></div>`}<div class="flow">${(r.audit_trail || []).map((event, index) => phase42CallPanel(index + 1, event)).join('')}</div><div class="grid">${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
+  document.getElementById('content').innerHTML = `<h2>${esc(data.name)}</h2><div class="summary-note">Each case is displayed as an ordered execution flow. “Application validation” is deterministic and is not an LLM call.</div>${phase42MetricCards(data.metrics, rows[0] && rows[0].mode, rows)}${rows.map((r, n) => { const finalStatus = r.final_status || 'UNRESOLVED'; const analystOnly = r.mode === 'FUNCTIONAL_ANALYST_ONLY'; const flowComplete = finalStatus === 'APPROVED' || finalStatus === 'QUERY_DEVELOPER_ONLY_COMPLETE' || finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE'; const ok = analystOnly ? finalStatus === 'FUNCTIONAL_ANALYST_COMPLETE' || finalStatus === 'NEEDS_CLARIFICATION' : flowComplete && (finalStatus === 'APPROVED' || r.technical_valid); const statusClass = ok ? 'ok' : 'bad'; return `<details class="case" ${n===0?'open':''}><summary><b>${esc(r.id)}</b> · ${esc(r.mode)} · ${esc(r.question)} <span class="marker ${statusClass}">${ok ? '✓' : '✖'} ${esc(finalStatus)}</span></summary><div class="case-body">${analystOnly ? '' : `<div class="case-status"><span class="badge ${r.technical_valid ? 'ok':'bad'}">Technical: ${r.technical_valid ? 'OK':'FAIL'}</span><span class="badge">Revision count: ${esc(r.revision_count)}</span></div>`}<div class="flow">${(r.audit_trail || []).map((event, index) => phase42CallPanel(index + 1, event)).join('')}</div><div class="grid">${panel('Final status', finalStatus)}${panel('Duration (ms)', r.duration_ms)}</div></div></details>`; }).join('') || '<p class="muted">No Phase 4.2 cases found.</p>'}`;
 }
 async function showRun(i, button) {
-  if (visibleRuns[i] && visibleRuns[i].name.startsWith('direct-sqlalchemy-phase42-')) { showPhase42Run(i, button); return; }
-  if (visibleRuns[i] && visibleRuns[i].name.startsWith('semantic-clarifier-')) { showClarifierRun(i, button); return; }
   if (visibleRuns[i] && visibleRuns[i].name.startsWith('semantic-prompt-playground-tests-')) { showPromptRun(i, button); return; }
+  if (visibleRuns[i] && visibleRuns[i].phase === 'phase44') { showPhase44Run(i, button); return; }
+  if (visibleRuns[i] && (visibleRuns[i].phase === 'phase42' || visibleRuns[i].name.startsWith('direct-sqlalchemy-phase42-'))) { showPhase42Run(i, button); return; }
+  if (visibleRuns[i] && visibleRuns[i].name.startsWith('semantic-clarifier-')) { showClarifierRun(i, button); return; }
   document.querySelectorAll('.run').forEach(x => x.classList.remove('active')); if (button) button.classList.add('active');
-  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].name))).json();
+  const data = await (await fetch('/api/run?name=' + encodeURIComponent(visibleRuns[i].path || visibleRuns[i].name))).json();
   const m = data.metrics || {}; const rows = data.rows || [];
   const count = (fn) => rows.filter(fn).length;
   const summary = [
@@ -540,6 +838,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
             payload = [_run_summary(path) for path in _run_dirs()]
             self._send(json.dumps(payload), "application/json")
             return
+        if parsed.path == "/api/phases":
+            self._send(
+                json.dumps(
+                    [
+                        {"name": path.name, "runs": len(_run_dirs(path.name))}
+                        for path in _phase_dirs()
+                    ]
+                ),
+                "application/json",
+            )
+            return
         if parsed.path == "/api/prompt":
             prompt_format = parse_qs(parsed.query).get("format", ["generation"])[0]
             if prompt_format == "generation":
@@ -632,6 +941,26 @@ class ViewerHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
+    def do_DELETE(self) -> None:
+        if urlparse(self.path).path != "/api/run":
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length))
+            relative_name = str(payload.get("path", ""))
+            candidate = _safe_run_directory(relative_name)
+            if candidate is None:
+                self._send_error_json(HTTPStatus.NOT_FOUND, "test run not found")
+                return
+            shutil.rmtree(candidate)
+            self._send_json({"ok": True, "deleted": relative_name})
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+            self._send_error_json(HTTPStatus.INTERNAL_SERVER_ERROR, f"could not delete test run: {error}")
+
+    def _send_json(self, payload: dict[str, object]) -> None:
+        self._send(json.dumps(payload, ensure_ascii=False), "application/json")
+
     def _handle_replay(self) -> None:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -644,7 +973,11 @@ class ViewerHandler(BaseHTTPRequestHandler):
             if role not in {"clarifier", "generator"} or not prompt.strip():
                 raise ValueError("role must be clarifier/generator and prompt is required")
             candidate = (RUNS_DIR / run_name).resolve()
-            if candidate.parent != RUNS_DIR.resolve() or not candidate.is_dir():
+            try:
+                candidate.relative_to(RUNS_DIR.resolve())
+            except ValueError:
+                candidate = None
+            if candidate is None or not candidate.is_dir():
                 raise FileNotFoundError(run_name)
             _load_dotenv()
             _ensure_project_imports()
@@ -663,7 +996,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 if role == "clarifier"
                 else phase41.SQLAlchemyGenerationResponse
             )
-            source_rows = _read_jsonl(candidate / "raw_responses.jsonl")
+            source_rows = _read_run_rows(candidate)
             source_row = next(
                 (
                     row

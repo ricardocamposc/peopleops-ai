@@ -63,6 +63,26 @@ class HRDataGateway:
             "discover_relationships", _context_arguments(context), _RelationshipsResponse, context
         ).root
 
+    def discover_scoped_catalog(
+        self,
+        *,
+        capabilities: list[str] | None = None,
+        entities: list[str] | None = None,
+        request_id: str,
+        security: SecurityContext | None = None,
+    ) -> DiscoveryCatalog:
+        context = DiscoveryRequestContext(request_id=request_id, security=security or SecurityContext())
+        return self._client.call_tool(
+            "discover_scoped_catalog",
+            {
+                **_context_arguments(context),
+                "capabilities": capabilities or [],
+                "entities": entities or [],
+            },
+            DiscoveryCatalog,
+            context,
+        )
+
     def validate_query(
         self, query: ConceptualQuery, *, request_id: str, security: SecurityContext | None = None
     ) -> QueryValidation:

@@ -49,6 +49,40 @@ def _sha256_text(content: str) -> str:
     return _sha256_bytes(content.encode("utf-8"))
 
 
+def _write_result_artifacts(output_dir: Path, rows: list[dict[str, Any]]) -> None:
+    """Persist full results per test and keep raw_responses as an index only."""
+    index_lines: list[str] = []
+    for row in rows:
+        case_id = str(row.get("id", "result"))
+        mode = str(row.get("mode", "run")).lower()
+        repetition = row.get("repetition", 1)
+        artifact_name = f"{case_id}-{mode}-rep{repetition}.json"
+        (output_dir / artifact_name).write_text(
+            json.dumps(row, ensure_ascii=False, default=str, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        index_lines.append(
+            json.dumps(
+                {
+                    "id": row.get("id"),
+                    "mode": row.get("mode"),
+                    "repetition": repetition,
+                    "artifact": artifact_name,
+                    "test_description": row.get("question")
+                    or row.get("category")
+                    or row.get("id"),
+                    "final_status": row.get("final_status"),
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+    (output_dir / "raw_responses.jsonl").write_text(
+        "\n".join(index_lines) + ("\n" if index_lines else ""),
+        encoding="utf-8",
+    )
+
+
 def _git_commit() -> str | None:
     try:
         return subprocess.check_output(
@@ -479,12 +513,7 @@ def run(
     (output_dir / "manifest.json").write_text(
         json.dumps(manifest, indent=2), encoding="utf-8"
     )
-    (output_dir / "raw_responses.jsonl").write_text(
-        "\n".join(
-            json.dumps(row, ensure_ascii=False, default=str) for row in all_rows
-        ) + "\n",
-        encoding="utf-8",
-    )
+    _write_result_artifacts(output_dir, all_rows)
     (output_dir / "metrics.json").write_text(
         json.dumps(metrics, indent=2), encoding="utf-8"
     )

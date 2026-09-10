@@ -6,7 +6,9 @@ endpoint only and is not part of the data contract.
 
 The server exposes generic MCP tools:
 
+- `describe_conceptual_query_contract`
 - `discover_catalog`
+- `discover_scoped_catalog`
 - `discover_capabilities`
 - `discover_entities`
 - `describe_entity`
