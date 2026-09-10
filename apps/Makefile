@@ -7,9 +7,10 @@ MCP_PORT ?= 8001
 WEB_PORT ?= 3000
 PEOPLEOPS_DB_PORT ?= 5436
 SYNTHETIC_HRIS_DB_PORT ?= 5437
+PROMPT_TEST_PORT ?= 8765
 
 help:
-	@printf '%s\n' 'Available targets: help infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup run api mcp web'
+	@printf '%s\n' 'Available targets: help infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup run api mcp web prompt-test'
 
 # Docker is used only for the two PostgreSQL services by the local workflow.
 infra:
@@ -64,4 +65,8 @@ mcp:
 web:
 	cd peopleops-web && npm run dev -- --hostname 127.0.0.1 --port "$(WEB_PORT)"
 
-.PHONY: help infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup run api mcp web
+prompt-test:
+	cd peopleops-api && set -a && [ ! -f ../../.env ] || . ../../.env && set +a; \
+	PYTHONPATH=src poetry run python ../../evaluation/spikes/semantic_run_viewer.py --port "$(PROMPT_TEST_PORT)"
+
+.PHONY: help infra stop-apps migrate migrate-hris seed-hris generate-policy-pdfs regenerate-fictitious-policy-pdfs clear-policy-records demo-setup run api mcp web prompt-test

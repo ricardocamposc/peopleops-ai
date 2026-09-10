@@ -53,6 +53,81 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
         instructions="Provider-neutral HR data discovery and read-only conceptual query execution.",
     )
 
+    @mcp.tool(title="Describe conceptual query contract")
+    def describe_conceptual_query_contract(
+        request_id: str, security: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Describe the complete wire contract accepted by execute_conceptual_query."""
+        del request_id, security
+        schema = ConceptualQuery.model_json_schema()
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        fields = {
+            name: {
+                "type": definition.get("type"),
+                "any_of": definition.get("anyOf"),
+                "required": name in required,
+                "default": definition.get("default"),
+                "description": definition.get("description"),
+            }
+            for name, definition in properties.items()
+        }
+        employee_example = {
+            "contract_version": "1",
+            "goal": "List the five most recent employees",
+            "entities": ["employee"],
+            "select": [
+                {"field": "employee.employee_code"},
+                {"field": "employee.first_name"},
+                {"field": "employee.last_name"},
+                {"field": "employee.hire_date"},
+            ],
+            "metrics": [],
+            "filters": [],
+            "relationships": [],
+            "time_scope": None,
+            "comparisons": [],
+            "order_by": [{"reference": "employee.hire_date", "direction": "desc"}],
+            "dimensions": [],
+            "limit": 5,
+        }
+        return {
+            "contract_name": "ConceptualQuery",
+            "contract_version": ConceptualQuery.model_fields["contract_version"].default,
+            "payload_field": "query",
+            "schema": schema,
+            "fields": fields,
+            "entities": ["entity.field"],
+            "select": "list of {field, alias?}",
+            "filters": "list of {field, operator, value}; in/not_in require a non-empty list",
+            "relationships": "list of catalog relationship identifiers",
+            "time_scope": "QueryPeriod or null; date_range requires field/start/end",
+            "comparisons": "list of {left, operator, right}",
+            "order_by": "list of {reference, direction}",
+            "dimensions": "list of entity.field references",
+            "limit": "integer from 1 to 1000; default 100",
+            "required_fields": sorted(required),
+            "validation_rules": [
+                "Unknown fields, entities, relationships and unsupported operations are rejected by the provider catalog.",
+                "All field references must use the entity.field form.",
+                "Metric function must be count, sum, avg, min or max.",
+                "Non-count metrics require a field.",
+                "When the requested output unit differs from the catalog unit, metrics may include conversion with from_unit, to_unit, operation divide/multiply, and a positive factor.",
+                "date_range requires field, start and end; start must not be after end.",
+                "period requires period, period_list requires periods, and period_comparison requires current and previous.",
+                "The query is read-only and is subject to provider authorization and result limits.",
+            ],
+            "examples": {"employee": employee_example},
+            "execution": {
+                "tool": "execute_conceptual_query",
+                "arguments": {
+                    "query": employee_example,
+                    "request_id": "caller-generated-correlation-id",
+                    "security": {"scopes": ["hr:read"]},
+                },
+            },
+        }
+
     @mcp.tool(title="Discover catalog")
     def discover_catalog(request_id: str, security: dict[str, Any] | None = None) -> dict[str, Any]:
         """Discover provider capabilities, semantic entities and relationships."""
@@ -93,6 +168,57 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
         """List relationships available to conceptual queries."""
         try:
             return [item.model_dump(mode="json") for item in current_catalog().relationships]
+        except Exception as exc:
+            raise catalog_error() from exc
+
+    @mcp.tool(title="Discover scoped catalog")
+    def discover_scoped_catalog(
+        capabilities: list[str] | None = None,
+        entities: list[str] | None = None,
+        request_id: str = "",
+        security: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return only the semantic catalog scope selected by an authorized agent."""
+        scopes = _scopes(security)
+        if "hr:read" not in scopes and "hr:payroll" not in scopes:
+            raise ToolError("AUTHORIZATION_REQUIRED")
+        requested_capabilities = set(capabilities or [])
+        requested_entities = set(entities or [])
+        if "payroll" in requested_capabilities and "hr:payroll" not in scopes:
+            raise ToolError("AUTHORIZATION_DENIED")
+        try:
+            catalog = current_catalog()
+            capability_entities = {
+                entity_id
+                for capability in catalog.capabilities
+                if capability.name in requested_capabilities
+                for entity_id in capability.entities
+            }
+            selected_ids = capability_entities | requested_entities
+            selected_entities = [
+                entity for entity in catalog.entities if entity.entity_id in selected_ids
+            ]
+            selected_relationships = [
+                relationship
+                for relationship in catalog.relationships
+                if relationship.from_entity in selected_ids
+                and relationship.to_entity in selected_ids
+            ]
+            selected_capabilities = [
+                capability
+                for capability in catalog.capabilities
+                if capability.name in requested_capabilities
+            ]
+            scoped = catalog.model_copy(
+                update={
+                    "capabilities": selected_capabilities,
+                    "entities": selected_entities,
+                    "relationships": selected_relationships,
+                }
+            )
+            return scoped.model_dump(mode="json", exclude={"physical_tables"})
+        except ToolError:
+            raise
         except Exception as exc:
             raise catalog_error() from exc
 

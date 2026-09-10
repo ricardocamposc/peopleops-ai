@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Scalar = str | int | float | bool | date | Decimal
 FieldReference = str
@@ -18,11 +19,29 @@ class QuerySelect(BaseModel):
     alias: str | None = Field(default=None, max_length=128)
 
 
+class QueryConversion(BaseModel):
+    """Provider-neutral unit conversion applied after metric aggregation."""
+
+    model_config = ConfigDict(extra="forbid")
+    from_unit: str = Field(min_length=1, max_length=32)
+    to_unit: str = Field(min_length=1, max_length=32)
+    operation: Literal["divide", "multiply"]
+    factor: float = Field(gt=0)
+
+    @field_validator("factor")
+    @classmethod
+    def factor_must_be_finite(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("factor must be finite")
+        return value
+
+
 class QueryMetric(BaseModel):
     model_config = ConfigDict(extra="forbid")
     field: FieldReference | None = Field(default=None, max_length=128)
     function: Literal["count", "sum", "avg", "min", "max"] = "count"
     alias: str | None = Field(default=None, max_length=128)
+    conversion: QueryConversion | None = None
 
     @model_validator(mode="after")
     def count_or_field(self) -> QueryMetric:

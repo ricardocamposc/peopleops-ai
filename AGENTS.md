@@ -178,7 +178,58 @@ Structured HR analysis evaluations must use ground-truth-only cases under
 artifacts. Never add question-specific routing, business-language keyword
 rules, or physical HRIS details to PeopleOps to improve an evaluation score.
 
+### 4.4 Evaluation run storage
+
+Evaluation runs are grouped by phase under `evaluation/runs/phaseNN/` (for
+example, `evaluation/runs/phase42/` and `evaluation/runs/phase43/`). Each
+phase directory contains the subdirectories for its individual tests or
+experimental runs. New runs must follow this layout so the evaluation viewer
+can discover them by phase.
+
+Each test result must be stored in its own JSON artifact, one file per test.
+The `raw_responses.jsonl` file is an index only: it must contain references to
+the individual artifacts rather than duplicating their complete responses.
+Every index entry must include a stable artifact reference and a descriptive
+`test_description` (or equivalent) identifying the test; the viewer uses that
+description when displaying the run list.
+
 Never put physical table/column mappings in PeopleOps prompts.
+
+Evaluation spike implementations are grouped by phase under
+`evaluation/spikes/phaseNN/`, matching the organization used by
+`evaluation/runs/phaseNN/`. New Phase 4.4 implementation, runner and test
+files MUST be created or maintained under `evaluation/spikes/phase44/`.
+
+Each evaluation test in `evaluation/spikes/phaseNN/` MUST have a shared
+scenario name: `<scenario>_cases.jsonl` contains the case definitions and
+`<scenario>.py` contains the runner. Names use lowercase `snake_case` and
+should describe the agent or workflow plus the test type, for example
+`production_query_programmer_smoke_cases.jsonl` and
+`production_query_programmer_smoke.py`. Source filenames must not include
+timestamps; timestamps belong only in the corresponding directory under
+`evaluation/runs/phaseNN/`.
+
+### 4.5 Local development and evaluation execution
+
+In this development environment, application services MUST be executed
+directly from the source code, using the backend's Poetry environment and
+the project's root `.env` file. Do not run application services from Docker
+containers.
+
+The PeopleOps API MUST be started from `apps/peopleops-api` with its Poetry
+environment. Before starting it, load the environment variables from the
+repository-root `.env` (for example, `set -a; source ../../.env; set +a`).
+The same rule applies to the Reference MCP Server when it is required by the
+API: start it from `apps/reference-mcp-server` with that service's Poetry
+environment and the same root `.env`. Use explicit local database host/port
+overrides only when the databases are exposed by Docker on host ports; Docker
+must provide databases only, never the application services.
+
+Before executing tests that invoke the application, smoke tests or
+baselines, stop the currently running application services and start them
+again from the current source tree. This ensures that the execution uses
+the latest code. Docker may continue to provide only the database services
+required by the application.
 
 ### 4.4 Policy RAG belongs to PeopleOps
 

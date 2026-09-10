@@ -1,0 +1,24 @@
+{"id":"P41-01","category":"listing","question":"Lista los 5 últimos trabajadores que ingresaron a la empresa.","accepted_outcomes":["QUERY"]}
+{"id":"P41-02","category":"projection","question":"Muéstrame el código y el nombre de los trabajadores.","accepted_outcomes":["QUERY"]}
+{"id":"P41-03","category":"projection_temporal","question":"Muéstrame la fecha y las horas extras registradas en enero de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-04","category":"aggregate_month","question":"Dame el total de horas extras de enero de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-05","category":"current_month","question":"Dame las horas extras del mes actual.","accepted_outcomes":["QUERY"]}
+{"id":"P41-06","category":"previous_month","question":"Dame las horas extras del mes anterior.","accepted_outcomes":["QUERY"]}
+{"id":"P41-07","category":"last_n_months","question":"Dame las horas extras de los últimos 3 meses.","accepted_outcomes":["QUERY"]}
+{"id":"P41-08","category":"ytd","question":"Dame las horas extras acumuladas en lo que va del año.","accepted_outcomes":["QUERY"]}
+{"id":"P41-09","category":"previous_year","question":"Dame las horas extras del año calendario anterior.","accepted_outcomes":["QUERY"]}
+{"id":"P41-10","category":"weekday","question":"Dame el total de horas extras de cada lunes de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-11","category":"day_of_month","question":"Dame el total de horas extras del día 15 de cada mes de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-12","category":"last_day_of_month","question":"Dame el total de horas extras del último día de cada mes de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-13","category":"filter_no_group","question":"Dame las horas extras de cada lunes de 2026; no agrupes los resultados.","accepted_outcomes":["QUERY"]}
+{"id":"P41-14","category":"filter_group","question":"Dame las horas extras de cada lunes de 2026, agrupadas por mes.","accepted_outcomes":["QUERY"]}
+{"id":"P41-15","category":"department_group","question":"Dame las horas extras de enero de 2026 agrupadas por departamento.","accepted_outcomes":["QUERY"]}
+{"id":"P41-16","category":"group_order","question":"Muestra las horas extras de 2026 agrupadas por mes y ordenadas por mes ascendente.","accepted_outcomes":["QUERY"]}
+{"id":"P41-17","category":"ambiguous_period","question":"Dame las horas extras del período anterior.","accepted_outcomes":["QUERY","NEEDS_INFO"],"query_requires_declared_assumption":true}
+{"id":"P41-18","category":"ambiguous_comparison","question":"Compara enero de 2026 con el período anterior.","accepted_outcomes":["QUERY","NEEDS_INFO"],"query_requires_declared_assumption":true}
+{"id":"P41-19","category":"binary_comparison","question":"Compara las horas extras del mes actual con las del mes anterior.","accepted_outcomes":["QUERY"]}
+{"id":"P41-20","category":"three_months","question":"Compara las horas extras de enero, febrero y marzo de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-21","category":"three_years","question":"Compara las horas extras de enero de 2024, enero de 2025 y enero de 2026.","accepted_outcomes":["QUERY"]}
+{"id":"P41-22","category":"paired_series","question":"Compara enero, febrero y marzo de 2026 con los mismos meses de 2025.","accepted_outcomes":["QUERY"]}
+{"id":"P41-23","category":"percent_change","question":"Compara las horas extras de enero de 2026 con diciembre de 2025 y calcula la variación porcentual.","accepted_outcomes":["QUERY"]}
+{"id":"P41-24","category":"previous_month","question":"Dime las horas extras del mes anterior.","accepted_outcomes":["QUERY"]}

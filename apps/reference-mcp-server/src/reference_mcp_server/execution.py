@@ -138,6 +138,20 @@ def validate_query(
             errors.append(f"unknown field: {reference}")
         elif field.sensitivity == "restricted":
             sensitive = True
+    for metric in query.metrics:
+        if metric.conversion is None or metric.field is None:
+            continue
+        try:
+            entity_id, field_id = _split_reference(metric.field)
+        except QueryExecutionError:
+            continue
+        entity = entities.get(entity_id)
+        field = next((item for item in entity.fields if item.field_id == field_id), None) if entity else None
+        if field is not None and field.unit and metric.conversion.from_unit != field.unit:
+            errors.append(
+                f"conversion source unit {metric.conversion.from_unit!r} does not match "
+                f"catalog unit {field.unit!r} for {metric.field}"
+            )
     sensitive = sensitive or any(
         entity_id in entities and entities[entity_id].sensitivity == "restricted"
         for entity_id in selected_entities
@@ -497,7 +511,11 @@ def _metric_sql(
     if metric.function == "count" and metric.field is None:
         return "COUNT(*)", "rows"
     field_sql, label = _field_sql(metric.field or "", entities, aliases)
-    return f"{metric.function.upper()}({field_sql})", label
+    expression = f"{metric.function.upper()}({field_sql})"
+    if metric.conversion is not None:
+        operator = "/" if metric.conversion.operation == "divide" else "*"
+        expression = f"({expression} {operator} {metric.conversion.factor})"
+    return expression, label
 
 
 def _metric_label(metric: QueryMetric, field_label: str | None = None) -> str:

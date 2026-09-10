@@ -1,0 +1,10 @@
+{
+  "first-week-day-trio": ["p33-first-week-day-filter", "p33-first-week-day-grouped", "p33-first-week-day-no-group"],
+  "monday-trio": ["p33-monday-filter", "p33-monday-group-month", "p33-monday-no-group"],
+  "day15-quad": ["p33-day15-filter", "p33-day15-group-month", "p33-day15-group-dept", "p33-day15-no-group"],
+  "lastday-quad": ["p33-lastday-filter", "p33-lastday-group-month", "p33-lastday-group-dept", "p33-lastday-no-group"],
+  "first-month-pair": ["p33-first-month-filter", "p33-first-month-group"],
+  "order-pair": ["p33-month-order", "p33-date-order-no-group"],
+  "previous-ambiguity-trio": ["p33-ambiguous-period", "p33-ambiguous-prior", "p33-ambiguous-compare"],
+  "previous-resolution-trio": ["p33-previous-month", "p33-previous-year", "p33-previous-week"]
+}
