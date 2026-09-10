@@ -11,9 +11,12 @@ from peopleops_api.analysis_contracts import (
 )
 from peopleops_api.analysis_workflow import (
     AnalysisWorkflow,
+    _catalog_constrained_analysis_plan_schema,
     _catalog_conceptual_validation_errors,
     _complete_plan_relationship_entities,
+    _derive_entities_from_references,
     _deterministic_result_facts,
+    _planner_catalog_scope,
     _semantic_catalog_errors,
 )
 from peopleops_api.mcp_contracts import SecurityContext
@@ -399,6 +402,7 @@ def test_evaluation_trace_persists_authorization_decision(db_session):
     assert result.status == "failed"
     assert result.evaluation_trace["authorization"] == {
         "required": True,
+        "enforcement_enabled": True,
         "granted": False,
         "decision": "denied",
         "scope_present": False,
@@ -487,6 +491,148 @@ def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
     assert result.status == "failed"
     assert result.error_type == "AUTHORIZATION_ERROR"
     assert result.error_detail == "payroll access requires the hr:payroll scope"
+
+
+def test_payroll_read_authorization_can_be_disabled_for_trusted_demo(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="payroll totals", required_capabilities=["payroll"], entities=["payroll"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="Payroll totals available."),
+        ]
+    )
+    interaction = _interaction(question="What are the payroll totals?")
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+        payroll_read_authorization_enabled=False,
+    ).run(interaction)
+
+    assert result.evaluation_trace["authorization"] == {
+        "required": True,
+        "enforcement_enabled": False,
+        "granted": True,
+        "decision": "allowed_by_configuration",
+        "scope_present": False,
+    }
+
+
+def test_payroll_read_authorization_helper_requires_scope_when_enabled():
+    from peopleops_api.analysis_workflow import payroll_read_allowed
+
+    assert not payroll_read_allowed(SecurityContext(scopes=["hr:read"]), True)
+    assert payroll_read_allowed(SecurityContext(scopes=["hr:read", "hr:payroll"]), True)
+    assert payroll_read_allowed(SecurityContext(scopes=["hr:read"]), False)
+
+
+def test_restricted_read_only_analysis_reviews_when_enabled(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        read_analysis_human_review_enabled=True,
+    ).run(interaction)
+
+    assert result.status == "pending_human_review"
+    assert result.evaluation_trace["human_review_decision"] == {
+        "semantic_sensitivity": "restricted",
+        "semantic_requires_human_review": False,
+        "operation_type": "read_only_structured_analysis",
+        "enforcement_enabled": True,
+        "evidence_available": True,
+        "review_required": True,
+        "reason": "semantic_review_required",
+    }
+
+
+def test_restricted_read_only_analysis_skips_review_when_disabled(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        read_analysis_human_review_enabled=False,
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.human_review_id is None
+    assert result.evaluation_trace["human_review_decision"]["review_required"] is False
+    assert result.evaluation_trace["human_review_decision"]["reason"] == (
+        "read_only_review_disabled_by_configuration"
+    )
+
+
+def test_restricted_analysis_without_evidence_never_routes_to_review(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(invalid_first=True),
+        model=model,
+        security=SecurityContext(),
+        max_replans=0,
+        read_analysis_human_review_enabled=True,
+    ).run(interaction)
+
+    assert result.status == "insufficient_data"
+    assert result.human_review_id is None
+    assert result.evaluation_trace["human_review_decision"]["evidence_available"] is False
+    assert result.evaluation_trace["human_review_decision"]["reason"] == (
+        "no_reviewable_evidence"
+    )
 
 
 def test_invalid_query_is_replanned_once_and_does_not_loop(db_session):

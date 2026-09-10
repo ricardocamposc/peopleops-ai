@@ -2,8 +2,9 @@ from datetime import date, datetime
 
 from peopleops_api.analysis_contracts import AnalysisPlan, PlannedQuery, TemporalIntent
 from peopleops_api.mcp_contracts import DiscoveryCatalog, DiscoveryEntity, DiscoveryField, TemporalContext
-from peopleops_api.query_contracts import ConceptualQuery, QueryFilter, QuerySelect
+from peopleops_api.query_contracts import ConceptualQuery, QueryFilter, QueryPeriod, QuerySelect
 from peopleops_api.analysis_workflow import _apply_temporal_intent
+from reference_mcp_server.discovery import build_catalog
 from peopleops_api.temporal import resolve_temporal_intent
 
 
@@ -128,3 +129,59 @@ def test_authoritative_period_replaces_model_temporal_filters() -> None:
         [f.field for f in q.query.filters] == ["overtime.status"]
         for q in resolved.queries
     )
+
+
+def test_period_list_replaces_wrong_payroll_field_with_subject_temporal_field() -> None:
+    catalog = build_catalog()
+    plan = AnalysisPlan(
+        goal="overtime periods",
+        queries=[PlannedQuery(
+            purpose="overtime periods",
+            query=ConceptualQuery(
+                entities=["overtime", "payroll_period", "employee", "payroll"],
+                select=[QuerySelect(field="overtime.approved_minutes")],
+                relationships=["overtime_employee", "payroll_employee", "payroll_period"],
+                time_scope=QueryPeriod(
+                    type="payroll_period", field="payroll_period.code", value="2026-01",
+                    period={"year": 2026, "month": 1},
+                ),
+            ),
+        )],
+    )
+    resolved = _apply_temporal_intent(
+        plan, TemporalIntent(kind="period_list", months=[1, 3, 6], year=2026),
+        context(date(2026, 8, 29)), catalog,
+    )
+    assert len(resolved.queries) == 3
+    assert [item.query.time_scope.field for item in resolved.queries] == [
+        "overtime.work_date"
+    ] * 3
+    assert [item.query.time_scope.period.model_dump() for item in resolved.queries] == [
+        {"year": 2026, "month": 1},
+        {"year": 2026, "month": 3},
+        {"year": 2026, "month": 6},
+    ]
+
+
+def test_genuine_payroll_period_scope_is_preserved_for_payroll_subject() -> None:
+    catalog = build_catalog()
+    plan = AnalysisPlan(
+        goal="payroll period",
+        queries=[PlannedQuery(
+            purpose="payroll period",
+            query=ConceptualQuery(
+                entities=["payroll", "payroll_period"],
+                select=[QuerySelect(field="payroll.gross_amount")],
+                relationships=["payroll_period"],
+                time_scope=QueryPeriod(
+                    type="payroll_period", field="payroll_period.code", value="2026-01",
+                    period={"year": 2026, "month": 1},
+                ),
+            ),
+        )],
+    )
+    resolved = _apply_temporal_intent(
+        plan, TemporalIntent(kind="explicit_month_year", month=1, year=2026),
+        context(date(2031, 4, 17)), catalog,
+    )
+    assert resolved.queries[0].query.time_scope.field == "payroll_period.code"
