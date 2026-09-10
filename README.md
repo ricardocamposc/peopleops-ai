@@ -1,237 +1,360 @@
-# PeopleOps AI --- HR Intelligence Copilot
+# PeopleOps AI — HR Intelligence Copilot
 
-> **Policy-aware, agentic HR intelligence over structured HR data and
-> internal policies, with evidence, schema-independent MCP integration,
-> and Human-in-the-loop governance.**
+> **Flagship portfolio project for AI Solutions Architecture & Agentic Enterprise Systems.**  
+> Policy-aware, agentic HR intelligence over structured HR data and internal policies, with evidence, schema-independent MCP integration, Human-in-the-loop governance, and low-level workflow observability.
 
-PeopleOps AI is a portfolio-oriented enterprise AI application for Human
-Resources. It is designed to answer and investigate HR questions by
-combining structured HR data, payroll, attendance, contracts,
-vacation/leave information, internal policies and procedures, and human
-review when a situation is sensitive or insufficiently supported.
+PeopleOps AI is an enterprise AI reference implementation for Human Resources. It combines structured HR data, payroll, attendance, contracts, vacation/leave information, internal policies and procedures, and human review in one auditable agentic workflow.
 
-The project is intentionally more than a document chatbot and more than
-a fixed catalog of HR functions. Natural-language requests are
-interpreted into typed semantic structures, the available HR model is
-discovered dynamically through MCP, conceptual queries are built without
-depending on physical tables or SQL dialects, policies are retrieved
-with evidence, and LangGraph coordinates the analysis workflow.
+It is intentionally **not** a document chatbot and **not** a fixed catalog of question-specific functions. Natural-language requests are interpreted into typed semantic requirements; the available HR model is discovered dynamically through MCP; provider-neutral conceptual queries are planned and validated without coupling the agent to physical tables or SQL dialects; policies are retrieved with evidence; and LangGraph coordinates the workflow.
 
-> **Project status:** Slice 18 portfolio/pilot release baseline implemented.\
-> This repository is **production-oriented**, not production-ready. Use only
-> synthetic data and a controlled, read-only pilot.
+> **Status:** portfolio/pilot MVP completed, with ongoing architecture and evaluation hardening.  
+> **Positioning:** production-oriented, not production-ready.  
+> **Data:** synthetic/fictitious only. HRIS access is read-only.
 
-## Why this project exists
+---
 
-HR teams commonly work with information distributed across HRIS/ERP
-systems, payroll, attendance, contracts, vacation and leave records,
-policies, procedures and documents. A useful answer often requires
-combining several of these sources while preserving evidence and human
-control.
+## Why this project matters
 
-PeopleOps AI explores an architecture in which an AI application can act
-as an intelligence layer over those systems without replacing the HRIS
-and without coupling the agentic layer to one proprietary schema.
+Enterprise AI becomes difficult when an answer must cross several boundaries at once:
+
+- natural-language interpretation;
+- structured operational data;
+- policy and document knowledge;
+- authorization and sensitive fields;
+- tool selection and execution;
+- deterministic validation;
+- human review;
+- evidence and auditability;
+- provider/schema independence;
+- evaluation of probabilistic behavior.
+
+PeopleOps AI explores how to make those boundaries explicit and inspectable instead of hiding them behind a single "agent".
 
 Representative questions include:
 
--   Which contracts expire in the next 45 days?
--   Can this employee request 15 vacation days in November?
--   Why did this employee receive a lower net payroll amount this month?
--   Which employees have recorded overtime that is not correctly
-    reflected in payroll?
--   Which employees have contracts close to expiration and pending
-    vacation?
--   Which policy was applicable to this request in January?
--   Is the available evidence sufficient, or should a human review the
-    case?
+- Which contracts expire in the next 45 days?
+- Why did this employee receive a lower net payroll amount this month?
+- Which employees have recorded overtime that is not reflected in payroll?
+- Can this employee request 15 vacation days in November under the applicable policy?
+- Which policy version applied to this request in January?
+- Is the available evidence sufficient, or should a human review the case?
 
-## Core architectural idea
+---
 
-``` text
-HR User
-   ↓
-PeopleOps Web
-   ↓ HTTPS
-PeopleOps API
-   ├── LangGraph / OpenAI
-   ├── Policy RAG / LlamaIndex
-   ├── AnalysisInteraction / Human Review
-   ├── PeopleOps Data
-   └── HRDataGateway
-          ↓
-       MCP Client
-          ↓
-================ MCP BOUNDARY ================
-          ↓
-Reference MCP Server
-   ├── Capability & schema discovery
-   ├── Semantic metadata
-   ├── Conceptual-query validation
-   ├── Source-specific translation
-   ├── Read-only guardrails
-   └── Evidence
-          ↓
-Synthetic Reference HRIS
+## Architecture at a glance
+
+```text
+HR User / External MCP Client
+        │
+        ├──────────────────────────────────────────────┐
+        │                                              │
+        ▼                                              ▼
+ PeopleOps Web                                  MCP-compatible client
+ Next.js / React                               e.g. OpenAI Codex
+        │                                              │
+        ▼                                              │
+ PeopleOps API                                         │
+ FastAPI + LangGraph + OpenAI                          │
+        │                                              │
+        ├── Functional Analyst                         │
+        ├── Query Programmer subgraph                  │
+        ├── Senior Reviewer                            │
+        ├── HR Assistant / synthesis                   │
+        ├── Policy RAG / LlamaIndex                    │
+        ├── Human Review                               │
+        ├── AnalysisInteraction audit                  │
+        └── HRDataGateway                              │
+                    │                                  │
+                    ▼                                  │
+                 MCP Client                            │
+                    │                                  │
+==================== MCP BOUNDARY =====================│
+                    │                                  │
+                    └──────────────┬───────────────────┘
+                                   ▼
+                         Reference MCP Server
+                         official Python SDK
+                         Streamable HTTP /mcp
+                                   │
+                         ├── semantic discovery
+                         ├── scoped catalog
+                         ├── conceptual-query contract
+                         ├── deterministic validation
+                         ├── physical translation
+                         ├── EXPLAIN / read-only execution
+                         ├── limits / timeouts
+                         ├── provider-neutral evidence
+                         └── MCP audit
+                                   │
+                                   ▼
+                         Synthetic Reference HRIS
+                              PostgreSQL
 ```
 
-The **MCP boundary is mandatory in the MVP**. `peopleops-api` must never
-access the Synthetic Reference HRIS directly.
+The architectural rule is strict:
 
-PeopleOps expresses **what information it needs** through typed
-conceptual queries. The MCP Server knows **how the connected source
-represents and retrieves that information**.
+> **PeopleOps expresses what information it needs; the MCP provider owns how that information maps to and is retrieved from the physical source.**
 
-This separation is intended to make the following substitution possible
-without rewriting the main agentic layer:
+`peopleops-api` does not receive Synthetic HRIS database credentials and does not use a silent direct-database fallback.
 
-``` text
-Reference MCP Server + Synthetic Reference HRIS
-                    ↓ replace
-Customer MCP Server + Real ERP / HRIS
+---
+
+## Production-oriented agent workflow
+
+The current production-oriented path evolves beyond a simple plan/execute loop:
+
+```text
+Natural-language request
+        ↓
+Functional Analyst
+        ↓
+MCP capability / scoped catalog discovery
+        ↓
+typed Functional Requirement
+        ↓
+Query Programmer subgraph
+        ↓
+provider-neutral ConceptualQuery
+        ↓
+MCP validation
+        ↓
+Senior Reviewer
+        ├── approve
+        └── request one bounded semantic repair
+                    ↓
+               revalidate
+                    ↓
+MCP read-only execution
+        ↓
+Policy retrieval when required
+        ↓
+evidence-aware synthesis
+        ↓
+Human Review when required
+        ↓
+final answer
 ```
 
-Real BIZAG, SAP, Workday, Dynamics or customer-specific adapters are
-future integrations and are not required for the public MVP.
+The **Functional Analyst**, **Query Programmer**, and **Senior Reviewer** have different responsibilities. The reviewer does not translate or execute SQL. The agentic layer reasons over semantic contracts; deterministic code owns validation, budgets, routing, persistence, authorization and execution guardrails.
 
-## Quickstart / portfolio release
+Related implementation/evaluation notes:
 
-The release provides three deployables, two isolated PostgreSQL services,
-deterministic synthetic fixtures, explicit CORS, health endpoints, Policy RAG,
-Human Review, evaluation artifacts and reproducible root commands.
+- [`evaluation/spikes/PHASE43.md`](evaluation/spikes/PHASE43.md) — genuine model tool-calling for Query Programmer validation/submission, bounded rounds and protocol-complete tool handling.
+- [`evaluation/spikes/PHASE44.md`](evaluation/spikes/PHASE44.md) — provider-neutral ConceptualQuery Programmer + MCP-compatible validation boundary + independent Senior Reviewer.
 
-Requirements: Docker with Compose, Python 3.11, Poetry and Node.js. The
-frontend uses npm, bundled with Node.js.
+---
+
+## Standalone MCP Server
+
+`apps/reference-mcp-server` is a real MCP server built with the official Python SDK and **Streamable HTTP**.
+
+Functional endpoint:
+
+```text
+http://127.0.0.1:8001/mcp
+```
+
+It exposes generic tools rather than question-specific endpoints:
+
+- `describe_conceptual_query_contract`
+- `discover_catalog`
+- `discover_scoped_catalog`
+- `discover_capabilities`
+- `discover_entities`
+- `describe_entity`
+- `discover_relationships`
+- `temporal_context`
+- `validate_conceptual_query`
+- `execute_conceptual_query`
+
+The server owns:
+
+- provider semantic mappings and physical introspection;
+- provider-neutral entity/field/relationship metadata;
+- scoped capability discovery;
+- conceptual-query validation;
+- source-specific translation;
+- PostgreSQL `EXPLAIN`;
+- bounded read-only execution;
+- limits and timeouts;
+- provider-neutral evidence;
+- request/tool correlation and MCP audit.
+
+Payroll entities/fields are restricted. No HRIS write operation is advertised.
+
+See [`apps/reference-mcp-server/README.md`](apps/reference-mcp-server/README.md).
+
+---
+
+## Validated with OpenAI Codex as an external MCP client
+
+The MCP boundary was manually validated from an **isolated OpenAI Codex CLI workspace outside the PeopleOps repository**.
+
+The server was registered with Codex as an external MCP server:
 
 ```bash
-cp .env.example .env
-cp apps/peopleops-web/.env.example apps/peopleops-web/.env.local
-make build
-make infra
-make migrate
-make migrate-hris
-make seed-hris
-make generate-policy-pdfs
-make smoke
-make lint
-make test
-make evaluate
-make down
+codex mcp add local_mcp_8001 --url http://127.0.0.1:8001/mcp
 ```
 
-The local development workflow does not start the API, web or Reference MCP
-Server in Docker. Start each application directly in its own terminal with
-`make api`, `make mcp` and `make web`; `make run` is the convenience target
-that starts only the databases and then runs the API locally. `make up-all`
-is available when the complete Compose stack is explicitly required.
+In a fresh Codex session, a natural-language request such as:
 
-The default host ports are web `3000`, API `8000`, Reference MCP Server
-`8001`, PeopleOps PostgreSQL `5436` and Synthetic HRIS PostgreSQL `5437`.
-They can be overridden in `.env`. Containers use Compose service names
-and internal PostgreSQL port `5432`.
+```text
+Using the PeopleOps MCP, tell me which employees have contracts close to expiration.
+```
 
-Ownership is intentionally separate: `peopleops-api` receives only
-PeopleOps database settings, `reference-mcp-server` receives only
-Synthetic HRIS settings, and the web receives only the public API URL.
-`make demo-setup` applies migrations and loads disposable Schema A and Schema
-B fixtures. Live analysis requires `OPENAI_API_KEY` in the environment; the
-deterministic evaluation and smoke paths do not require a key.
+caused Codex to invoke the registered MCP tools directly. The observed flow included:
 
-The synthetic policy PDFs are generated with `make generate-policy-pdfs` in
-`policies/generated/`. To intentionally remove the current policy corpus before
-reloading it, use `make clear-policy-records`; this deletes only policy
-documents and their cascaded versions, chunks and ingestion jobs.
+```text
+local_mcp_8001.discover_catalog
+        ↓
+local_mcp_8001.describe_conceptual_query_contract
+        ↓
+dynamic provider-neutral ConceptualQuery
+        ↓
+local_mcp_8001.execute_conceptual_query
+```
+
+Codex dynamically discovered the HR semantic model, composed a scoped `hr:read` query across `employee` and `contract`, used the semantic relationship exposed by the provider, and inspected follow-up results when the first time window returned no rows.
+
+This validation is important because the external client had **no dependency on the PeopleOps application code or the physical HRIS schema**.
+
+A reproducible walkthrough is documented in [`docs/portfolio/MCP-CODEX-VALIDATION.md`](docs/portfolio/MCP-CODEX-VALIDATION.md).
+
+---
+
+## PeopleOps Semantic Run Viewer
+
+A core engineering goal of this project is to make agent behavior inspectable instead of treating a successful final answer as sufficient evidence.
+
+The repository includes a local **PeopleOps Semantic Run Viewer**:
+
+```bash
+cd apps/peopleops-api
+PYTHONPATH=src poetry run python ../../evaluation/spikes/semantic_run_viewer.py
+```
+
+Open:
+
+```text
+http://127.0.0.1:8765
+```
+
+![PeopleOps Semantic Run Viewer](docs/portfolio/assets/semantic-run-viewer-overview.jpg)
+
+The viewer reads versioned evaluation/run artifacts and reconstructs a case as an ordered execution grouped by LangGraph node and step. Depending on the run, it can expose:
+
+- node-by-node execution;
+- workflow steps and state transitions;
+- LLM model rounds;
+- prompt template;
+- rendered system prompt;
+- exact input for the model call;
+- complete accumulated context sent to that call;
+- model response;
+- each model-initiated tool call;
+- exact tool input;
+- application tool execution;
+- exact tool output;
+- MCP discovery, validation and execution;
+- Query Programmer output;
+- Senior Reviewer decisions;
+- bounded repair/revalidation paths;
+- final response;
+- per-run counts such as model rounds, tool calls, validations and senior reviews.
+
+The viewer has been used during development to find and correct **duplicated/redundant calls**, inspect prompt behavior, verify model/tool interaction, and isolate whether a failure originated in semantic understanding, planning, tool selection, validation, review, MCP execution or synthesis.
+
+LangSmith remains useful for generic tracing and evaluation support. The Semantic Run Viewer serves a different purpose: a **human-readable, domain-aware replay of what the PeopleOps workflow actually did**.
+
+> A green check means the workflow completed. The viewer is there to show what happened underneath.
+
+Implementation: [`evaluation/spikes/semantic_run_viewer.py`](evaluation/spikes/semantic_run_viewer.py).
+
+---
 
 ## What the MVP demonstrates
 
-The target MVP demonstrates these capabilities:
+- natural-language HR analysis;
+- multilingual semantic understanding without language-specific routing;
+- dynamic MCP capability/schema/relationship/semantic discovery;
+- provider-neutral conceptual queries;
+- agentic Query Programmer with real tool calling;
+- independent Senior Reviewer and bounded semantic repair;
+- safe read-only structured-data execution;
+- employee, contract, attendance, overtime, vacation, leave and payroll analysis;
+- individual payroll explanation and period comparison;
+- Attendance/Overtime ↔ Payroll reconciliation;
+- version-aware Policy RAG;
+- evidence verification and abstention;
+- combined structured-data + policy reasoning;
+- durable Human-in-the-loop workflows;
+- persistent functional audit through `AnalysisInteraction`;
+- MCP contract testing;
+- schema-independence testing;
+- external MCP-client interoperability validation with OpenAI Codex;
+- reproducible multi-layer evaluation;
+- low-level agent/tool/LLM observability through the Semantic Run Viewer.
 
--   natural-language HR analysis;
--   multilingual semantic understanding without language-specific
-    routing;
--   dynamic MCP capability/schema/relationship/semantic discovery;
--   provider-neutral conceptual queries;
--   safe read-only structured-data execution;
--   employee, contract, attendance, overtime, vacation, leave and
-    payroll analysis;
--   individual payroll explanation and period comparison;
--   Attendance/Overtime ↔ Payroll reconciliation;
--   version-aware Policy RAG;
--   evidence verification and abstention;
--   combined structured-data + policy reasoning;
--   durable Human-in-the-loop workflows;
--   persistent functional audit through `AnalysisInteraction`;
--   MCP contract testing;
--   schema-independence testing;
--   reproducible multi-layer evaluation.
+---
 
-## Key design principles
+## Design principles
 
-### 1. No semantic hardcoding
+### No semantic hardcoding
 
-Natural-language meaning must not be resolved with keyword lists,
-language-specific phrase tables or `if/elif` routing.
+Natural-language meaning is not resolved with keyword lists, language-specific phrase tables or question-specific `if/elif` routing.
 
-``` python
-# Not allowed
+```python
+# Not an acceptable semantic architecture
 if "vacation" in question:
     ...
 ```
 
-Language understanding must produce typed structured outputs. A new
-wording must not require a new Python function unless it introduces a
-genuinely new system capability.
+A new wording should not require a new Python function unless it introduces a genuinely new capability.
 
-### 2. Capabilities, not question-specific tools
+### Capabilities, not question-specific tools
 
-Tools and interfaces represent general capabilities such as model
-discovery, structured-data querying, policy retrieval and human review.
-The concrete plan, filters, metrics, relationships and periods are
-composed dynamically.
+Tools represent general capabilities: discovery, conceptual querying, policy retrieval, validation, human review. The model composes entities, fields, filters, metrics, periods and relationships dynamically.
 
-### 3. LLM for semantics; deterministic code for invariants
+### LLM for semantics; deterministic code for invariants
 
-LLMs may interpret requests, plan, select capabilities, correlate
-evidence and synthesize explanations.
+LLMs may interpret, plan, choose tools, correlate evidence and synthesize. Deterministic code owns:
 
-Deterministic code owns authorization, schemas, persistence,
-calculations, limits, read-only enforcement, security validation and
-other reproducible invariants.
+- authorization/scopes;
+- typed schemas;
+- persistence;
+- calculations;
+- budgets and limits;
+- read-only enforcement;
+- query validation;
+- execution boundaries;
+- request correlation;
+- reproducible tests.
 
-### 4. Facts, Policies and Inference remain distinct
+### Facts, policies and inference remain distinct
 
-A response must preserve provenance:
+- **Facts** come from structured HR data through MCP.
+- **Policies** come from versioned documents retrieved through Policy RAG.
+- **Inference** is the model's interpretation based on those sources.
 
--   **Facts** come from structured HR data through MCP.
--   **Policies** come from versioned documents retrieved by PeopleOps
-    Policy RAG.
--   **Inference** is the model's interpretation or recommendation based
-    on that evidence.
+They are not silently merged.
 
-These categories must not be silently merged.
+### Human governance is first-class
 
-### 5. Human governance is a first-class workflow
+Sensitive, ambiguous, conflicting or insufficiently supported situations can enter durable `pending_human_review`, persist, receive an audited human decision and resume.
 
-Sensitive, ambiguous, conflicting or insufficiently supported situations
-may enter `pending_human_review`. Review is durable: the workflow can
-pause, persist, receive an audited human decision and resume without
-creating a new functional identity for the same analysis.
+### Evidence before confidence
 
-### 6. Evidence before confidence
+Missing or conflicting evidence is a valid result. The system should abstain rather than invent support.
 
-Structured results and policy claims must remain traceable to their
-sources. Missing or conflicting evidence is a valid outcome. The system
-must abstain rather than invent support.
+---
 
 ## Policy RAG
 
-Policy knowledge belongs to PeopleOps rather than to the HRIS MCP
-provider.
+Policy knowledge belongs to PeopleOps, not to the HRIS MCP provider.
 
-The MVP uses **LlamaIndex** with PostgreSQL/pgvector and follows
-patterns already validated in the Enterprise RAG project:
+The MVP uses **LlamaIndex + PostgreSQL/pgvector** and reuses engineering patterns that were validated in the public Enterprise RAG project:
 
-``` text
+```text
 PDF / DOCX
    ↓
 Parsing
@@ -251,587 +374,266 @@ Evidence verification
 Grounded result / abstention
 ```
 
-Policies support versions and effective dates. Historical questions must
-retrieve the policy version applicable to the relevant date.
+Policies support versions and effective dates, so historical questions can retrieve the version applicable to the relevant date.
 
-The synthetic corpus is expected to include policies/procedures for
-vacation, leave, attendance, overtime, payroll processing, contract
-renewal, remote work, employee documentation, HR data privacy and
-approval rules.
+---
 
-## Agentic workflow
+## Functional audit: `AnalysisInteraction`
 
-The target LangGraph workflow coordinates:
+Every accepted analysis creates an `AnalysisInteraction` before LangGraph starts.
 
-``` text
-Request
-  ↓
-Semantic understanding
-  ↓
-Requirements / sensitivity
-  ↓
-Analysis planning
-  ↓
-┌─────────────────────┬────────────────────┐
-│ Structured HR data  │ Policy retrieval   │
-│ via MCP             │ when required      │
-└──────────┬──────────┴──────────┬─────────┘
-           ↓
-      Evidence merge
-           ↓
-   Policy-aware reasoning
-           ↓
-   Risk / completeness check
-           ↓
-      ┌────┴────┐
-      │         │
- safe answer   Human Review
-      │         ↓
-      │       resume
-      └────┬────┘
-           ↓
-        synthesis
-```
+A unique `request_id` identifies one execution. The durable audit records observable structured outputs such as:
 
-Loops and replanning are deliberately bounded.
+- status and current stage;
+- append-only logical stage history;
+- semantic request and functional goal;
+- query plan/candidate;
+- provider and catalog version;
+- validation and structured result;
+- policy sources and versions;
+- evidence;
+- Human Review state;
+- final response and warnings;
+- latency/model metadata;
+- safe error information.
 
-## Functional audit: AnalysisInteraction
+Private model chain-of-thought is not persisted. The viewer exposes **observable prompts, messages, tool calls, tool results and application events**, not hidden reasoning.
 
-Every accepted analysis creates an `AnalysisInteraction` **before
-LangGraph starts**.
-
-A unique `request_id` identifies one execution. Related follow-up
-requests may share a `conversation_id`, but every follow-up receives a
-new `request_id`.
-
-The durable audit records observable structured outputs such as:
-
--   status and current stage;
--   append-only logical stage history;
--   semantic request and analysis goal;
--   query plan/candidate;
--   provider and catalog version;
--   validation and structured result;
--   policy sources and versions;
--   evidence;
--   Human Review state;
--   final response and warnings;
--   latency/model metadata;
--   safe error information.
-
-Private model chain-of-thought is never stored. LangSmith may complement
-technical observability, but it is not the functional store for analysis
-history, evidence or Human Review.
-
-## Synthetic Reference HRIS
-
-The public project uses only fictitious/synthetic HR data.
-
-The reference HRIS contains enough information to create deterministic
-ground-truth scenarios around:
-
--   employees and organization;
--   contracts;
--   attendance and incidents;
--   overtime;
--   vacation balances and requests;
--   leave;
--   payroll periods;
--   employee payroll;
--   payroll concepts/items.
-
-These physical entities are fixtures for development and testing. **They
-are not the PeopleOps data contract.**
+---
 
 ## Schema independence
 
-A core architectural claim must be demonstrated, not merely documented.
+Schema independence is tested, not merely claimed.
 
-A representative evaluation subset will run against two physically
-different HRIS schemas, for example:
+The same PeopleOps application logic is exercised against physically different HRIS schemas. Only the MCP-side source mapping and semantic metadata change.
 
-``` text
+```text
 Schema A                  Schema B
 Employee                  HR_PERSON
 EmployeePayroll           PAY_MOVEMENT
 OvertimeRecord            TIME_EVENT
 ```
 
-The PeopleOps application and its agentic logic must remain unchanged.
-Only the MCP-side source mapping/semantic metadata changes.
+The public PRD requires contract tests covering capabilities, entity/field discovery, relationships, supported operations, validation, read-only execution, evidence, limits, scoping and request correlation.
 
-## Physical architecture and runtime services
+---
 
-The implementation baseline is deliberately explicit:
+## Evaluation
 
-``` text
-Browser
-  │
-  ▼
-peopleops-web :3000
-Next.js + TypeScript
-  │ HTTP
-  ▼
-peopleops-api :8000
-FastAPI + LangGraph + OpenAI + LlamaIndex
-  │
-  ├── peopleops-db
-  │     PostgreSQL + pgvector
-  │     host :5436 / container :5432
-  │
-  └── HRDataGateway
-          │
-          ▼
-       MCP Client
-          │
-          ▼
-reference-mcp-server :8001
-Python + MCP
-          │
-          ▼
-synthetic-hris-db
-PostgreSQL
-host :5437 / container :5432
+Evaluation is a product capability, not a final demo step.
+
+The Slice 18 portfolio baseline includes versioned datasets for:
+
+| Dataset | Cases |
+|---|---:|
+| `integrated_v1` | 7 |
+| `multilingual_antihardcoding_v1` | 12 |
+| `payroll_deep_analysis_v1` | 4 |
+| `policy_rag_v1` | 5 |
+| `schema_independence_v1` | 2 |
+
+Recorded integrated pass rates:
+
+| Layer | Pass rate |
+|---|---:|
+| conceptual_mcp | 100% |
+| final_answer | 100% |
+| hitl | 100% |
+| policy_rag | 100% |
+| semantic | 100% |
+| structured_data | 100% |
+| workflow | 100% |
+
+See [`evaluation/runs/slice18-portfolio.md`](evaluation/runs/slice18-portfolio.md).
+
+Later evaluation phases investigate the Query Programmer and Senior Reviewer more deeply with real tool-calling, bounded retries/repair, protocol-complete tool handling, resumable runs and production-graph node-level inspection.
+
+Where objective ground truth exists, deterministic metrics take precedence. LLM-as-judge can complement them but does not replace the deterministic baseline.
+
+---
+
+## Runtime boundaries
+
+The release contains three deployables and two isolated PostgreSQL services:
+
+```text
+peopleops-web            :3000
+peopleops-api            :8000
+reference-mcp-server     :8001
+peopleops-db             :5436
+synthetic-hris-db        :5437
 ```
 
-The local Docker Compose baseline contains five core services:
+Ownership is deliberately separated:
 
-``` text
-peopleops-web
-peopleops-api
-reference-mcp-server
-peopleops-db
-synthetic-hris-db
-```
+- `peopleops-api` receives PeopleOps DB settings, not HRIS credentials;
+- `reference-mcp-server` receives HRIS settings, not PeopleOps DB credentials;
+- the web receives neither database credential set.
 
-`peopleops-api` never receives Synthetic HRIS database credentials.
-`reference-mcp-server` never receives PeopleOps database credentials.
-The web application receives neither.
+The MVP is **single-tenant per instance**.
 
-## Confirmed technology stack
+---
 
-  Concern                                Technology
-  -------------------------------------- -----------------------------------
-  Backend runtime                        Python 3.11
-  Python dependencies                    Poetry
-  API                                    FastAPI
-  Typed configuration/contracts          Pydantic v2 + `pydantic-settings`
-  Agentic workflow / HITL                LangGraph
-  LLM / structured outputs / tool use    OpenAI
-  Policy RAG                             LlamaIndex
-  Structured HR integration              MCP
-  PeopleOps persistence                  PostgreSQL
-  Vector persistence                     pgvector
-  Reference HRIS                         PostgreSQL
-  Migrations                             Alembic
-  Python testing                         Pytest
-  Python lint / format                   Ruff
-  Frontend                               Next.js + React + TypeScript
-  Frontend routing                       App Router
-  Frontend package manager               npm
-  Agentic tracing / evaluation support   LangSmith
-  Local orchestration                    Docker Compose
-  Developer workflow                     root Makefile
+## Technology stack
 
-The MVP is **single-tenant per instance**. Multi-tenancy is
-intentionally not introduced into the public MVP unless a later ADR
-establishes a concrete requirement.
+| Concern | Technology |
+|---|---|
+| Backend runtime | Python 3.11 |
+| API | FastAPI |
+| Contracts/configuration | Pydantic v2 + pydantic-settings |
+| Agentic workflow / HITL | LangGraph |
+| LLM / structured outputs / tool calling | OpenAI |
+| Policy RAG | LlamaIndex |
+| Structured HR integration | MCP |
+| PeopleOps persistence | PostgreSQL |
+| Vector persistence | pgvector |
+| Reference HRIS | PostgreSQL |
+| Migrations | Alembic |
+| Python dependencies | Poetry |
+| Testing | Pytest |
+| Lint / format | Ruff |
+| Frontend | Next.js + React + TypeScript |
+| Agent tracing/evaluation support | LangSmith |
+| Domain-aware run inspection | PeopleOps Semantic Run Viewer |
+| Local orchestration | Docker Compose + root Makefile |
 
-## Enterprise RAG as engineering reference
+---
 
-PeopleOps AI reuses **proven engineering patterns** from the public
-Enterprise RAG implementation where they fit, especially:
+## Quickstart
 
--   Docker/Compose organization;
--   Makefile ergonomics;
--   environment/configuration conventions;
--   PostgreSQL/pgvector setup;
--   LlamaIndex ingestion and retrieval patterns;
--   evaluation structure;
--   testing and health-check patterns.
-
-It does **not** copy Enterprise RAG's application architecture.
-
-In particular:
-
--   LocalStack is not part of the PeopleOps baseline; in Enterprise RAG
-    it supports local AWS/S3 emulation.
--   Phoenix is not part of the PeopleOps baseline.
--   PeopleOps uses LangSmith for agentic tracing/evaluation support,
-    structured application logging for operational diagnostics, and
-    `AnalysisInteraction` as durable functional audit.
--   Redis is not included unless a later slice demonstrates a concrete
-    need.
-
-The rule is:
-
-> **Reuse proven engineering patterns, not application architecture.**
-
-## Repository layout
-
-The target monorepo structure is:
-
-``` text
-peopleops-ai/
-├── apps/
-│   ├── peopleops-api/
-│   │   ├── src/
-│   │   ├── tests/
-│   │   ├── alembic/
-│   │   ├── pyproject.toml
-│   │   ├── poetry.lock
-│   │   ├── Dockerfile
-│   │   └── .env.example
-│   │
-│   ├── peopleops-web/
-│   │   ├── app/
-│   │   ├── components/
-│   │   ├── lib/
-│   │   ├── public/
-│   │   ├── package.json
-│   │   ├── package-lock.json
-│   │   ├── Dockerfile
-│   │   └── .env.example
-│   │
-│   └── reference-mcp-server/
-│       ├── src/
-│       ├── tests/
-│       ├── pyproject.toml
-│       ├── poetry.lock
-│       ├── Dockerfile
-│       └── .env.example
-│
-├── packages/
-│   ├── contracts/
-│   └── shared/
-├── synthetic-hris/
-│   ├── migrations/
-│   ├── seeds/
-│   └── alternate-schema/
-├── policies/
-│   └── synthetic/
-├── evaluation/
-│   ├── cases/
-│   ├── runs/
-│   └── README.md
-├── ops/
-├── docs/
-├── docker-compose.yml
-├── Makefile
-├── .env.example
-├── .gitignore
-├── AGENTS.md
-└── README.md
-```
-
-Internal modules may evolve, but the three deployable boundaries and
-database ownership rules are architectural invariants.
-
-## Database ownership
-
-PeopleOps application data:
-
-``` text
-service:  peopleops-db
-database: peopleops
-user:     peopleops_app
-host port: 5436
-```
-
-Synthetic HRIS data:
-
-``` text
-service:  synthetic-hris-db
-database: synthetic_hris
-user:     synthetic_hris_app
-host port: 5437
-```
-
-Containers use the Compose service names and PostgreSQL internal port
-`5432`.
-
-Passwords are local environment secrets and are never committed.
-
-## Frontend baseline
-
-`peopleops-web` uses:
-
-``` text
-Next.js
-React
-TypeScript
-App Router
-npm
-```
-
-Local frontend port:
-
-``` text
-http://localhost:3000
-```
-
-Frontend environment:
-
-``` text
-apps/peopleops-web/.env.example
-apps/peopleops-web/.env.local
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-```
-
-The frontend communicates only with `peopleops-api`. It does not connect
-directly to MCP or either database.
-
-Slices 14 and 15 implement the functional analysis, evidence, policy and
-Human Review interfaces. Slice 00 only establishes a runnable frontend
-foundation.
-
-## Local development
-
-Docker Compose and the root Makefile are the canonical developer
-workflow.
-
-Initial setup:
-
-``` bash
-cp .env.example .env
-cp apps/peopleops-web/.env.example apps/peopleops-web/.env.local
-```
-
-The expected operational interface is:
-
-``` bash
-make help
-make install
-make build
-make up
-make ps
-make health
-make lint
-make test
-make down
-```
-
-Additional baseline targets:
-
-``` text
-make restart
-make logs
-make format
-make test-unit
-make test-integration
-make clean
-```
-
-Default local endpoints:
-
-``` text
-PeopleOps Web:        http://localhost:3000
-PeopleOps API health: http://localhost:8000/api/v1/health
-Reference MCP health: http://localhost:8001/health
-PeopleOps PostgreSQL: localhost:5436
-Synthetic HRIS DB:    localhost:5437
-```
-
-The Makefile should delegate to Poetry, npm and Docker Compose rather
-than duplicate complex logic in shell.
-
-Do not add LocalStack, Phoenix, Redis or another runtime service to the
-baseline without an approved requirement/ADR.
-
-## Evaluation strategy
-
-Evaluation is a product capability, not a final demo-only step. The
-suite is expected to separate failures by layer:
-
--   semantic understanding;
--   conceptual query correctness;
--   MCP discovery/contract/execution;
--   Policy RAG retrieval and version correctness;
--   evidence/citation validity;
--   abstention;
--   workflow routing and bounded recovery;
--   Human Review routing;
--   multilingual consistency;
--   unsupported claims;
--   final-answer fact/rule/inference coverage;
--   schema independence.
-
-Where objective ground truth exists, deterministic metrics take
-precedence. LLM-as-judge may complement those metrics but must not
-replace the deterministic baseline.
-
-Evaluation cases and expected ground truth are separate from real
-`AnalysisInteraction` execution records.
-
-### Slice 16 integrated runner and Slice 18 index
-
-The versioned integrated dataset evaluates semantic interpretation,
-conceptual/MCP contracts, structured data, Policy RAG, workflow recovery,
-Human Review and final-answer grounding. It produces one JSON and one
-Markdown artifact per run under `evaluation/runs/`, correlates every case
-with a `request_id`, and compares deterministic metrics with the MVP
-baseline:
+Requirements: Docker with Compose, Python 3.11, Poetry and Node.js.
 
 ```bash
-make evaluate
-```
-
-This writes the reproducible JSON and Markdown artifacts under
-`evaluation/runs/`, including `slice18-portfolio.json` and
-`slice18-portfolio.md`. The index covers every versioned case dataset and
-records the integrated run ID; the layer-specific tests/runners remain the
-authoritative results. The optional LLM judge is disabled for the baseline.
-LangSmith tracing can be enabled with `LANGSMITH_TRACING=true`; it is
-complementary and `AnalysisInteraction` remains the functional audit store.
-
-Release materials:
-
-- [`docs/portfolio/DEMO-SCRIPT.md`](docs/portfolio/DEMO-SCRIPT.md)
-- [`docs/portfolio/PILOT-GUIDE.md`](docs/portfolio/PILOT-GUIDE.md)
-- [`docs/portfolio/RELEASE-CHECKLIST.md`](docs/portfolio/RELEASE-CHECKLIST.md)
-- [`evaluation/runs/slice18-portfolio.md`](evaluation/runs/slice18-portfolio.md)
-
-## Security and privacy
-
-The public repository must use synthetic data and synthetic policies
-only.
-
-The MVP is read-only with respect to the HRIS. Security controls include
-least privilege, environment-based secrets, payroll sensitivity/scoping,
-result limits, timeouts, safe logging, request correlation,
-untrusted-document handling, prompt-injection defenses and Human Review.
-
-The repository must never contain customer data, proprietary customer
-schemas, private ERP code or credentials.
-
-## Local development
-
-The implementation is designed to be reproducible through
-Docker/Compose. As the repository is implemented, the canonical
-quickstart will be maintained here.
-
-Expected high-level flow:
-
-``` bash
 cp .env.example .env
+cp apps/peopleops-web/.env.example apps/peopleops-web/.env.local
 
-# Start only the database services in Docker.
+make build
 make infra
+make migrate
+make migrate-hris
+make seed-hris
+make generate-policy-pdfs
 
-# Prepare schemas and synthetic fixtures.
-make migrate migrate-hris seed-hris
-
-# In separate terminals, run the applications locally.
+# Run applications locally in separate terminals
 make api
 make mcp
 make web
 
-# Run the repository test suite.
-# The exact canonical command will be documented once Slice 00 establishes it.
+# Verification
+make smoke
+make lint
+make test
+make evaluate
 ```
 
-Do not infer missing commands from this README. Until the foundation
-slice defines them, use the commands committed in the repository.
+Default local endpoints:
 
-## Implementation roadmap
-
-Development is organized into incremental slices:
-
-``` text
-00  Repository Foundation & Guardrails
-01  PeopleOps Application Persistence
-02  Synthetic Reference HRIS
-03  Reference MCP Server: Discovery
-04  MCP Client & HRDataGateway
-05  Conceptual Query Contract & MCP Execution
-06  Structured HR Analysis Baseline
-07  Policy Knowledge Ingestion
-08  Policy RAG Retrieval & Evaluation Baseline
-09  Combined Data + Policy Workflow
-10  Human-in-the-loop
-11  Payroll Deep Analysis & Reconciliation
-12  Multilingual & Anti-Hardcoding Regression
-13  MCP Contract & Schema Independence
-14  PeopleOps Web: Analysis & Evidence
-15  PeopleOps Web: Policies & Human Review
-16  Integrated Evaluation & Observability
-17  Security & Failure Hardening
-18  Portfolio / Pilot Release
+```text
+PeopleOps Web:        http://localhost:3000
+PeopleOps API health: http://localhost:8000/api/v1/health
+Reference MCP health: http://localhost:8001/health
+Reference MCP:        http://localhost:8001/mcp
+PeopleOps PostgreSQL: localhost:5436
+Synthetic HRIS DB:    localhost:5437
+Semantic Run Viewer:  http://127.0.0.1:8765
 ```
 
-Each slice has its own specification and Definition of Done.
-Implementation should not pull features from later slices forward unless
-neutral infrastructure is strictly necessary.
+Live model-backed analysis requires `OPENAI_API_KEY`. Deterministic tests/evaluation paths are kept separate where possible.
 
-## Documentation
+---
 
-The repository documentation has an explicit precedence:
+## Repository structure
 
-``` text
-BRD
- ↓
-PDD
- ↓
-PRD
- ↓
-SPEC
- ↓
-REQ
- ↓
-ADR / PROC / DATA / UI
- ↓
-CTX
- ↓
-SLICES
+```text
+peopleops-ai/
+├── apps/
+│   ├── peopleops-api/
+│   ├── peopleops-web/
+│   └── reference-mcp-server/
+├── synthetic-hris/
+├── policies/
+├── evaluation/
+│   ├── cases/
+│   ├── runs/
+│   └── spikes/
+├── prompts/
+├── docs/
+│   └── portfolio/
+├── docker-compose.yml
+├── Makefile
+├── .env.example
+├── AGENTS.md
+└── README.md
 ```
 
-A lower-level document cannot weaken a mandatory requirement from a
-higher-level source.
+The deployable boundaries and database-ownership rules are architectural invariants even when internal modules evolve.
 
-Codex CLI must start with `AGENTS.md` and the documentation map before
-modifying the project.
+---
 
-## MVP non-compliance conditions
+## Security and privacy
 
-The MVP is **not compliant** if it:
+The public repository uses synthetic HR data and synthetic policies only.
 
--   answers correctly by bypassing MCP;
--   uses keyword/phrase routing;
--   creates functions solely for individual question wordings;
--   lets PeopleOps depend on physical HRIS tables or SQL dialects;
--   uses a silent direct-DB fallback after MCP failure;
--   stores Human Review only in process memory;
--   uses LangSmith as the only functional audit;
--   cites unverified policy evidence;
--   writes to payroll/HRIS;
--   fails to demonstrate schema independence.
+Controls include:
+
+- least-privilege database ownership;
+- environment-based secrets;
+- restricted payroll fields;
+- scoped MCP requests;
+- read-only HRIS operations;
+- result limits and timeouts;
+- safe logging and request correlation;
+- provider-side validation and `EXPLAIN`;
+- evidence preservation;
+- prompt-injection/untrusted-document defenses;
+- durable Human Review.
+
+The repository must not contain customer data, proprietary customer schemas, private ERP code or credentials.
+
+---
 
 ## Scope boundaries
 
-The MVP does **not** aim to replace an HRIS, automate
-dismissals/promotions/sanctions, write payroll, implement full
-recruiting/performance management, provide definitive legal advice,
-publish proprietary ERP adapters, or become a generic BI platform.
+This MVP does **not** aim to:
 
-A real BIZAG/SAP/Workday/customer integration belongs after the
-reference MVP and should live behind the MCP boundary.
+- replace an HRIS;
+- automate dismissals, promotions or sanctions;
+- write payroll or mutate HRIS records;
+- provide definitive legal advice;
+- publish proprietary ERP adapters;
+- become a generic BI platform.
 
-## Portfolio intent
+A real BIZAG/SAP/Workday/customer integration belongs behind the MCP boundary.
 
-PeopleOps AI demonstrates **domain-specific enterprise AI architecture
-in a sensitive HR domain**:
+---
 
-**dynamic structured HR data + policy knowledge + reasoning + human
-governance**
+## Portfolio positioning
 
-The project is intended to provide public, defensible evidence of AI
-Solutions Architecture, Agentic AI, LangGraph, LlamaIndex, OpenAI
-structured outputs/tool use, MCP integration, RAG evaluation,
-Human-in-the-loop, auditability, security boundaries and
-production-oriented engineering.
+PeopleOps AI is the **flagship technical project** in this portfolio because it brings together the capabilities needed to defend an enterprise agentic architecture end to end:
+
+**dynamic HR intelligence + semantic MCP integration + Policy RAG + bounded agentic workflows + Human-in-the-loop + evaluation + low-level observability**
+
+The project is intended as public, defensible evidence for roles such as:
+
+- AI Solutions Architect;
+- Agentic AI Engineer;
+- Generative AI Engineer;
+- AI Technical Lead;
+- Solution / Software Architect.
+
+Its central engineering claim is not that an LLM can answer HR questions. It is that an enterprise AI system can be designed so its **semantics, integrations, tool use, validation, evidence, governance and failures are inspectable and testable**.
+
+---
+
+## Release material
+
+- [`docs/portfolio/DEMO-SCRIPT.md`](docs/portfolio/DEMO-SCRIPT.md)
+- [`docs/portfolio/PILOT-GUIDE.md`](docs/portfolio/PILOT-GUIDE.md)
+- [`docs/portfolio/RELEASE-CHECKLIST.md`](docs/portfolio/RELEASE-CHECKLIST.md)
+- [`docs/portfolio/MCP-CODEX-VALIDATION.md`](docs/portfolio/MCP-CODEX-VALIDATION.md)
+- [`evaluation/runs/slice18-portfolio.md`](evaluation/runs/slice18-portfolio.md)
+- [`evaluation/spikes/semantic_run_viewer.py`](evaluation/spikes/semantic_run_viewer.py)
 
 ## License
 
-A repository license will be selected before public release. Until a
-license file is committed, no license should be inferred from this
-README.
+A repository license will be selected before public release. Until a license file is committed, no license should be inferred from this README.
