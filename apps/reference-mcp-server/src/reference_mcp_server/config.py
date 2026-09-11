@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     )
     mcp_audit_enabled: bool = Field(default=True, alias="MCP_AUDIT_ENABLED")
     mcp_audit_schema: str = Field(default="mcp_audit", alias="MCP_AUDIT_SCHEMA")
+    mcp_payroll_read_authorization_enabled: bool = Field(
+        default=True, alias="MCP_PAYROLL_READ_AUTHORIZATION_ENABLED"
+    )
 
 
 @lru_cache

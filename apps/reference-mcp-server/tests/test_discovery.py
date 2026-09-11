@@ -46,8 +46,12 @@ def test_conceptual_query_contract_is_discoverable_and_example_is_valid() -> Non
 def test_entity_and_relationship_metadata_are_available_through_mcp() -> None:
     async def check() -> tuple[dict, list[dict]]:
         async with Client(create_mcp_server()) as client:
-            entity = await client.call_tool("describe_entity", {"entity_id": "payroll", "request_id": "discovery-2"})
-            relationships = await client.call_tool("discover_relationships", {"request_id": "discovery-3"})
+            entity = await client.call_tool(
+                "describe_entity", {"entity_id": "payroll", "request_id": "discovery-2"}
+            )
+            relationships = await client.call_tool(
+                "discover_relationships", {"request_id": "discovery-3"}
+            )
             relationship_payload = relationships.structured_content or {}
             return entity.structured_content or {}, relationship_payload.get("result", [])
 
@@ -55,7 +59,9 @@ def test_entity_and_relationship_metadata_are_available_through_mcp() -> None:
     fields = {field["field_id"]: field for field in entity["fields"]}
     assert entity["physical_source"] == "employee_payroll"
     assert fields["net_amount"]["semantic_role"] == "amount"
-    payroll_employee = next(item for item in relationships if item["relationship_id"] == "payroll_employee")
+    payroll_employee = next(
+        item for item in relationships if item["relationship_id"] == "payroll_employee"
+    )
     assert payroll_employee["from_entity"] == "payroll"
     assert "employee_payroll.employee_id" in payroll_employee["physical_mapping"]
 
@@ -97,7 +103,9 @@ def test_catalog_fingerprint_is_stable_and_version_sensitive() -> None:
 def test_unknown_entity_is_a_tool_error() -> None:
     async def check() -> bool:
         async with Client(create_mcp_server()) as client:
-            result = await client.call_tool("describe_entity", {"entity_id": "not-real", "request_id": "error-1"})
+            result = await client.call_tool(
+                "describe_entity", {"entity_id": "not-real", "request_id": "error-1"}
+            )
             return result.is_error
 
     assert asyncio.run(check()) is True

@@ -36,6 +36,50 @@ def query_hash(query: ConceptualQuery) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+def payroll_read_authorization(
+    scopes: list[str], settings: Settings, *, required: bool = True
+) -> dict[str, Any]:
+    """Return payroll read authorization without changing other provider guards."""
+    scope_present = "hr:payroll" in scopes
+    if not required:
+        return {
+            "required": False,
+            "enforcement_enabled": settings.mcp_payroll_read_authorization_enabled,
+            "scope_present": scope_present,
+            "decision": "not_required",
+        }
+    if not settings.mcp_payroll_read_authorization_enabled:
+        decision = "allowed_by_configuration"
+    else:
+        decision = "allowed_by_scope" if scope_present else "denied"
+    return {
+        "required": True,
+        "enforcement_enabled": settings.mcp_payroll_read_authorization_enabled,
+        "scope_present": scope_present,
+        "decision": decision,
+    }
+
+
+def query_requires_payroll_read(query: ConceptualQuery) -> bool:
+    """Identify payroll-domain access from conceptual references only."""
+    references = [item.field for item in query.select]
+    references.extend(metric.field for metric in query.metrics if metric.field)
+    references.extend(item.field for item in query.filters)
+    references.extend(query.dimensions)
+    if query.time_scope and query.time_scope.field:
+        references.append(query.time_scope.field)
+    references.extend(item.left for item in query.comparisons)
+    references.extend(item.right for item in query.comparisons)
+    return any(
+        reference.split(".", 1)[0]
+        in {"payroll", "payroll_period", "payroll_item", "payroll_concept"}
+        for reference in references
+        if "." in reference
+    ) or bool(
+        {"payroll", "payroll_period", "payroll_item", "payroll_concept"} & set(query.entities)
+    )
+
+
 def validate_query(
     query: ConceptualQuery,
     catalog: CatalogMetadata,
@@ -43,6 +87,7 @@ def validate_query(
     *,
     request_id: str | None = None,
     max_result_rows: int = 1000,
+    payroll_read_authorization_enabled: bool = True,
 ) -> QueryValidation:
     errors: list[str] = []
     entities = {entity.entity_id: entity for entity in catalog.entities}
@@ -55,9 +100,9 @@ def validate_query(
         errors.append("entities must be unique")
     if len(set(query.relationships)) != len(query.relationships):
         errors.append("relationships must be unique")
-    projection_labels = [
-        item.alias or item.field.rsplit(".", 1)[-1] for item in query.select
-    ] + [_metric_label(metric) for metric in query.metrics]
+    projection_labels = [item.alias or item.field.rsplit(".", 1)[-1] for item in query.select] + [
+        _metric_label(metric) for metric in query.metrics
+    ]
     if len(set(projection_labels)) != len(projection_labels):
         errors.append("select and metric aliases must be unique")
     for relation_id in query.relationships:
@@ -104,7 +149,11 @@ def validate_query(
         except QueryExecutionError:
             continue
         entity = entities.get(entity_id)
-        field = next((item for item in entity.fields if item.field_id == field_id), None) if entity else None
+        field = (
+            next((item for item in entity.fields if item.field_id == field_id), None)
+            if entity
+            else None
+        )
         if field is not None and field.unit and metric.conversion.from_unit != field.unit:
             errors.append(
                 f"conversion source unit {metric.conversion.from_unit!r} does not match "
@@ -119,7 +168,7 @@ def validate_query(
         for reference in refs
         if "." in reference
     )
-    if sensitive and "hr:payroll" not in scopes:
+    if sensitive and payroll_read_authorization_enabled and "hr:payroll" not in scopes:
         errors.append("authorization scope hr:payroll is required for restricted data")
     if query.limit > max_result_rows:
         errors.append(f"limit must not exceed provider maximum of {max_result_rows}")
@@ -231,9 +280,7 @@ def translate_query(query: ConceptualQuery, catalog: CatalogMetadata) -> Physica
     # additional grouping contract, not a replacement for selected fields.
     # Omitting a selected field produces a valid-looking query that PostgreSQL
     # correctly rejects with a GROUP BY error.
-    group_refs = list(dict.fromkeys(
-        [item.field for item in query.select] + list(query.dimensions)
-    ))
+    group_refs = list(dict.fromkeys([item.field for item in query.select] + list(query.dimensions)))
     group_by = (
         " GROUP BY " + ", ".join(_field_sql(ref, entities, aliases)[0] for ref in group_refs)
         if query.metrics and group_refs
@@ -262,19 +309,35 @@ def execute_query(
     query_payload = query.model_dump(mode="json")
     physical: PhysicalQuery | None = None
     validation: QueryValidation | None = None
+    authorization_context = payroll_read_authorization(
+        scopes, settings, required=query_requires_payroll_read(query)
+    )
     validation = validate_query(
-        query, catalog, scopes, request_id=request_id, max_result_rows=settings.max_result_rows
+        query,
+        catalog,
+        scopes,
+        request_id=request_id,
+        max_result_rows=settings.max_result_rows,
+        payroll_read_authorization_enabled=settings.mcp_payroll_read_authorization_enabled,
     )
     if not validation.valid:
         if settings.mcp_audit_enabled:
             record_interaction(
-                settings, tool_name="execute_conceptual_query", request_id=request_id,
-                started_at=started_at, status="validation_rejected",
-                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-                conceptual_query=query_payload, query_hash=validation.query_hash,
+                settings,
+                tool_name="execute_conceptual_query",
+                request_id=request_id,
+                started_at=started_at,
+                status="validation_rejected",
+                catalog_version=validation.catalog_version,
+                provider_type=catalog.provider_type,
+                conceptual_query=query_payload,
+                query_hash=validation.query_hash,
                 validation_result=validation.model_dump(mode="json"),
-                validation_errors=validation.errors, execution_attempted=False,
-                error_code="QUERY_VALIDATION_ERROR", error_message_safe="query validation failed",
+                validation_errors=validation.errors,
+                execution_attempted=False,
+                error_code="QUERY_VALIDATION_ERROR",
+                error_message_safe="query validation failed",
+                authorization_context=authorization_context,
             )
         return QueryResult(request_id=request_id, validation=validation)
     try:
@@ -283,15 +346,22 @@ def execute_query(
     except QueryExecutionError as exc:
         if settings.mcp_audit_enabled:
             record_interaction(
-                settings, tool_name="execute_conceptual_query", request_id=request_id,
-                started_at=started_at, status="physical_validation_failed",
-                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-                conceptual_query=query_payload, query_hash=validation.query_hash,
+                settings,
+                tool_name="execute_conceptual_query",
+                request_id=request_id,
+                started_at=started_at,
+                status="physical_validation_failed",
+                catalog_version=validation.catalog_version,
+                provider_type=catalog.provider_type,
+                conceptual_query=query_payload,
+                query_hash=validation.query_hash,
                 validation_result=validation.model_dump(mode="json"),
                 physical_sql=physical.sql if physical else None,
                 physical_params=physical.params if physical else None,
-                execution_attempted=False, error_code=exc.code,
+                execution_attempted=False,
+                error_code=exc.code,
                 error_message_safe="physical query validation failed",
+                authorization_context=authorization_context,
             )
         raise
     result_limit = min(query.limit, settings.max_result_rows)
@@ -324,29 +394,51 @@ def execute_query(
     except psycopg.errors.QueryCanceled as exc:
         if settings.mcp_audit_enabled:
             record_interaction(
-                settings, tool_name="execute_conceptual_query", request_id=request_id,
-                started_at=started_at, status="execution_failed",
-                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-                conceptual_query=query_payload, query_hash=validation.query_hash,
-                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
-                physical_params=physical.params, execution_attempted=True,
-                execution_success=False, error_code="QUERY_TIMEOUT",
+                settings,
+                tool_name="execute_conceptual_query",
+                request_id=request_id,
+                started_at=started_at,
+                status="execution_failed",
+                catalog_version=validation.catalog_version,
+                provider_type=catalog.provider_type,
+                conceptual_query=query_payload,
+                query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"),
+                physical_sql=physical.sql,
+                physical_params=physical.params,
+                execution_attempted=True,
+                execution_success=False,
+                error_code="QUERY_TIMEOUT",
                 error_message_safe="query exceeded provider timeout",
+                authorization_context=authorization_context,
             )
         raise QueryExecutionError(
             "QUERY_TIMEOUT", "query exceeded the provider timeout", retryable=True
         ) from exc
-    except (psycopg.errors.SyntaxError, psycopg.errors.UndefinedColumn, psycopg.errors.UndefinedTable) as exc:
+    except (
+        psycopg.errors.SyntaxError,
+        psycopg.errors.UndefinedColumn,
+        psycopg.errors.UndefinedTable,
+    ) as exc:
         if settings.mcp_audit_enabled:
             record_interaction(
-                settings, tool_name="execute_conceptual_query", request_id=request_id,
-                started_at=started_at, status="execution_failed",
-                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-                conceptual_query=query_payload, query_hash=validation.query_hash,
-                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
-                physical_params=physical.params, execution_attempted=True,
-                execution_success=False, error_code="QUERY_VALIDATION_FAILED",
+                settings,
+                tool_name="execute_conceptual_query",
+                request_id=request_id,
+                started_at=started_at,
+                status="execution_failed",
+                catalog_version=validation.catalog_version,
+                provider_type=catalog.provider_type,
+                conceptual_query=query_payload,
+                query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"),
+                physical_sql=physical.sql,
+                physical_params=physical.params,
+                execution_attempted=True,
+                execution_success=False,
+                error_code="QUERY_VALIDATION_FAILED",
                 error_message_safe="provider rejected the validated query",
+                authorization_context=authorization_context,
             )
         raise QueryExecutionError(
             "QUERY_VALIDATION_FAILED", "provider rejected the validated physical query"
@@ -354,14 +446,23 @@ def execute_query(
     except (psycopg.Error, OSError) as exc:
         if settings.mcp_audit_enabled:
             record_interaction(
-                settings, tool_name="execute_conceptual_query", request_id=request_id,
-                started_at=started_at, status="execution_failed",
-                catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-                conceptual_query=query_payload, query_hash=validation.query_hash,
-                validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
-                physical_params=physical.params, execution_attempted=True,
-                execution_success=False, error_code="QUERY_EXECUTION_ERROR",
+                settings,
+                tool_name="execute_conceptual_query",
+                request_id=request_id,
+                started_at=started_at,
+                status="execution_failed",
+                catalog_version=validation.catalog_version,
+                provider_type=catalog.provider_type,
+                conceptual_query=query_payload,
+                query_hash=validation.query_hash,
+                validation_result=validation.model_dump(mode="json"),
+                physical_sql=physical.sql,
+                physical_params=physical.params,
+                execution_attempted=True,
+                execution_success=False,
+                error_code="QUERY_EXECUTION_ERROR",
                 error_message_safe="provider failed to execute the query",
+                authorization_context=authorization_context,
             )
         raise QueryExecutionError(
             "QUERY_EXECUTION_ERROR", "provider failed to execute the validated query"
@@ -380,13 +481,22 @@ def execute_query(
     )
     if settings.mcp_audit_enabled:
         record_interaction(
-            settings, tool_name="execute_conceptual_query", request_id=request_id,
-            started_at=started_at, status="completed",
-            catalog_version=validation.catalog_version, provider_type=catalog.provider_type,
-            conceptual_query=query_payload, query_hash=validation.query_hash,
-            validation_result=validation.model_dump(mode="json"), physical_sql=physical.sql,
-            physical_params=physical.params, execution_attempted=True,
-            execution_success=True, row_count=len(rows),
+            settings,
+            tool_name="execute_conceptual_query",
+            request_id=request_id,
+            started_at=started_at,
+            status="completed",
+            catalog_version=validation.catalog_version,
+            provider_type=catalog.provider_type,
+            conceptual_query=query_payload,
+            query_hash=validation.query_hash,
+            validation_result=validation.model_dump(mode="json"),
+            physical_sql=physical.sql,
+            physical_params=physical.params,
+            execution_attempted=True,
+            execution_success=True,
+            row_count=len(rows),
+            authorization_context=authorization_context,
         )
     return QueryResult(
         request_id=request_id,
@@ -545,15 +655,23 @@ def _validate_temporal_scope(
         errors.append(str(exc))
         return
     entity = entities.get(entity_id)
-    field = next((item for item in entity.fields if item.field_id == field_id), None) if entity else None
+    field = (
+        next((item for item in entity.fields if item.field_id == field_id), None)
+        if entity
+        else None
+    )
     if entity_id not in selected_entities or field is None:
         errors.append(f"INVALID_TIME_FIELD: unknown temporal field: {period.field}")
         return
     temporal = field.temporal_kind in {"date", "datetime"} or field_id in entity.temporal_fields
     period_capable = entity.supports_period_filter or field.temporal_kind == "period"
     if period.type == "date_range" and not temporal:
-        errors.append(f"INVALID_TIME_FIELD: date_range requires date/datetime field: {period.field}")
-    if period.type in {"period", "period_list", "payroll_period"} and not (temporal or period_capable):
+        errors.append(
+            f"INVALID_TIME_FIELD: date_range requires date/datetime field: {period.field}"
+        )
+    if period.type in {"period", "period_list", "payroll_period"} and not (
+        temporal or period_capable
+    ):
         errors.append(f"INVALID_TIME_FIELD: period is not supported by field: {period.field}")
 
 
@@ -600,9 +718,7 @@ def _order_sql(
     entities: dict[str, EntityMetadata],
     aliases: dict[str, str],
 ) -> str:
-    if any(
-        _metric_label(metric) == reference for metric in query.metrics
-    ):
+    if any(_metric_label(metric) == reference for metric in query.metrics):
         return _output_identifier(reference)
     return _field_sql(reference, entities, aliases)[0]
 

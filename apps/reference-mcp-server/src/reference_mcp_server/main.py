@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -13,12 +14,28 @@ from mcp.server.mcpserver.exceptions import ToolError
 from reference_mcp_server.alternate_schema import build_alternate_catalog
 from reference_mcp_server.audit import monotonic_started, record_interaction
 from reference_mcp_server.config import get_settings
-from reference_mcp_server.discovery import CatalogMetadata, build_catalog, build_catalog_from_database
-from reference_mcp_server.execution import QueryExecutionError, execute_query, validate_query
+from reference_mcp_server.discovery import (
+    CatalogMetadata,
+    build_catalog,
+    build_catalog_from_database,
+)
+from reference_mcp_server.execution import (
+    QueryExecutionError,
+    execute_query,
+    payroll_read_authorization,
+    query_requires_payroll_read,
+    validate_query,
+)
 from reference_mcp_server.query_contracts import ConceptualQuery
 from reference_mcp_server.temporal import get_temporal_context
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
+if not settings.mcp_payroll_read_authorization_enabled:
+    logger.warning(
+        "MCP payroll read authorization enforcement is disabled. "
+        "Intended only for synthetic/demo or explicitly trusted environments."
+    )
 
 
 def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False) -> MCPServer:
@@ -33,6 +50,7 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
 
     def catalog_error() -> ToolError:
         return ToolError("SOURCE_UNAVAILABLE")
+
     mcp = MCPServer(
         "reference-mcp-server",
         title="Reference MCP Server",
@@ -124,7 +142,9 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             raise catalog_error() from exc
 
     @mcp.tool(title="Discover capabilities")
-    def discover_capabilities(request_id: str, security: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def discover_capabilities(
+        request_id: str, security: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """List generic capabilities exposed by the provider."""
         try:
             return [item.model_dump(mode="json") for item in current_catalog().capabilities]
@@ -132,7 +152,9 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             raise catalog_error() from exc
 
     @mcp.tool(title="Discover entities")
-    def discover_entities(request_id: str, security: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def discover_entities(
+        request_id: str, security: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """List semantic entities and their provider-neutral fields."""
         try:
             return [item.model_dump(mode="json") for item in current_catalog().entities]
@@ -140,10 +162,14 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             raise catalog_error() from exc
 
     @mcp.tool(title="Describe entity")
-    def describe_entity(entity_id: str, request_id: str, security: dict[str, Any] | None = None) -> dict[str, Any]:
+    def describe_entity(
+        entity_id: str, request_id: str, security: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Describe one semantic entity."""
         try:
-            entity = next((item for item in current_catalog().entities if item.entity_id == entity_id), None)
+            entity = next(
+                (item for item in current_catalog().entities if item.entity_id == entity_id), None
+            )
         except Exception as exc:
             raise catalog_error() from exc
         if entity is None:
@@ -151,7 +177,9 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
         return entity.model_dump(mode="json")
 
     @mcp.tool(title="Discover relationships")
-    def discover_relationships(request_id: str, security: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def discover_relationships(
+        request_id: str, security: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
         """List relationships available to conceptual queries."""
         try:
             return [item.model_dump(mode="json") for item in current_catalog().relationships]
@@ -171,7 +199,14 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             raise ToolError("AUTHORIZATION_REQUIRED")
         requested_capabilities = set(capabilities or [])
         requested_entities = set(entities or [])
-        if "payroll" in requested_capabilities and "hr:payroll" not in scopes:
+        payroll_requested = "payroll" in requested_capabilities or bool(
+            {"payroll", "payroll_period", "payroll_item", "payroll_concept"} & requested_entities
+        )
+        if (
+            payroll_requested
+            and settings.mcp_payroll_read_authorization_enabled
+            and "hr:payroll" not in scopes
+        ):
             raise ToolError("AUTHORIZATION_DENIED")
         try:
             catalog = current_catalog()
@@ -227,10 +262,16 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             typed_query = ConceptualQuery.model_validate(query)
         except Exception as exc:
             if settings.mcp_audit_enabled:
-                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
-                                   started_at=started_at, status="invalid_contract",
-                                   conceptual_query=query, error_code="INVALID_CONCEPTUAL_QUERY",
-                                   error_message_safe="conceptual query contract invalid")
+                record_interaction(
+                    settings,
+                    tool_name="validate_conceptual_query",
+                    request_id=request_id,
+                    started_at=started_at,
+                    status="invalid_contract",
+                    conceptual_query=query,
+                    error_code="INVALID_CONCEPTUAL_QUERY",
+                    error_message_safe="conceptual query contract invalid",
+                )
             raise ToolError("INVALID_CONCEPTUAL_QUERY") from exc
         try:
             catalog = current_catalog()
@@ -243,25 +284,42 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
                 _scopes(security),
                 request_id=request_id,
                 max_result_rows=settings.max_result_rows,
+                payroll_read_authorization_enabled=settings.mcp_payroll_read_authorization_enabled,
             )
             if settings.mcp_audit_enabled:
-                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
-                                   started_at=started_at,
-                                   status="accepted" if result.valid else "rejected",
-                                   catalog_version=result.catalog_version, provider_type=catalog.provider_type,
-                                   conceptual_query=typed_query.model_dump(mode="json"),
-                                   query_hash=result.query_hash,
-                                   validation_result=result.model_dump(mode="json"),
-                                   validation_errors=result.errors,
-                                   error_code=None if result.valid else "QUERY_VALIDATION_ERROR",
-                                   error_message_safe=None if result.valid else "query validation failed")
+                record_interaction(
+                    settings,
+                    tool_name="validate_conceptual_query",
+                    request_id=request_id,
+                    started_at=started_at,
+                    status="accepted" if result.valid else "rejected",
+                    catalog_version=result.catalog_version,
+                    provider_type=catalog.provider_type,
+                    conceptual_query=typed_query.model_dump(mode="json"),
+                    query_hash=result.query_hash,
+                    validation_result=result.model_dump(mode="json"),
+                    validation_errors=result.errors,
+                    authorization_context=payroll_read_authorization(
+                        _scopes(security),
+                        settings,
+                        required=query_requires_payroll_read(typed_query),
+                    ),
+                    error_code=None if result.valid else "QUERY_VALIDATION_ERROR",
+                    error_message_safe=None if result.valid else "query validation failed",
+                )
             return result.model_dump(mode="json")
         except Exception as exc:
             if settings.mcp_audit_enabled:
-                record_interaction(settings, tool_name="validate_conceptual_query", request_id=request_id,
-                                   started_at=started_at, status="failed",
-                                   conceptual_query=query, error_code="INVALID_CONCEPTUAL_QUERY",
-                                   error_message_safe="conceptual validation failed")
+                record_interaction(
+                    settings,
+                    tool_name="validate_conceptual_query",
+                    request_id=request_id,
+                    started_at=started_at,
+                    status="failed",
+                    conceptual_query=query,
+                    error_code="INVALID_CONCEPTUAL_QUERY",
+                    error_message_safe="conceptual validation failed",
+                )
             raise ToolError("INVALID_CONCEPTUAL_QUERY") from exc
 
     @mcp.tool(title="Execute conceptual query")

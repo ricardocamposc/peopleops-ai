@@ -3,3 +3,4 @@
 {"id":"P44-003","language":"es","category":"filter","question":"Muéstrame los trabajadores activos del departamento de Operaciones."}
 {"id":"P44-004","language":"es","category":"period","question":"Muéstrame la fecha y las horas extras registradas en enero de 2026."}
 {"id":"P44-005","language":"es","category":"aggregation","question":"Dame el total de horas extras de enero de 2026."}
+{"id":"P44-006","language":"es","category":"active_contracts","question":"¿Qué empleados tienen contrato vigente?"}

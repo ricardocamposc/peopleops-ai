@@ -123,19 +123,35 @@ def _semantic_submission_errors(
         errors.append(
             "data_retrieval_request is required for structured data requests"
         )
-    if not semantic.entities:
+    if not semantic.entities and not semantic.required_sources:
         errors.append(
             "entities must identify at least one catalog entity for structured data requests"
         )
-    if not semantic.measures and not semantic.dimensions:
+    has_retrieval_detail = bool(
+        semantic.measures
+        or semantic.dimensions
+        or semantic.filters
+        or [
+            item
+            for item in required_information
+            if item != "database access"
+        ]
+    )
+    if not has_retrieval_detail:
         errors.append(
-            "measures or dimensions must identify the data required for structured data requests"
+            "measures, dimensions, filters, or requested fields must identify the data required "
+            "for structured data requests"
         )
     if catalog is not None:
         known_entities = {item.entity_id for item in catalog.entities}
         errors.extend(
             f"UNKNOWN_ENTITY: {entity}"
             for entity in semantic.entities
+            if entity not in known_entities
+        )
+        errors.extend(
+            f"UNKNOWN_ENTITY: {entity}"
+            for entity in semantic.required_sources
             if entity not in known_entities
         )
     has_multiple_periods = len(semantic.temporal_requirements) > 1
@@ -433,6 +449,21 @@ class FunctionalAnalystAgent:
                                 ).model_dump(mode="json")
                         if name == "submit_semantic_request":
                             proposed = SemanticRequest.model_validate(result["semantic_request"])
+                            if not proposed.entities and proposed.required_sources and catalog:
+                                known_entities = {
+                                    item["entity_id"]
+                                    for item in catalog.get("entities", [])
+                                    if isinstance(item, dict) and item.get("entity_id")
+                                }
+                                grounded_sources = [
+                                    source
+                                    for source in proposed.required_sources
+                                    if source in known_entities
+                                ]
+                                if grounded_sources:
+                                    proposed = proposed.model_copy(
+                                        update={"entities": grounded_sources}
+                                    )
                             requires_discovery = (
                                 proposed.requires_catalog or proposed.requires_structured_data
                             ) and not proposed.requires_policy and not proposed.needs_clarification

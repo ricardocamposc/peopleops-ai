@@ -16,6 +16,7 @@ from peopleops_api.analysis_workflow import (
     _deterministic_result_facts,
     _semantic_catalog_errors,
 )
+from peopleops_api.functional_analyst_agent import _semantic_submission_errors
 from peopleops_api.mcp_contracts import SecurityContext
 from peopleops_api.models import AnalysisInteraction, Conversation
 from peopleops_api.query_contracts import (
@@ -88,8 +89,11 @@ class FakeModel:
         if self._last_by_type is None:
             self._last_by_type = {}
         index = next(
-            (index for index, candidate in enumerate(self.outputs)
-             if isinstance(candidate, output_model)),
+            (
+                index
+                for index, candidate in enumerate(self.outputs)
+                if isinstance(candidate, output_model)
+            ),
             None,
         )
         if index is None:
@@ -207,6 +211,82 @@ def _policy_plan():
     )
 
 
+def test_functional_analyst_accepts_filtered_list_requests_with_grounded_required_sources():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="Retrieve active contracts",
+        required_information=["database access"],
+        required_sources=["contract"],
+        filters=["contract.status = active"],
+        data_retrieval_request="Retrieve employee identifiers and contract details for active contracts.",
+        entities=[],
+        measures=[],
+        dimensions=[],
+        requires_structured_data=True,
+        requires_policy=False,
+    )
+
+    assert _semantic_submission_errors(semantic, build_catalog()) == []
+
+
+def test_finalize_response_persists_insufficient_data_status(db_session):
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    workflow = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=FakeModel([]), security=SecurityContext()
+    )
+
+    result = workflow._finalize_response(
+        {
+            "interaction": interaction,
+            "question": interaction.question,
+            "workflow_error": {
+                "stage": "understanding",
+                "code": "FUNCTIONAL_ANALYST_FAILED",
+                "detail": "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED",
+            },
+        }
+    )["interaction"]
+
+    assert result.status == "insufficient_data"
+    assert result.response["status"] == "insufficient_data"
+    assert result.error_type == "FUNCTIONAL_ANALYST_FAILED"
+    assert result.error_detail == "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED"
+    assert "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED" not in result.response["answer"]
+    assert all(
+        "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED" not in warning
+        for warning in result.response["warnings"]
+    )
+    assert (
+        result.evaluation_trace["workflow_error"]["detail"]
+        == "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED"
+    )
+
+
+def test_boundary_failure_is_closed_by_final_response_node(db_session):
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+    workflow = AnalysisWorkflow(
+        session=db_session, gateway=FakeGateway(), model=FakeModel([]), security=SecurityContext()
+    )
+
+    result = workflow._fail(
+        interaction,
+        "FUNCTIONAL_ANALYST_FAILED",
+        "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED",
+    )
+
+    assert result.status == "failed"
+    assert result.response["status"] == "insufficient_data"
+    assert "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED" not in result.response["answer"]
+    assert [event["stage"] for event in result.stage_history][-1] == "finalize_response"
+    assert result.stage_history[-1]["status"] == "completed"
+    assert result.error_detail == "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED"
+
+
 def test_workflow_uses_typed_model_gateway_and_persists_observable_stages(db_session):
     model = FakeModel(
         [
@@ -265,7 +345,10 @@ def test_evaluation_trace_correlates_happy_path_plan_validation_and_execution(db
     assert trace["provider_validations"][0]["accepted"] is True
     assert trace["provider_executions"][0]["success"] is True
     assert trace["provider_validations"][0]["query"] == trace["provider_executions"][0]["query"]
-    assert trace["provider_validations"][0]["query"] == trace["planning_attempts"][0]["conceptual_queries"][0]["query"]
+    assert (
+        trace["provider_validations"][0]["query"]
+        == trace["planning_attempts"][0]["conceptual_queries"][0]["query"]
+    )
 
 
 def test_evaluation_trace_keeps_validation_rejection_out_of_execution(db_session):
@@ -399,6 +482,7 @@ def test_evaluation_trace_persists_authorization_decision(db_session):
     assert result.status == "failed"
     assert result.evaluation_trace["authorization"] == {
         "required": True,
+        "enforcement_enabled": True,
         "granted": False,
         "decision": "denied",
         "scope_present": False,
@@ -432,7 +516,9 @@ def test_evaluation_trace_records_independent_period_queries(db_session):
     ).run(interaction)
 
     trace = result.evaluation_trace
-    assert [item["logical_query_role"] for item in trace["planning_attempts"][0]["conceptual_queries"]] == [
+    assert [
+        item["logical_query_role"] for item in trace["planning_attempts"][0]["conceptual_queries"]
+    ] == [
         "current",
         "previous",
     ]
@@ -460,7 +546,10 @@ def test_evaluation_trace_marks_zero_row_execution_as_valid(db_session):
 
     assert result.status == "completed"
     assert result.evaluation_trace["provider_executions"][0]["success"] is True
-    assert result.evaluation_trace["provider_executions"][0]["result_verification_status"] == "ZERO_ROWS"
+    assert (
+        result.evaluation_trace["provider_executions"][0]["result_verification_status"]
+        == "ZERO_ROWS"
+    )
 
 
 def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
@@ -487,6 +576,146 @@ def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
     assert result.status == "failed"
     assert result.error_type == "AUTHORIZATION_ERROR"
     assert result.error_detail == "payroll access requires the hr:payroll scope"
+
+
+def test_payroll_read_authorization_can_be_disabled_for_trusted_demo(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="payroll totals", required_capabilities=["payroll"], entities=["payroll"]
+            ),
+            _plan(),
+            StructuredAnswer(answer="Payroll totals available."),
+        ]
+    )
+    interaction = _interaction(question="What are the payroll totals?")
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+        payroll_read_authorization_enabled=False,
+    ).run(interaction)
+
+    assert result.evaluation_trace["authorization"] == {
+        "required": True,
+        "enforcement_enabled": False,
+        "granted": True,
+        "decision": "allowed_by_configuration",
+        "scope_present": False,
+    }
+
+
+def test_payroll_read_authorization_helper_requires_scope_when_enabled():
+    from peopleops_api.analysis_workflow import payroll_read_allowed
+
+    assert not payroll_read_allowed(SecurityContext(scopes=["hr:read"]), True)
+    assert payroll_read_allowed(SecurityContext(scopes=["hr:read", "hr:payroll"]), True)
+    assert payroll_read_allowed(SecurityContext(scopes=["hr:read"]), False)
+
+
+def test_restricted_read_only_analysis_reviews_when_enabled(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        read_analysis_human_review_enabled=True,
+    ).run(interaction)
+
+    assert result.status == "pending_human_review"
+    assert result.evaluation_trace["human_review_decision"] == {
+        "semantic_sensitivity": "restricted",
+        "semantic_requires_human_review": False,
+        "operation_type": "read_only_structured_analysis",
+        "enforcement_enabled": True,
+        "evidence_available": True,
+        "review_required": True,
+        "reason": "semantic_review_required",
+    }
+
+
+def test_restricted_read_only_analysis_skips_review_when_disabled(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+            StructuredAnswer(answer="The matching employee is E001."),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        read_analysis_human_review_enabled=False,
+    ).run(interaction)
+
+    assert result.status == "completed"
+    assert result.human_review_id is None
+    assert result.evaluation_trace["human_review_decision"]["review_required"] is False
+    assert result.evaluation_trace["human_review_decision"]["reason"] == (
+        "read_only_review_disabled_by_configuration"
+    )
+
+
+def test_restricted_analysis_without_evidence_never_routes_to_review(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(invalid_first=True),
+        model=model,
+        security=SecurityContext(),
+        max_replans=0,
+        read_analysis_human_review_enabled=True,
+    ).run(interaction)
+
+    assert result.status == "insufficient_data"
+    assert result.human_review_id is None
+    assert result.evaluation_trace["human_review_decision"]["evidence_available"] is False
+    assert result.evaluation_trace["human_review_decision"]["reason"] == ("no_reviewable_evidence")
 
 
 def test_invalid_query_is_replanned_once_and_does_not_loop(db_session):
@@ -642,15 +871,16 @@ def test_filter_literals_are_not_conceptual_references():
     invalid = valid.model_copy(
         update={
             "filters": [
-                QueryFilter(
-                    field="employee.status", operator="eq", value="employee.active"
-                )
+                QueryFilter(field="employee.status", operator="eq", value="employee.active")
             ]
         }
     )
 
     assert _catalog_conceptual_validation_errors(valid, build_catalog()) == []
-    assert any("INVALID_FILTER" in error for error in _catalog_conceptual_validation_errors(invalid, build_catalog()))
+    assert any(
+        "INVALID_FILTER" in error
+        for error in _catalog_conceptual_validation_errors(invalid, build_catalog())
+    )
 
 
 def test_projection_aliases_are_unique_across_select_and_metrics():
@@ -667,7 +897,9 @@ def test_projection_aliases_are_unique_across_select_and_metrics():
                         QuerySelect(field="employee.department_id", alias="department_id"),
                         QuerySelect(field="employee.status", alias="department_id"),
                     ],
-                    metrics=[QueryMetric(field="employee.id", function="count", alias="department_id")],
+                    metrics=[
+                        QueryMetric(field="employee.id", function="count", alias="department_id")
+                    ],
                 ),
             }
         ],
@@ -706,7 +938,9 @@ def test_generated_metric_alias_is_disambiguated_from_explicit_select_alias():
 
     query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
 
-    assert len({item.alias for item in query.select} | {metric.alias for metric in query.metrics}) == 2
+    assert (
+        len({item.alias for item in query.select} | {metric.alias for metric in query.metrics}) == 2
+    )
     assert _catalog_conceptual_validation_errors(query, build_catalog()) == []
 
 
@@ -752,7 +986,10 @@ def test_catalog_repair_does_not_guess_ambiguous_field_identifier():
     query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
 
     assert query.dimensions == ["status"]
-    assert any("UNQUALIFIED_FIELD" in error for error in _catalog_conceptual_validation_errors(query, build_catalog()))
+    assert any(
+        "UNQUALIFIED_FIELD" in error
+        for error in _catalog_conceptual_validation_errors(query, build_catalog())
+    )
 
 
 def test_period_comparison_expansion_preserves_complete_independent_scopes():
@@ -777,7 +1014,9 @@ def test_period_comparison_expansion_preserves_complete_independent_scopes():
         ],
     )
 
-    expanded = _complete_plan_relationship_entities(_expand_period_comparison_plan(plan), build_catalog())
+    expanded = _complete_plan_relationship_entities(
+        _expand_period_comparison_plan(plan), build_catalog()
+    )
 
     assert [item.logical_role for item in expanded.queries] == ["current", "previous"]
     assert [item.query.time_scope.value for item in expanded.queries] == ["2025-02", "2025-01"]
@@ -826,8 +1065,14 @@ def test_catalog_preflight_accepts_only_discovered_qualified_fields():
     )
 
     assert _catalog_conceptual_validation_errors(valid, catalog) == []
-    assert any("UNKNOWN_FIELD" in error for error in _catalog_conceptual_validation_errors(invalid, catalog))
-    assert any("UNQUALIFIED_FIELD" in error for error in _catalog_conceptual_validation_errors(unqualified, catalog))
+    assert any(
+        "UNKNOWN_FIELD" in error
+        for error in _catalog_conceptual_validation_errors(invalid, catalog)
+    )
+    assert any(
+        "UNQUALIFIED_FIELD" in error
+        for error in _catalog_conceptual_validation_errors(unqualified, catalog)
+    )
 
 
 def test_temporal_non_policy_request_routes_to_structured_workflow():
@@ -923,7 +1168,9 @@ def test_noncanonical_semantic_identifiers_are_refined_from_safe_catalog(db_sess
     model = FakeModel(
         [
             SemanticRequest(
-                goal="active people", required_capabilities=["people analytics"], entities=["people"]
+                goal="active people",
+                required_capabilities=["people analytics"],
+                entities=["people"],
             ),
             SemanticRequest(
                 goal="active people", required_capabilities=["workforce"], entities=["employee"]
