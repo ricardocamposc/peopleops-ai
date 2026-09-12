@@ -40,6 +40,7 @@ type Analysis = {
   id: string;
   request_id: string;
   conversation_id?: string | null;
+  continuation_of_id?: string | null;
   question: string;
   status: string;
   current_stage: string;
@@ -52,6 +53,8 @@ type Analysis = {
   warnings?: string[] | null;
   human_review_status?: string | null;
   human_review_id?: string | null;
+  human_review?: HumanReviewSummary | null;
+  user_context?: Record<string, unknown> | null;
   error_type?: string | null;
   error_detail?: string | null;
   latency_ms?: number | null;
@@ -71,6 +74,16 @@ type ResponsePayload = {
 
 type Evidence = Record<string, unknown> & { type?: string };
 
+type HumanReviewSummary = {
+  id: string;
+  status: string;
+  decision?: string | null;
+  comments?: string | null;
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+  reason?: string | null;
+};
+
 const TERMINAL_STATUSES = new Set([
   "completed",
   "failed",
@@ -78,6 +91,7 @@ const TERMINAL_STATUSES = new Set([
   "permission_denied",
   "policy_not_found",
   "policy_conflict",
+  "waiting_for_user_information",
 ]);
 
 function statusLabel(status?: string | null) {
@@ -95,6 +109,7 @@ function statusLabel(status?: string | null) {
     approve: "Aprobado",
     reject: "Rechazado",
     needs_information: "Falta informacion",
+    waiting_for_user_information: "Esperando informacion",
   };
   return labels[status] ?? status.replaceAll("_", " ");
 }
@@ -110,6 +125,29 @@ function displayValue(value: unknown) {
   if (value === null || value === undefined || value === "") return "-";
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
+}
+
+function statusTone(status?: string | null) {
+  if (!status) return "neutral";
+  if (["failed", "permission_denied", "reject", "error"].includes(status)) return "danger";
+  if (
+    [
+      "insufficient_data",
+      "policy_not_found",
+      "policy_conflict",
+      "pending_human_review",
+      "needs_information",
+      "warning",
+    ].includes(status)
+  ) {
+    return "warning";
+  }
+  if (["completed", "approve", "approved_for_rerun"].includes(status)) return "success";
+  return "neutral";
+}
+
+function analysisTone(analysis: Analysis) {
+  return statusTone(analysis.human_review_status ?? analysis.status);
 }
 
 function EvidenceCard({ item }: { item: Evidence }) {
@@ -204,7 +242,7 @@ function TraceTimeline({ trace, loading }: { trace: DetailTrace | null; loading:
           const isOpen = openStep === step.sequence;
           return (
             <button
-              className={`timeline-item timeline-item--${step.kind} ${isOpen ? "timeline-item--open" : ""}`}
+              className={`timeline-item timeline-item--${step.kind} timeline-item--tone-${statusTone(step.status)} ${isOpen ? "timeline-item--open" : ""}`}
               key={step.sequence}
               onClick={() => setOpenStep(isOpen ? null : step.sequence)}
               type="button"
@@ -252,11 +290,13 @@ function AnalysisDetail({
   trace,
   traceLoading,
   onRetryApproved,
+  onProvideInformation,
 }: {
   analysis: Analysis;
   trace: DetailTrace | null;
   traceLoading: boolean;
   onRetryApproved: (reviewId: string) => Promise<void>;
+  onProvideInformation: (requestId: string, information: string) => Promise<void>;
 }) {
   const [tab, setTab] = useState<"data" | "policy" | "details">("data");
   const response = analysis.response;
@@ -267,6 +307,21 @@ function AnalysisDetail({
     ? persistedEvidence.filter((item) => item.type === "policy")
     : responsePolicies;
   const running = analysis.status === "running" || analysis.status === "received";
+  const reviewComment = analysis.human_review?.comments?.trim();
+  const [information, setInformation] = useState("");
+  const [sendingInformation, setSendingInformation] = useState(false);
+
+  const provideInformation = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!information.trim()) return;
+    setSendingInformation(true);
+    try {
+      await onProvideInformation(analysis.request_id, information.trim());
+      setInformation("");
+    } finally {
+      setSendingInformation(false);
+    }
+  };
 
   return (
     <section className="detail-column" aria-live="polite">
@@ -287,6 +342,12 @@ function AnalysisDetail({
         <div className="answer-card">
           <span className="eyebrow">RESPUESTA</span>
           <p>{response.answer}</p>
+          {reviewComment ? (
+            <div className="review-comment">
+              <span className="eyebrow">COMENTARIO HUMAN REVIEW</span>
+              <p>{reviewComment}</p>
+            </div>
+          ) : null}
         </div>
       )}
       {response?.key_findings?.length ? (
@@ -298,6 +359,23 @@ function AnalysisDetail({
         </div>
       ) : null}
       {analysis.error_detail && <div className="notice notice--error">{analysis.error_detail}</div>}
+      {analysis.status === "waiting_for_user_information" && (
+        <form className="information-form" onSubmit={provideInformation}>
+          <span className="eyebrow">INFORMACION SOLICITADA</span>
+          <p>El revisor necesita datos adicionales para continuar este analisis.</p>
+          <textarea
+            value={information}
+            onChange={(event) => setInformation(event.target.value)}
+            placeholder="Escribe la informacion solicitada por el revisor"
+            rows={4}
+            disabled={sendingInformation}
+            aria-label="Informacion adicional para el analisis"
+          />
+          <button className="primary-button" disabled={sendingInformation || !information.trim()} type="submit">
+            {sendingInformation ? "Enviando…" : "Enviar informacion"}
+          </button>
+        </form>
+      )}
       {analysis.human_review_status === "approve" &&
       analysis.status !== "completed" &&
       analysis.human_review_id ? (
@@ -474,6 +552,22 @@ export default function Home() {
     }
   };
 
+  const provideAnalysisInformation = async (requestId: string, information: string) => {
+    setError(null);
+    try {
+      const continuation = await requestJson<Analysis>(`/api/v1/analysis/${requestId}/information`, {
+        method: "POST",
+        body: JSON.stringify({ information }),
+      });
+      setSelected(continuation);
+      setSelectedRequestId(continuation.request_id);
+      await loadHistory();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No pudimos continuar el analisis.");
+      throw err;
+    }
+  };
+
   const recentCount = useMemo(
     () => history.filter((item) => item.status === "completed").length,
     [history],
@@ -571,6 +665,7 @@ export default function Home() {
                 trace={detailTrace}
                 traceLoading={detailLoading}
                 onRetryApproved={retryApprovedAnalysis}
+                onProvideInformation={provideAnalysisInformation}
               />
             ) : (
               <div className="welcome-panel">
@@ -610,7 +705,7 @@ export default function Home() {
                       onClick={() => setSelectedRequestId(item.request_id)}
                       type="button"
                     >
-                      <span className={`status-dot status-dot--${item.status}`} />
+                      <span className={`status-dot status-dot--tone-${analysisTone(item)}`} />
                       <span className="history-copy">
                         <strong>{item.question}</strong>
                         <small>
