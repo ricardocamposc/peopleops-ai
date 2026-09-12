@@ -13,6 +13,10 @@ class AnalysisCreate(BaseModel):
     metadata: dict = Field(default_factory=dict)
 
 
+class AnalysisInformationCreate(BaseModel):
+    information: str = Field(min_length=1, max_length=4000)
+
+
 class StageEvent(BaseModel):
     stage: str
     status: str
@@ -26,7 +30,9 @@ class AnalysisRead(BaseModel):
     id: UUID
     request_id: UUID
     conversation_id: UUID | None
+    continuation_of_id: UUID | None
     question: str
+    user_context: dict | None
     status: str
     current_stage: str
     stage_history: list[StageEvent]
@@ -43,6 +49,7 @@ class AnalysisRead(BaseModel):
     evidence: list | None
     human_review_status: str | None
     human_review_id: UUID | None
+    human_review: dict | None = Field(default=None, validation_alias="human_review_summary")
     response: dict | None
     warnings: list | None
     model_name: str | None
@@ -104,6 +111,7 @@ class HumanReviewRead(BaseModel):
     analysis_status: str
     status: str
     reason: str
+    user_information: str | None
     recommendation_snapshot: dict
     evidence_snapshot: list
     requested_at: datetime

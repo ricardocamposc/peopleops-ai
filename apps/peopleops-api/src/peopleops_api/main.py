@@ -45,6 +45,7 @@ from peopleops_api.repositories import (
 from peopleops_api.schemas import (
     AnalysisCreate,
     AnalysisDetailTrace,
+    AnalysisInformationCreate,
     AnalysisRead,
     AnalysisTraceStep,
     HumanReviewDecisionCreate,
@@ -81,9 +82,25 @@ app.add_middleware(
 
 def _analysis_response(interaction, *, include_evaluation_trace: bool = False) -> AnalysisRead:
     result = AnalysisRead.model_validate(interaction)
+    result.human_review = _analysis_human_review_summary(interaction)
     if not include_evaluation_trace:
         result.evaluation_trace = None
     return result
+
+
+def _analysis_human_review_summary(interaction) -> dict[str, Any] | None:
+    review = getattr(interaction, "human_review", None)
+    if review is None:
+        return None
+    return {
+        "id": str(review.id),
+        "status": review.status,
+        "decision": review.decision,
+        "comments": review.comments,
+        "reviewed_by": review.reviewed_by,
+        "reviewed_at": review.reviewed_at.isoformat() if review.reviewed_at else None,
+        "reason": review.reason,
+    }
 
 
 def _safe_trace_payload(value: Any, *, max_items: int = 8) -> dict[str, Any] | None:
@@ -201,6 +218,8 @@ def _execution_records(interaction, trace: dict[str, Any]) -> list[dict[str, Any
 def _analysis_detail_trace(interaction) -> AnalysisDetailTrace:
     trace = interaction.evaluation_trace or {}
     steps: list[AnalysisTraceStep] = []
+    review = getattr(interaction, "human_review", None)
+    has_review_decision_step = False
 
     for index, event in enumerate(interaction.stage_history or [], start=1):
         stage = event.get("stage")
@@ -208,6 +227,12 @@ def _analysis_detail_trace(interaction) -> AnalysisDetailTrace:
         details = []
         if event.get("error_type"):
             details.append(f"Error: {event['error_type']}")
+        if stage == "human_review" and review is not None and review.decision == status_value:
+            has_review_decision_step = True
+            if review.reviewed_by:
+                details.append(f"Revisor: {review.reviewed_by}")
+            if review.comments:
+                details.append(f"Comentario: {review.comments}")
         steps.append(
             AnalysisTraceStep(
                 sequence=len(steps) + 1,
@@ -328,22 +353,30 @@ def _analysis_detail_trace(interaction) -> AnalysisDetailTrace:
             )
         )
 
-    for review in trace.get("senior_reviews", []) if isinstance(trace, dict) else []:
-        if not isinstance(review, dict):
+    for trace_review in trace.get("senior_reviews", []) if isinstance(trace, dict) else []:
+        if not isinstance(trace_review, dict):
             continue
-        coverage = review.get("semantic_coverage") if isinstance(review.get("semantic_coverage"), dict) else {}
+        coverage = (
+            trace_review.get("semantic_coverage")
+            if isinstance(trace_review.get("semantic_coverage"), dict)
+            else {}
+        )
         steps.append(
             AnalysisTraceStep(
                 sequence=len(steps) + 1,
                 kind="review",
                 title="Senior Semantic Review",
-                status=str(review.get("status") or "").lower() or None,
+                status=str(trace_review.get("status") or "").lower() or None,
                 stage="senior_review",
                 graph_node="senior_review_node",
-                summary=str((review.get("review") or {}).get("summary") or review.get("status") or "Revision semantica"),
+                summary=str(
+                    (trace_review.get("review") or {}).get("summary")
+                    or trace_review.get("status")
+                    or "Revision semantica"
+                ),
                 details=[f"Cobertura semantica: {coverage.get('status')}"] if coverage.get("status") else [],
-                metrics={"attempt": review.get("attempt_number")},
-                payload=_safe_trace_payload(review),
+                metrics={"attempt": trace_review.get("attempt_number")},
+                payload=_safe_trace_payload(trace_review),
             )
         )
 
@@ -356,6 +389,32 @@ def _analysis_detail_trace(interaction) -> AnalysisDetailTrace:
                 status="completed",
                 summary="Validaciones persistidas para auditoria",
                 payload=_safe_trace_payload(interaction.validation),
+            )
+        )
+
+    if review is not None and review.decision and not has_review_decision_step:
+        details = []
+        if review.reviewed_by:
+            details.append(f"Revisor: {review.reviewed_by}")
+        if review.comments:
+            details.append(f"Comentario: {review.comments}")
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="review",
+                title="Human Review",
+                status=review.decision,
+                stage="human_review",
+                graph_node="human_review",
+                at=review.reviewed_at,
+                summary=f"Decision registrada: {_display_name(review.decision)}",
+                details=details,
+                payload={
+                    "review_id": str(review.id),
+                    "decision": review.decision,
+                    "comments": review.comments,
+                    "reviewed_by": review.reviewed_by,
+                },
             )
         )
 
@@ -538,6 +597,87 @@ def read_analysis_details(
     return _analysis_detail_trace(interaction)
 
 
+@app.post("/api/v1/analysis/{request_id}/information", response_model=AnalysisRead)
+def provide_analysis_information(
+    request_id: str,
+    payload: AnalysisInformationCreate,
+    request: Request,
+    session: Annotated[Session, Depends(get_db)],
+) -> AnalysisRead:
+    """Create and execute a durable continuation after Human Review feedback."""
+    try:
+        source_request_id = UUID(request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid request_id") from exc
+    source = get_interaction(session, source_request_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="analysis not found")
+    if source.status != "waiting_for_user_information":
+        raise HTTPException(
+            status_code=409,
+            detail="analysis is not waiting for user information",
+        )
+    if source.human_review is None or source.human_review.decision != "needs_information":
+        raise HTTPException(status_code=409, detail="analysis has no information request")
+
+    try:
+        continuation = create_interaction(
+            session,
+            question=source.question,
+            conversation_id=source.conversation_id,
+            created_by=source.conversation.created_by if source.conversation else None,
+            metadata=(source.conversation.metadata_ if source.conversation else {}),
+            request_id=uuid4(),
+            continuation_of_id=source.id,
+            user_context={
+                "type": "human_review_information",
+                "source_request_id": str(source.request_id),
+                "information": payload.information,
+            },
+        )
+    except (LookupError, ValueError) as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    workflow = AnalysisWorkflow(
+        session=session,
+        gateway=HRDataGateway(
+            MCPClient(
+                server_url=str(settings.reference_mcp_server_url),
+                timeout_seconds=settings.mcp_timeout_seconds,
+                max_retries=settings.mcp_max_retries,
+                max_response_bytes=settings.mcp_max_response_bytes,
+            )
+        ),
+        model=OpenAIStructuredModel(
+            api_key=settings.openai_api_key,
+            model=settings.openai_model,
+            timeout_seconds=settings.openai_timeout_seconds,
+            max_retries=settings.openai_max_retries,
+            max_output_tokens=settings.openai_max_output_tokens,
+        ),
+        security=_security_context(request),
+        policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
+        evidence_verifier=(
+            PolicyEvidenceVerifier(
+                OpenAIStructuredModel(
+                    api_key=settings.openai_api_key,
+                    model=settings.openai_model,
+                    timeout_seconds=settings.openai_timeout_seconds,
+                    max_retries=settings.openai_max_retries,
+                    max_output_tokens=settings.openai_max_output_tokens,
+                )
+            )
+            if settings.openai_api_key
+            else None
+        ),
+        payroll_read_authorization_enabled=settings.hr_payroll_read_authorization_enabled,
+        read_analysis_human_review_enabled=settings.hr_read_analysis_human_review_enabled,
+    )
+    result = workflow.run(continuation)
+    return _analysis_response(result)
+
+
 @app.get("/api/v1/analysis", response_model=list[AnalysisRead])
 def list_analysis(
     session: Annotated[Session, Depends(get_db)], limit: int = 50
@@ -559,6 +699,10 @@ def list_analysis(
 
 def _human_review_response(review: HumanReviewRequest) -> HumanReviewRead:
     analysis = review.analysis
+    user_context = analysis.user_context if isinstance(analysis.user_context, dict) else {}
+    user_information = user_context.get("information")
+    if not isinstance(user_information, str):
+        user_information = None
     return HumanReviewRead(
         id=review.id,
         analysis_id=review.analysis_id,
@@ -567,6 +711,7 @@ def _human_review_response(review: HumanReviewRequest) -> HumanReviewRead:
         analysis_status=analysis.status,
         status=review.status,
         reason=review.reason,
+        user_information=user_information,
         recommendation_snapshot=review.recommendation_snapshot,
         evidence_snapshot=review.evidence_snapshot,
         requested_at=review.requested_at,

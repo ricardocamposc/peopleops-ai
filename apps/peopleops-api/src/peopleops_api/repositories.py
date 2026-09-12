@@ -21,6 +21,8 @@ def create_interaction(
     created_by: str | None,
     metadata: dict,
     request_id: UUID | None = None,
+    continuation_of_id: UUID | None = None,
+    user_context: dict | None = None,
 ) -> AnalysisInteraction:
     conversation = None
     if conversation_id:
@@ -31,8 +33,19 @@ def create_interaction(
         conversation = Conversation(created_by=created_by, metadata_=metadata)
         session.add(conversation)
         session.flush()
+    if continuation_of_id is not None:
+        continuation = session.get(AnalysisInteraction, continuation_of_id)
+        if continuation is None:
+            raise LookupError("source analysis interaction not found")
+        if continuation.conversation_id != conversation.id:
+            raise ValueError("continuation must belong to the same conversation")
     interaction = AnalysisInteraction(
-        conversation_id=conversation.id, question=question, stage_history=[], request_id=request_id
+        conversation_id=conversation.id,
+        continuation_of_id=continuation_of_id,
+        question=question,
+        user_context=user_context,
+        stage_history=[],
+        request_id=request_id,
     )
     session.add(interaction)
     session.flush()
@@ -159,8 +172,12 @@ def record_human_review_decision(
             status=decision,
             snapshots={"human_review_status": decision},
         )
-        # The review decision is an event inside the paused execution.  The
-        # interaction remains resumable until the workflow consumes it.
-        interaction.status = "pending_human_review"
+        # The review decision is an event inside the paused execution. A
+        # request for more information has its own durable user-facing state.
+        interaction.status = (
+            "waiting_for_user_information"
+            if decision == "needs_information"
+            else "pending_human_review"
+        )
     session.flush()
     return review, decision_row, True

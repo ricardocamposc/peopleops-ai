@@ -47,7 +47,11 @@ class AnalysisInteraction(Base):
     conversation_id: Mapped[UUID | None] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("conversation.id", ondelete="SET NULL")
     )
+    continuation_of_id: Mapped[UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True), ForeignKey("analysis_interaction.id", ondelete="SET NULL")
+    )
     question: Mapped[str] = mapped_column(Text, nullable=False)
+    user_context: Mapped[dict | None] = mapped_column(JSONB)
     status: Mapped[str] = mapped_column(String(64), nullable=False, default="received")
     current_stage: Mapped[str] = mapped_column(String(64), nullable=False, default="received")
     stage_history: Mapped[list[dict]] = mapped_column(JSONB, nullable=False, default=list)
@@ -77,6 +81,9 @@ class AnalysisInteraction(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     conversation: Mapped[Conversation | None] = relationship(back_populates="interactions")
+    continuation_of: Mapped["AnalysisInteraction | None"] = relationship(
+        remote_side="AnalysisInteraction.id", foreign_keys=[continuation_of_id]
+    )
     human_review: Mapped["HumanReviewRequest | None"] = relationship(
         back_populates="analysis", foreign_keys="HumanReviewRequest.analysis_id", uselist=False
     )

@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 from peopleops_api.audit import transition
 from peopleops_api.main import app
 from peopleops_api.models import AnalysisInteraction, Conversation
-from peopleops_api.repositories import create_interaction, get_interaction
+from peopleops_api.repositories import (
+    create_human_review,
+    create_interaction,
+    get_interaction,
+    record_human_review_decision,
+)
 
 
 def test_interaction_is_persisted_with_unique_request_and_conversation(db_session) -> None:
@@ -223,6 +228,63 @@ def test_analysis_details_api_returns_safe_persisted_trace(db_session) -> None:
         assert "hidden" not in serialized
         assert "prompt_template" not in serialized
         assert "input" not in serialized
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_analysis_api_exposes_human_review_comment_in_summary_and_details(db_session) -> None:
+    from peopleops_api.db import get_db
+
+    interaction = create_interaction(
+        db_session,
+        question="Restricted analysis",
+        conversation_id=None,
+        created_by="tester",
+        metadata={},
+    )
+    interaction.status = "completed"
+    interaction.current_stage = "synthesis"
+    interaction.response = {"answer": "The reviewer rejected proceeding with this analysis."}
+    review = create_human_review(
+        db_session,
+        interaction,
+        reason="Restricted read requires review",
+        recommendation_snapshot={"type": "authorization"},
+        evidence_snapshot=[],
+    )
+    record_human_review_decision(
+        db_session,
+        review.id,
+        decision="reject",
+        reviewed_by="reviewer@example.test",
+        comments="No aprobar porque falta justificacion de negocio.",
+    )
+    interaction.status = "completed"
+    interaction.current_stage = "synthesis"
+    db_session.commit()
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/v1/analysis/{interaction.request_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["human_review"]["decision"] == "reject"
+        assert body["human_review"]["comments"] == "No aprobar porque falta justificacion de negocio."
+
+        detail_response = client.get(f"/api/v1/analysis/{interaction.request_id}/details")
+        assert detail_response.status_code == 200
+        detail_body = detail_response.json()
+        human_review_step = next(
+            step for step in detail_body["steps"] if step["title"] == "Human Review"
+        )
+        assert human_review_step["status"] == "reject"
+        assert "Comentario: No aprobar porque falta justificacion de negocio." in human_review_step[
+            "details"
+        ]
     finally:
         app.dependency_overrides.pop(get_db, None)
 

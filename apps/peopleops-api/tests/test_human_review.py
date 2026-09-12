@@ -11,8 +11,10 @@ from peopleops_api.analysis_contracts import (
 )
 from peopleops_api.analysis_workflow import AnalysisWorkflow
 from peopleops_api.mcp_contracts import SecurityContext
-from peopleops_api.models import AnalysisInteraction
+from peopleops_api.main import _human_review_response
+from peopleops_api.models import AnalysisInteraction, Conversation
 from peopleops_api.repositories import (
+    create_interaction,
     create_human_review,
     get_human_review,
     record_human_review_decision,
@@ -157,7 +159,7 @@ def test_human_review_creation_is_idempotent_and_snapshot_is_logically_immutable
 
 @pytest.mark.parametrize(
     ("decision", "expected_status"),
-    [("reject", "completed"), ("needs_information", "insufficient_data")],
+    [("reject", "completed"), ("needs_information", "waiting_for_user_information")],
 )
 def test_reject_and_needs_information_resume_same_request_id(db_session, decision, expected_status):
     interaction = _paused_interaction(db_session)
@@ -174,7 +176,11 @@ def test_reject_and_needs_information_resume_same_request_id(db_session, decisio
     assert created is True
     assert audit_row.decision == decision
     assert recorded.status == decision
-    assert interaction.status == "pending_human_review"
+    assert interaction.status == (
+        "waiting_for_user_information"
+        if decision == "needs_information"
+        else "pending_human_review"
+    )
 
     result = AnalysisWorkflow(
         session=db_session,
@@ -186,10 +192,13 @@ def test_reject_and_needs_information_resume_same_request_id(db_session, decisio
     assert result.request_id == interaction.request_id
     assert result.status == expected_status
     assert result.response["warnings"]
-    assert [event["stage"] for event in result.stage_history][-2:] == [
-        "human_review",
-        "synthesis",
-    ]
+    if decision == "reject":
+        assert [event["stage"] for event in result.stage_history][-2:] == [
+            "human_review",
+            "synthesis",
+        ]
+    else:
+        assert result.current_stage == "waiting_for_user_information"
 
 
 def test_approve_resumes_and_is_idempotent(db_session):
@@ -224,6 +233,90 @@ def test_approve_resumes_and_is_idempotent(db_session):
     assert result.request_id == interaction.request_id
     assert result.status == "completed"
     assert result.response["answer"].startswith("Approved analysis.")
+
+
+def test_needs_information_creates_linked_continuation_context(db_session):
+    source = _paused_interaction(db_session)
+    conversation = Conversation(created_by="tester", metadata_={})
+    db_session.add(conversation)
+    db_session.flush()
+    source.conversation_id = conversation.id
+    db_session.commit()
+    review = get_human_review(db_session, source.human_review_id)
+    record_human_review_decision(
+        db_session,
+        review.id,
+        decision="needs_information",
+        reviewed_by="reviewer@example.test",
+        comments="Indica el periodo que deseas comparar.",
+    )
+    db_session.commit()
+
+    continuation = create_interaction(
+        db_session,
+        question=source.question,
+        conversation_id=source.conversation_id,
+        created_by="tester",
+        metadata={},
+        request_id=uuid4(),
+        continuation_of_id=source.id,
+        user_context={
+            "type": "human_review_information",
+            "source_request_id": str(source.request_id),
+            "information": "Compara enero contra febrero.",
+        },
+    )
+
+    assert continuation.request_id != source.request_id
+    assert continuation.conversation_id == source.conversation_id
+    assert continuation.continuation_of_id == source.id
+    assert continuation.user_context["information"] == "Compara enero contra febrero."
+    assert "Compara enero contra febrero." in AnalysisWorkflow._workflow_question(continuation)
+
+
+def test_continuation_human_review_exposes_user_information(db_session):
+    source = _paused_interaction(db_session)
+    conversation = Conversation(created_by="tester", metadata_={})
+    db_session.add(conversation)
+    db_session.flush()
+    source.conversation_id = conversation.id
+    db_session.commit()
+    source_review = get_human_review(db_session, source.human_review_id)
+    record_human_review_decision(
+        db_session,
+        source_review.id,
+        decision="needs_information",
+        reviewed_by="reviewer@example.test",
+        comments="Indica el periodo que deseas comparar.",
+    )
+    db_session.commit()
+
+    continuation = create_interaction(
+        db_session,
+        question=source.question,
+        conversation_id=source.conversation_id,
+        created_by="tester",
+        metadata={},
+        request_id=uuid4(),
+        continuation_of_id=source.id,
+        user_context={
+            "type": "human_review_information",
+            "source_request_id": str(source.request_id),
+            "information": "Compara enero contra febrero.",
+        },
+    )
+    review = create_human_review(
+        db_session,
+        continuation,
+        reason="Payroll remains restricted.",
+        recommendation_snapshot={"summary": "review"},
+        evidence_snapshot=[],
+    )
+    db_session.commit()
+
+    response = _human_review_response(review)
+
+    assert response.user_information == "Compara enero contra febrero."
 
 
 def test_different_second_decision_is_rejected(db_session):
