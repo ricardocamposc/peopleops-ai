@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 from importlib.resources import files as resource_files
 from typing import Any, Annotated, TypedDict
 
@@ -42,9 +43,12 @@ class QueryProgrammerAgentError(RuntimeError):
 
 
 class ValidateConceptualQueryInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
-    query: dict[str, Any] = Field(description="One complete provider-neutral ConceptualQuery object.")
+    query: dict[str, Any] | None = Field(
+        default=None,
+        description="One complete provider-neutral ConceptualQuery object.",
+    )
 
 
 class SubmitAnalysisPlanInput(BaseModel):
@@ -91,6 +95,199 @@ def _unwrap_query(query: dict[str, Any]) -> dict[str, Any]:
     return query
 
 
+def _validate_tool_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Accept either tool-schema args or a direct ConceptualQuery payload."""
+
+    accepted_input_fields = conceptual_query_fields | {"grouping_requirements", "ordering_requirements"}
+    if "query" in args:
+        return {"query": args["query"]}
+    if any(field in args for field in accepted_input_fields):
+        return {"query": {field: args[field] for field in accepted_input_fields if field in args}}
+    return args
+
+
+conceptual_query_fields = {
+    "contract_version",
+    "goal",
+    "entities",
+    "select",
+    "metrics",
+    "filters",
+    "where",
+    "relationships",
+    "time_scope",
+    "comparisons",
+    "order_by",
+    "dimensions",
+    "limit",
+}
+
+
+_AGGREGATE_FIELD_RE = re.compile(
+    r"^\s*(?P<function>count|sum|avg|min|max)\s*\(\s*(?P<field>[^()]+?)\s*\)\s*$",
+    re.IGNORECASE,
+)
+_GROUPING_REQUIREMENT_RE = re.compile(
+    r"^\s*(?P<part>year|month|day|weekday)\s*\(\s*(?P<field>[^()]+?)\s*\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_query_payload(query: dict[str, Any], catalog: DiscoveryCatalog) -> dict[str, Any]:
+    """Normalize equivalent model payload shapes without weakening MCP validation."""
+
+    accepted_input_fields = conceptual_query_fields | {"grouping_requirements", "ordering_requirements"}
+    query = {field: query[field] for field in accepted_input_fields if field in query}
+    selected_entities = [str(item) for item in query.get("entities", [])]
+    field_refs = {
+        field.field_id: f"{entity.entity_id}.{field.field_id}"
+        for entity in catalog.entities
+        if entity.entity_id in selected_entities
+        for field in entity.fields
+    }
+
+    def qualify(reference: Any) -> Any:
+        if not isinstance(reference, str) or "." in reference:
+            return reference
+        return field_refs.get(reference, reference)
+
+    def normalize_reference(reference: Any) -> Any:
+        if not isinstance(reference, str):
+            return reference
+        match = _GROUPING_REQUIREMENT_RE.match(reference)
+        if match:
+            return f"{match.group('part').lower()}({qualify(match.group('field'))})"
+        return qualify(reference)
+
+    def compact_same_field_equalities(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        if "conditions" not in node or node.get("operator") != "and":
+            return node
+        conditions = node.get("conditions")
+        if not isinstance(conditions, list) or len(conditions) < 2:
+            return node
+        if not all(isinstance(item, dict) and "field" in item for item in conditions):
+            return node
+        fields = {item.get("field") for item in conditions}
+        operators = {item.get("operator") for item in conditions}
+        if len(fields) == 1 and operators == {"eq"}:
+            values = [item.get("value") for item in conditions]
+            if all(value is not None for value in values):
+                return {"field": conditions[0]["field"], "operator": "in", "value": values}
+        return node
+
+    def normalize_filter_tree(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        if "field" in node:
+            return {**node, "field": qualify(node.get("field"))}
+        if "conditions" in node and isinstance(node["conditions"], list):
+            return compact_same_field_equalities({
+                **node,
+                "conditions": [normalize_filter_tree(item) for item in node["conditions"]],
+            })
+        return node
+
+    normalized = dict(query)
+    normalized["select"] = [
+        {**item, "field": qualify(item.get("field"))}
+        for item in normalized.get("select", [])
+        if isinstance(item, dict)
+    ]
+    normalized["filters"] = [
+        {**item, "field": qualify(item.get("field"))}
+        for item in normalized.get("filters", [])
+        if isinstance(item, dict)
+    ]
+    if normalized.get("where") is not None:
+        normalized["where"] = normalize_filter_tree(normalized["where"])
+    if normalized.get("time_scope") and isinstance(normalized["time_scope"], dict):
+        normalized["time_scope"] = {
+            **normalized["time_scope"],
+            "field": qualify(normalized["time_scope"].get("field")),
+        }
+    dimensions = [
+        normalize_reference(item) for item in normalized.get("dimensions", []) if isinstance(item, str)
+    ]
+    selected_fields = {
+        item.get("field")
+        for item in normalized.get("select", [])
+        if isinstance(item, dict) and isinstance(item.get("field"), str)
+    }
+    for item in normalized.pop("grouping_requirements", []) or []:
+        if isinstance(item, str):
+            reference = normalize_reference(item)
+            if reference not in dimensions and reference not in selected_fields:
+                dimensions.append(reference)
+    normalized["dimensions"] = dimensions
+    normalized["order_by"] = [
+        {**item, "reference": normalize_reference(item.get("reference"))}
+        for item in normalized.get("order_by", [])
+        if isinstance(item, dict)
+    ]
+    for item in normalized.pop("ordering_requirements", []) or []:
+        if isinstance(item, str):
+            reference = normalize_reference(item)
+            if reference in normalized["dimensions"] and not any(
+                order.get("reference") == reference for order in normalized["order_by"]
+            ):
+                normalized["order_by"].append({"reference": reference, "direction": "asc"})
+    dimension_by_base_field = {
+        (_GROUPING_REQUIREMENT_RE.match(item).group("field")): item
+        for item in normalized["dimensions"]
+        if isinstance(item, str) and _GROUPING_REQUIREMENT_RE.match(item)
+    }
+    normalized["order_by"] = [
+        {
+            **item,
+            "reference": dimension_by_base_field.get(item.get("reference"), item.get("reference")),
+        }
+        for item in normalized["order_by"]
+    ]
+    unique_order_by = []
+    seen_order_by: set[tuple[Any, Any]] = set()
+    for item in normalized["order_by"]:
+        key = (item.get("reference"), item.get("direction", "asc"))
+        if key in seen_order_by:
+            continue
+        seen_order_by.add(key)
+        unique_order_by.append(item)
+    normalized["order_by"] = unique_order_by
+
+    metrics = []
+    for item in normalized.get("metrics", []):
+        if not isinstance(item, dict):
+            continue
+        metric = dict(item)
+        field = metric.get("field")
+        if isinstance(field, str):
+            match = _AGGREGATE_FIELD_RE.match(field)
+            if match:
+                metric["function"] = match.group("function").lower()
+                metric["field"] = match.group("field")
+            metric["field"] = qualify(metric.get("field"))
+        metrics.append(metric)
+    normalized["metrics"] = metrics
+    return normalized
+
+
+def _normalize_plan_payload(payload: dict[str, Any], catalog: DiscoveryCatalog) -> dict[str, Any]:
+    plan = dict(payload)
+    queries = []
+    for item in plan.get("queries", []):
+        if not isinstance(item, dict):
+            queries.append(item)
+            continue
+        query = item.get("query")
+        if isinstance(query, dict):
+            queries.append({**item, "query": _normalize_query_payload(query, catalog)})
+        else:
+            queries.append(item)
+    plan["queries"] = queries
+    return plan
+
+
 class QueryProgrammerAgent:
     """Bounded LangChain tool-calling agent that validates ConceptualQuery through MCP."""
 
@@ -126,11 +323,14 @@ class QueryProgrammerAgent:
         )
 
     def _validate_tool(self) -> StructuredTool:
-        def validate(query: dict[str, Any]) -> dict[str, Any]:
+        def validate(query: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]:
             from peopleops_api.query_contracts import ConceptualQuery
 
             try:
-                candidate = ConceptualQuery.model_validate(_unwrap_query(query))
+                payload = query if query is not None else extra
+                candidate = ConceptualQuery.model_validate(
+                    _normalize_query_payload(_unwrap_query(payload), self.catalog)
+                )
             except Exception as exc:  # noqa: BLE001 - returned as tool feedback
                 return {"valid": False, "errors": [f"INVALID_CONCEPTUAL_QUERY: {exc}"]}
             result = self.gateway.validate_query(
@@ -315,7 +515,8 @@ class QueryProgrammerAgent:
                         "executed": False,
                     }
                     if name == "validate_conceptual_query" and not result.get("valid"):
-                        query = _unwrap_query(args.get("query", {}))
+                        tool_args = _validate_tool_args(args)
+                        query = _unwrap_query(tool_args.get("query", {}))
                         try:
                             candidate_hash = _query_hash(query)
                         except Exception:  # malformed candidates still need a stable loop key
@@ -337,8 +538,11 @@ class QueryProgrammerAgent:
                     continue
                 if name == "validate_conceptual_query":
                     validation_calls += 1
-                    result = tools[0].invoke(args)
-                    query = _unwrap_query(args.get("query", {}))
+                    tool_args = _validate_tool_args(args)
+                    result = tools[0].invoke(tool_args)
+                    query = _normalize_query_payload(
+                        _unwrap_query(tool_args.get("query", {})), self.catalog
+                    )
                     if result.get("valid"):
                         validated[_query_hash(query)] = round_number
                         last_invalid_hash = None
@@ -357,7 +561,11 @@ class QueryProgrammerAgent:
                             termination_reason = "NO_PROGRESS_AFTER_REPEATED_INVALID_CANDIDATE"
                 elif name == "submit_analysis_plan":
                     try:
-                        submitted = SubmitAnalysisPlanInput.model_validate(args)
+                        submitted_payload = {
+                            **args,
+                            "plan": _normalize_plan_payload(args.get("plan", {}), self.catalog),
+                        }
+                        submitted = SubmitAnalysisPlanInput.model_validate(submitted_payload)
                         queries = [item.query.model_dump(mode="json") for item in submitted.plan.queries]
                         accepted = all(
                             validated.get(_query_hash(query), -1) < round_number
@@ -448,7 +656,13 @@ class QueryProgrammerAgent:
             "tool_events": result_state["tool_events"],
         }
         if result_state.get("final_plan") is None:
-            raise QueryProgrammerAgentError(metadata["termination_reason"], metadata)
+            fallback_plan = _fallback_plan_from_validated_queries(
+                result_state["tool_events"], requirement, self.catalog
+            )
+            if fallback_plan is None:
+                raise QueryProgrammerAgentError(metadata["termination_reason"], metadata)
+            metadata["termination_reason"] = "AUTO_SUBMITTED_VALIDATED_QUERIES"
+            return fallback_plan, metadata
         plan = AnalysisPlan.model_validate(result_state["final_plan"])
         metadata["termination_reason"] = "SUBMISSION_ACCEPTED"
         return plan, metadata
@@ -456,6 +670,51 @@ class QueryProgrammerAgent:
 
 def _messages_json(messages: list[BaseMessage]) -> list[dict[str, Any]]:
     return [_message_json(message) for message in messages]
+
+
+def _fallback_plan_from_validated_queries(
+    tool_events: list[dict[str, Any]],
+    requirement: dict[str, Any],
+    catalog: DiscoveryCatalog,
+) -> AnalysisPlan | None:
+    queries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in tool_events:
+        if event.get("tool") != "validate_conceptual_query":
+            continue
+        output = event.get("output") if isinstance(event.get("output"), dict) else {}
+        if not output.get("valid"):
+            continue
+        args = _validate_tool_args(event.get("input") or {})
+        query = args.get("query")
+        if not isinstance(query, dict):
+            continue
+        query = _normalize_query_payload(_unwrap_query(query), catalog)
+        key = output.get("query_hash") or _dump(query)
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(query)
+    if not queries:
+        return None
+    semantic = requirement.get("semantic_request") if isinstance(requirement, dict) else {}
+    if not isinstance(semantic, dict):
+        semantic = {}
+    goal = semantic.get("goal") or semantic.get("data_retrieval_request") or "Validated analysis plan"
+    return AnalysisPlan.model_validate(
+        {
+            "goal": goal,
+            "queries": [
+                {
+                    "purpose": semantic.get("data_retrieval_request")
+                    or semantic.get("clarified_request_english")
+                    or goal,
+                    "query": query,
+                }
+                for query in queries
+            ],
+        }
+    )
 
 
 def _message_json(message: BaseMessage) -> dict[str, Any]:

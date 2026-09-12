@@ -85,12 +85,36 @@ def test_scoped_catalog_returns_only_requested_domain_and_requires_read_scope() 
 
     catalog, denied = asyncio.run(check())
     assert denied is True
-    assert {entity["entity_id"] for entity in catalog["entities"]} == {"overtime"}
+    entity_ids = {entity["entity_id"] for entity in catalog["entities"]}
+    assert {"overtime", "employee"} <= entity_ids
+    assert "payroll" not in entity_ids
+    assert {
+        relationship["relationship_id"] for relationship in catalog["relationships"]
+    } == {"overtime_employee"}
     assert all(
         entity_id in {"overtime"}
         for capability in catalog["capabilities"]
         for entity_id in capability["entities"]
     )
+
+
+def test_scoped_catalog_exposes_payroll_metadata_without_payroll_read_scope() -> None:
+    async def check() -> dict:
+        async with Client(create_mcp_server()) as client:
+            result = await client.call_tool(
+                "discover_scoped_catalog",
+                {
+                    "capabilities": ["payroll"],
+                    "request_id": "scoped-payroll-1",
+                    "security": {"scopes": ["hr:read"]},
+                },
+            )
+            assert not result.is_error
+            return result.structured_content or {}
+
+    catalog = asyncio.run(check())
+    assert {item["entity_id"] for item in catalog["entities"]} >= {"payroll"}
+    assert any(item["name"] == "payroll" for item in catalog["capabilities"])
 
 
 def test_catalog_fingerprint_is_stable_and_version_sensitive() -> None:

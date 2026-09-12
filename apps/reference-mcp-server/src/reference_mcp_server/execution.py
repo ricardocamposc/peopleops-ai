@@ -17,6 +17,8 @@ from reference_mcp_server.discovery import CatalogMetadata, EntityMetadata, Rela
 from reference_mcp_server.query_contracts import (
     ConceptualQuery,
     QueryEvidence,
+    QueryFilter,
+    QueryFilterGroup,
     QueryMetric,
     QueryPeriod,
     QueryResult,
@@ -65,16 +67,17 @@ def query_requires_payroll_read(query: ConceptualQuery) -> bool:
     references = [item.field for item in query.select]
     references.extend(metric.field for metric in query.metrics if metric.field)
     references.extend(item.field for item in query.filters)
+    references.extend(_filter_tree_refs(query.where) if query.where else [])
     references.extend(query.dimensions)
     if query.time_scope and query.time_scope.field:
         references.append(query.time_scope.field)
     references.extend(item.left for item in query.comparisons)
     references.extend(item.right for item in query.comparisons)
     return any(
-        reference.split(".", 1)[0]
+        _base_field_reference(reference).split(".", 1)[0]
         in {"payroll", "payroll_period", "payroll_item", "payroll_concept"}
         for reference in references
-        if "." in reference
+        if "." in _base_field_reference(reference)
     ) or bool(
         {"payroll", "payroll_period", "payroll_item", "payroll_concept"} & set(query.entities)
     )
@@ -100,11 +103,12 @@ def validate_query(
         errors.append("entities must be unique")
     if len(set(query.relationships)) != len(query.relationships):
         errors.append("relationships must be unique")
-    projection_labels = [item.alias or item.field.rsplit(".", 1)[-1] for item in query.select] + [
-        _metric_label(metric) for metric in query.metrics
-    ]
+    projection_labels = [item.alias or _field_label(item.field) for item in query.select]
+    projection_labels += [_field_label(reference) for reference in query.dimensions]
+    projection_labels += [_metric_label(metric) for metric in query.metrics]
     if len(set(projection_labels)) != len(projection_labels):
         errors.append("select and metric aliases must be unique")
+    errors.extend(_flat_filter_contradictions(query.filters))
     for relation_id in query.relationships:
         relation = relations.get(relation_id)
         if relation is None:
@@ -118,6 +122,7 @@ def validate_query(
     refs = [item.field for item in query.select]
     refs += [metric.field for metric in query.metrics if metric.field]
     refs += [item.field for item in query.filters]
+    refs += _filter_tree_refs(query.where) if query.where else []
     refs += [item.left for item in query.comparisons] + [item.right for item in query.comparisons]
     metric_labels = {_metric_label(metric) for metric in query.metrics}
     refs += [item.reference for item in query.order_by if item.reference not in metric_labels]
@@ -127,8 +132,10 @@ def validate_query(
         _validate_temporal_scope(query.time_scope, entities, selected_entities, errors)
     sensitive = False
     for reference in refs:
+        expression = _temporal_dimension_expression(reference)
+        checked_reference = expression[1] if expression is not None else reference
         try:
-            entity_id, field_id = _split_reference(reference)
+            entity_id, field_id = _split_reference(checked_reference)
         except QueryExecutionError as exc:
             errors.append(str(exc))
             continue
@@ -139,6 +146,8 @@ def validate_query(
         field = next((field for field in entity.fields if field.field_id == field_id), None)
         if field is None:
             errors.append(f"unknown field: {reference}")
+        elif expression is not None and not _field_is_temporal(field, field_id, entity):
+            errors.append(f"temporal expression requires a date/datetime field: {reference}")
         elif field.sensitivity == "restricted":
             sensitive = True
     for metric in query.metrics:
@@ -185,6 +194,27 @@ def validate_query(
         catalog_version=catalog.catalog_version,
         errors=errors,
     )
+
+
+def _flat_filter_contradictions(filters: list[QueryFilter]) -> list[str]:
+    errors: list[str] = []
+    filters_by_field: dict[str, list[QueryFilter]] = {}
+    for item in filters:
+        filters_by_field.setdefault(item.field, []).append(item)
+    for field, field_filters in filters_by_field.items():
+        operators = {item.operator for item in field_filters}
+        if "is_null" in operators and len(operators - {"is_null"}) > 0:
+            errors.append(f"contradictory filters for {field}: is_null cannot be combined with another predicate using AND")
+        if "is_null" in operators and "is_not_null" in operators:
+            errors.append(f"contradictory filters for {field}: is_null and is_not_null")
+        eq_values = {
+            json.dumps(item.value, sort_keys=True, default=str)
+            for item in field_filters
+            if item.operator == "eq"
+        }
+        if len(eq_values) > 1:
+            errors.append(f"contradictory filters for {field}: multiple eq values")
+    return errors
 
 
 @dataclass(frozen=True)
@@ -257,11 +287,20 @@ def translate_query(query: ConceptualQuery, catalog: CatalogMetadata) -> Physica
     params: list[Any] = []
     projections: list[str] = []
     columns: list[str] = []
+    projected_fields: set[str] = set()
     for item in query.select:
         expression, label = _field_sql(item.field, entities, aliases)
         label = item.alias or label
         projections.append(f"{expression} AS {_output_identifier(label)}")
         columns.append(label)
+        projected_fields.add(item.field)
+    for reference in query.dimensions:
+        if reference in projected_fields:
+            continue
+        expression, label = _field_sql(reference, entities, aliases)
+        projections.append(f"{expression} AS {_output_identifier(label)}")
+        columns.append(label)
+        projected_fields.add(reference)
     for metric in query.metrics:
         expression, field_label = _metric_sql(metric, entities, aliases)
         label = _metric_label(metric, field_label)
@@ -270,6 +309,8 @@ def translate_query(query: ConceptualQuery, catalog: CatalogMetadata) -> Physica
     predicates: list[str] = []
     for item in query.filters:
         predicates.append(_filter_sql(item, entities, aliases, params))
+    if query.where is not None:
+        predicates.append(_filter_tree_sql(query.where, entities, aliases, params))
     if query.time_scope:
         predicates.extend(_period_sql(query.time_scope, entities, aliases, params))
     for comparison in query.comparisons:
@@ -518,7 +559,24 @@ def _split_reference(reference: str) -> tuple[str, str]:
     return entity_id, field_id
 
 
+def _temporal_dimension_expression(reference: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"\s*(year|month|day|weekday)\s*\(\s*([^()]+?)\s*\)\s*", reference)
+    if not match:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _base_field_reference(reference: str) -> str:
+    expression = _temporal_dimension_expression(reference)
+    return expression[1] if expression is not None else reference
+
+
+def _field_is_temporal(field: Any, field_id: str, entity: EntityMetadata) -> bool:
+    return field.temporal_kind in {"date", "datetime"} or field_id in entity.temporal_fields
+
+
 def _safe_entity_id(reference: str) -> str:
+    reference = _base_field_reference(reference)
     return reference.split(".", 1)[0] if "." in reference else ""
 
 
@@ -526,6 +584,7 @@ def _evidence_fields(query: ConceptualQuery) -> list[str]:
     fields = [item.field for item in query.select]
     fields.extend(metric.field for metric in query.metrics if metric.field)
     fields.extend(item.field for item in query.filters)
+    fields.extend(_filter_tree_refs(query.where) if query.where else [])
     fields.extend(query.dimensions)
     fields.extend(_period_fields(query.time_scope) if query.time_scope else [])
     for comparison in query.comparisons:
@@ -549,6 +608,12 @@ def _output_identifier(value: str) -> str:
 def _field_sql(
     reference: str, entities: dict[str, EntityMetadata], aliases: dict[str, str]
 ) -> tuple[str, str]:
+    expression = _temporal_dimension_expression(reference)
+    if expression is not None:
+        part, inner = expression
+        field_sql, field_label = _field_sql(inner, entities, aliases)
+        sql_part = "isodow" if part == "weekday" else part
+        return f"EXTRACT({sql_part.upper()} FROM {field_sql})::int", f"{part}_{field_label}"
     entity_id, field_id = _split_reference(reference)
     entity = entities.get(entity_id)
     if entity is None or entity_id not in aliases:
@@ -558,6 +623,14 @@ def _field_sql(
         raise QueryExecutionError("QUERY_VALIDATION_ERROR", f"unknown field reference: {reference}")
     physical_column = field.physical_source.rsplit(".", 1)[-1]
     return f"{aliases[entity_id]}.{_identifier(physical_column)}", field_id
+
+
+def _field_label(reference: str) -> str:
+    expression = _temporal_dimension_expression(reference)
+    if expression is not None:
+        part, inner = expression
+        return f"{part}_{inner.rsplit('.', 1)[-1]}"
+    return reference.rsplit(".", 1)[-1]
 
 
 def _metric_sql(
@@ -594,6 +667,30 @@ def _filter_sql(
         return f"{field} {'NOT IN' if item.operator == 'not_in' else 'IN'} ({markers})"
     params.append(item.value)
     return f"{field} {operators[item.operator]} %s"
+
+
+def _filter_tree_refs(node: QueryFilter | QueryFilterGroup) -> list[str]:
+    if isinstance(node, QueryFilter):
+        return [node.field]
+    refs: list[str] = []
+    for condition in node.conditions:
+        refs.extend(_filter_tree_refs(condition))
+    return refs
+
+
+def _filter_tree_sql(
+    node: QueryFilter | QueryFilterGroup,
+    entities: dict[str, EntityMetadata],
+    aliases: dict[str, str],
+    params: list[Any],
+) -> str:
+    if isinstance(node, QueryFilter):
+        return _filter_sql(node, entities, aliases, params)
+    rendered = [_filter_tree_sql(condition, entities, aliases, params) for condition in node.conditions]
+    if node.operator == "not":
+        return f"(NOT ({rendered[0]}))"
+    joiner = " AND " if node.operator == "and" else " OR "
+    return "(" + joiner.join(f"({predicate})" for predicate in rendered) + ")"
 
 
 def _join_sql(

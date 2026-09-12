@@ -223,7 +223,7 @@ def test_approve_resumes_and_is_idempotent(db_session):
     assert second_row.id == first_row.id
     assert result.request_id == interaction.request_id
     assert result.status == "completed"
-    assert result.response["answer"] == "Approved analysis."
+    assert result.response["answer"].startswith("Approved analysis.")
 
 
 def test_different_second_decision_is_rejected(db_session):

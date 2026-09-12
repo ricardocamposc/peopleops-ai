@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from uuid import UUID
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -50,6 +52,29 @@ class AnalysisRead(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None
+
+
+class AnalysisTraceStep(BaseModel):
+    sequence: int
+    kind: str
+    title: str
+    status: str | None = None
+    stage: str | None = None
+    graph_node: str | None = None
+    tool_name: str | None = None
+    at: datetime | None = None
+    summary: str | None = None
+    details: list[str] = Field(default_factory=list)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] | None = None
+
+
+class AnalysisDetailTrace(BaseModel):
+    request_id: UUID
+    status: str
+    current_stage: str
+    steps: list[AnalysisTraceStep]
+    summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class HumanReviewDecisionCreate(BaseModel):

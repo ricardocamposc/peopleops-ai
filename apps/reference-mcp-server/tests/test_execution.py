@@ -16,7 +16,9 @@ from reference_mcp_server.execution import (
 from reference_mcp_server.query_contracts import (
     ConceptualQuery,
     QueryFilter,
+    QueryFilterGroup,
     QueryMetric,
+    QueryOrder,
     QueryPeriod,
     QuerySelect,
     PeriodValue,
@@ -67,6 +69,90 @@ def test_translate_join_aggregate_is_parameterized_and_allowlisted() -> None:
     assert "employee_code" not in physical.sql
     assert physical.params == ("ENG", "OPS")
     assert "LIMIT 10" in physical.sql
+
+
+def test_grouped_where_supports_effective_interval_conditions() -> None:
+    reference_date = date(2026, 9, 11)
+    query = ConceptualQuery(
+        goal="List employees with contracts current as of the reference date",
+        entities=["contract", "employee"],
+        select=[
+            QuerySelect(field="employee.employee_code"),
+            QuerySelect(field="contract.start_date"),
+            QuerySelect(field="contract.end_date"),
+        ],
+        filters=[QueryFilter(field="contract.status", operator="eq", value="active")],
+        where=QueryFilterGroup(
+            operator="and",
+            conditions=[
+                QueryFilter(field="contract.start_date", operator="lte", value=reference_date),
+                QueryFilterGroup(
+                    operator="or",
+                    conditions=[
+                        QueryFilter(field="contract.end_date", operator="is_null"),
+                        QueryFilter(field="contract.end_date", operator="gte", value=reference_date),
+                    ],
+                ),
+            ],
+        ),
+        relationships=["contract_employee"],
+        limit=20,
+    )
+
+    validation = validate_query(query, CATALOG, [])
+    assert validation.valid is True
+    physical = translate_query(query, CATALOG)
+    validate_physical_query(physical)
+    assert " AND " in physical.sql
+    assert " OR " in physical.sql
+    assert '"end_date" IS NULL' in physical.sql
+    assert physical.params == ("active", reference_date, reference_date)
+
+
+def test_flat_filters_reject_null_and_value_predicates_on_same_field() -> None:
+    query = ConceptualQuery(
+        entities=["contract", "employee"],
+        select=[QuerySelect(field="employee.employee_code")],
+        filters=[
+            QueryFilter(field="contract.end_date", operator="is_null"),
+            QueryFilter(field="contract.end_date", operator="gte", value=date(2026, 9, 11)),
+        ],
+        relationships=["contract_employee"],
+    )
+
+    validation = validate_query(query, CATALOG, [])
+
+    assert validation.valid is False
+    assert any("contradictory filters for contract.end_date" in error for error in validation.errors)
+
+
+def test_grouped_where_rejects_unknown_field_reference() -> None:
+    query = ConceptualQuery(
+        entities=["contract"],
+        select=[QuerySelect(field="contract.id")],
+        where=QueryFilterGroup(
+            operator="or",
+            conditions=[
+                QueryFilter(field="contract.end_date", operator="is_null"),
+                QueryFilter(field="contract.no_such_field", operator="gte", value=date(2026, 9, 11)),
+            ],
+        ),
+    )
+
+    validation = validate_query(query, CATALOG, [])
+    assert validation.valid is False
+    assert any("unknown field: contract.no_such_field" in error for error in validation.errors)
+
+
+def test_not_group_requires_exactly_one_condition() -> None:
+    with pytest.raises(ValueError, match="not groups require exactly one condition"):
+        QueryFilterGroup(
+            operator="not",
+            conditions=[
+                QueryFilter(field="contract.status", operator="eq", value="active"),
+                QueryFilter(field="contract.end_date", operator="is_null"),
+            ],
+        )
 
 
 def test_aggregate_groups_all_selected_non_metric_fields() -> None:
@@ -264,3 +350,31 @@ def test_period_uses_temporal_target_and_period_list_uses_discrete_ranges() -> N
         date(2026, 4, 1),
     )
     assert physical.sql.count('"work_date"') == 4
+
+
+def test_temporal_dimensions_are_validated_and_translated_provider_side() -> None:
+    query = ConceptualQuery(
+        entities=["overtime"],
+        metrics=[
+            QueryMetric(
+                field="overtime.approved_minutes",
+                function="sum",
+                alias="total_approved_minutes",
+            )
+        ],
+        dimensions=["month(overtime.work_date)"],
+        order_by=[QueryOrder(reference="month(overtime.work_date)")],
+        time_scope=QueryPeriod(
+            type="date_range",
+            field="overtime.work_date",
+            start=date(2026, 1, 1),
+            end=date(2026, 12, 31),
+        ),
+    )
+
+    assert validate_query(query, CATALOG, []).valid
+    physical = translate_query(query, CATALOG)
+
+    assert "EXTRACT(MONTH FROM" in physical.sql
+    assert "GROUP BY EXTRACT(MONTH FROM" in physical.sql
+    assert "ORDER BY EXTRACT(MONTH FROM" in physical.sql

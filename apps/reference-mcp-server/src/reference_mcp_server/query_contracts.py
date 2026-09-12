@@ -68,6 +68,36 @@ class QueryFilter(BaseModel):
         return self
 
 
+class QueryFilterGroup(BaseModel):
+    """Provider-neutral grouped predicate tree for non-trivial business conditions."""
+
+    model_config = ConfigDict(extra="forbid")
+    operator: Literal["and", "or", "not"]
+    conditions: list[QueryFilter | QueryFilterGroup] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def shape(self) -> QueryFilterGroup:
+        if self.operator == "not" and len(self.conditions) != 1:
+            raise ValueError("not groups require exactly one condition")
+        if _filter_tree_depth(self) > 5:
+            raise ValueError("where filter tree exceeds maximum depth of 5")
+        if _filter_tree_predicate_count(self) > 64:
+            raise ValueError("where filter tree exceeds maximum predicate count of 64")
+        return self
+
+
+def _filter_tree_depth(node: QueryFilter | QueryFilterGroup) -> int:
+    if isinstance(node, QueryFilter):
+        return 1
+    return 1 + max(_filter_tree_depth(condition) for condition in node.conditions)
+
+
+def _filter_tree_predicate_count(node: QueryFilter | QueryFilterGroup) -> int:
+    if isinstance(node, QueryFilter):
+        return 1
+    return sum(_filter_tree_predicate_count(condition) for condition in node.conditions)
+
+
 class PeriodValue(BaseModel):
     """Provider-neutral calendar period; physical representation stays provider-side."""
 
@@ -126,6 +156,7 @@ class ConceptualQuery(BaseModel):
     select: list[QuerySelect] = Field(default_factory=list, max_length=32)
     metrics: list[QueryMetric] = Field(default_factory=list, max_length=16)
     filters: list[QueryFilter] = Field(default_factory=list, max_length=32)
+    where: QueryFilter | QueryFilterGroup | None = None
     relationships: list[str] = Field(default_factory=list, max_length=8)
     time_scope: QueryPeriod | None = None
     comparisons: list[QueryComparison] = Field(default_factory=list, max_length=16)
@@ -137,6 +168,8 @@ class ConceptualQuery(BaseModel):
     def bounded_identifiers(self) -> ConceptualQuery:
         if any(len(value) > 128 for value in self.entities + self.relationships + self.dimensions):
             raise ValueError("query identifiers are too long")
+        if self.where is not None and _filter_tree_predicate_count(self.where) + len(self.filters) > 64:
+            raise ValueError("query filter predicates exceed maximum count of 64")
         return self
 
 

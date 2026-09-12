@@ -24,6 +24,7 @@ coverage/
 *.log
 *.local
 .DS_Store
+screenshots/
 apps/peopleops-api/var/
 prompts/evaluations/
 evaluation/runs/*

@@ -89,6 +89,7 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             ],
             "metrics": [],
             "filters": [],
+            "where": None,
             "relationships": [],
             "time_scope": None,
             "comparisons": [],
@@ -105,6 +106,7 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             "entities": ["entity.field"],
             "select": "list of {field, alias?}",
             "filters": "list of {field, operator, value}; in/not_in require a non-empty list",
+            "where": "optional grouped predicate tree using operator and/or/not with predicate leaves shaped like filters",
             "relationships": "list of catalog relationship identifiers",
             "time_scope": "QueryPeriod or null; date_range requires field/start/end",
             "comparisons": "list of {left, operator, right}",
@@ -115,6 +117,8 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
             "validation_rules": [
                 "Unknown fields, entities, relationships and unsupported operations are rejected by the provider catalog.",
                 "All field references must use the entity.field form.",
+                "Grouped where conditions support and/or/not; not accepts exactly one condition.",
+                "Legacy filters and grouped where may coexist and are combined with AND.",
                 "Metric function must be count, sum, avg, min or max.",
                 "Non-count metrics require a field.",
                 "When the requested output unit differs from the catalog unit, metrics may include conversion with from_unit, to_unit, operation divide/multiply, and a positive factor.",
@@ -193,21 +197,17 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
         request_id: str = "",
         security: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Return only the semantic catalog scope selected by an authorized agent."""
+        """Return the selected semantic catalog without exposing source data.
+
+        Restricted domains may be discovered without their data-read scope so
+        PeopleOps can classify the request and route it to Human Review. The
+        validation and execution tools remain the authorization boundary.
+        """
         scopes = _scopes(security)
         if "hr:read" not in scopes and "hr:payroll" not in scopes:
             raise ToolError("AUTHORIZATION_REQUIRED")
         requested_capabilities = set(capabilities or [])
         requested_entities = set(entities or [])
-        payroll_requested = "payroll" in requested_capabilities or bool(
-            {"payroll", "payroll_period", "payroll_item", "payroll_concept"} & requested_entities
-        )
-        if (
-            payroll_requested
-            and settings.mcp_payroll_read_authorization_enabled
-            and "hr:payroll" not in scopes
-        ):
-            raise ToolError("AUTHORIZATION_DENIED")
         try:
             catalog = current_catalog()
             capability_entities = {
@@ -217,6 +217,16 @@ def create_mcp_server(schema: str | None = None, *, live_discovery: bool = False
                 for entity_id in capability.entities
             }
             selected_ids = capability_entities | requested_entities
+            seed_ids = set(selected_ids)
+            entities_by_id = {entity.entity_id: entity for entity in catalog.entities}
+            for relationship in catalog.relationships:
+                if relationship.from_entity in seed_ids:
+                    target = entities_by_id.get(relationship.to_entity)
+                    if (
+                        target is not None
+                        and (target.sensitivity != "restricted" or "hr:payroll" in scopes)
+                    ):
+                        selected_ids.add(relationship.to_entity)
             selected_entities = [
                 entity for entity in catalog.entities if entity.entity_id in selected_ids
             ]

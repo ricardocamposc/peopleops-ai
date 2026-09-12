@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
 from peopleops_api.analysis_contracts import (
@@ -11,23 +11,40 @@ from peopleops_api.analysis_contracts import (
 )
 from peopleops_api.analysis_workflow import (
     AnalysisWorkflow,
+    _apply_structured_multi_query_plan,
+    _apply_semantic_coverage_to_review,
+    _answer_mentions_structured_row_values,
+    _append_structured_result_summary,
     _catalog_conceptual_validation_errors,
     _complete_plan_relationship_entities,
+    _answer_needs_structured_result_summary,
     _deterministic_result_facts,
     _semantic_catalog_errors,
 )
-from peopleops_api.functional_analyst_agent import _semantic_submission_errors
-from peopleops_api.mcp_contracts import SecurityContext
+from peopleops_api.functional_analyst_agent import (
+    _authorization_blocked_discovery,
+    _clarification_from_failed_submission,
+    _infer_semantic_entities,
+    _qualify_semantic_operational_conditions,
+    _semantic_submission_errors,
+)
+from peopleops_api.mcp_client import MCPProviderError, _provider_error_code_from_exception, _provider_error_code_from_text
+from peopleops_api.mcp_contracts import SecurityContext, TemporalContext
 from peopleops_api.models import AnalysisInteraction, Conversation
+from peopleops_api.repositories import record_human_review_decision
 from peopleops_api.query_contracts import (
     ConceptualQuery,
     QueryFilter,
+    QueryFilterGroup,
     QueryMetric,
     QueryPeriod,
     QueryResult,
     QuerySelect,
     QueryValidation,
 )
+from peopleops_api.query_programmer_agent import _normalize_query_payload, _validate_tool_args
+from peopleops_api.senior_reviewer_agent import _review_query_args
+from peopleops_api.semantic_coverage import verify_semantic_coverage
 from peopleops_api.policy_retrieval import PolicyRetrievalResult, PolicyRetrievalStatus
 
 
@@ -42,6 +59,30 @@ def test_deterministic_result_facts_expose_numeric_totals_to_synthesis() -> None
         "row_count": 2,
         "numeric_sums": {"approved_minutes": 180},
     }
+
+
+def test_synthesis_row_guard_appends_count_summary_when_answer_omits_table_values() -> None:
+    evidence = [
+        {
+            "type": "structured_data",
+            "result": {
+                "rows": [
+                    {"business_identifier": "SUBJ-001", "display_name": "Ada"},
+                    {"business_identifier": "SUBJ-002", "display_name": "Grace"},
+                ]
+            },
+        }
+    ]
+    response = StructuredAnswer(answer="Matching records are:")
+
+    assert _answer_mentions_structured_row_values(response, evidence) is False
+    assert _answer_needs_structured_result_summary(response, evidence) is True
+    appended = _append_structured_result_summary(response.answer, evidence)
+
+    assert "2 registros" in appended
+    assert "tabla de evidencia de datos" in appended
+    assert "SUBJ-001" not in appended
+    assert "Grace" not in appended
 
 
 def test_deterministic_result_facts_expose_declared_metric_conversion() -> None:
@@ -72,6 +113,555 @@ def test_deterministic_result_facts_expose_declared_metric_conversion() -> None:
 
     assert facts["numeric_sums"] == {"approved_minutes": 180}
     assert facts["derived_numeric_values"] == {"total_overtime_hours": 3.0}
+
+
+def test_semantic_coverage_rejects_status_only_when_operational_conditions_require_dates() -> None:
+    reference_date = date(2026, 9, 11)
+    semantic = SemanticRequest(
+        goal="current contracts",
+        required_capabilities=["employment"],
+        entities=["contract", "employee"],
+        operational_conditions=[
+            QueryFilter(field="contract.status", operator="eq", value="active"),
+            QueryFilter(field="contract.start_date", operator="lte", value=reference_date),
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(field="contract.end_date", operator="gte", value=reference_date),
+                ],
+            ),
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="current contracts",
+        queries=[
+            {
+                "purpose": "status-only contract query",
+                "query": ConceptualQuery(
+                    entities=["contract", "employee"],
+                    select=[QuerySelect(field="employee.employee_code")],
+                    filters=[QueryFilter(field="contract.status", operator="eq", value="active")],
+                    relationships=["contract_employee"],
+                ),
+            }
+        ],
+    )
+
+    coverage = verify_semantic_coverage(semantic, plan, [])
+
+    assert coverage.status == "INCOMPLETE"
+    assert coverage.checked_conditions == 3
+    assert len(coverage.missing_conditions) == 2
+
+
+def test_semantic_coverage_accepts_grouped_effective_interval_query() -> None:
+    reference_date = date(2026, 9, 11)
+    semantic = SemanticRequest(
+        goal="current contracts",
+        required_capabilities=["employment"],
+        entities=["contract", "employee"],
+        operational_conditions=[
+            QueryFilter(field="contract.status", operator="eq", value="active"),
+            QueryFilter(field="contract.start_date", operator="lte", value=reference_date),
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(field="contract.end_date", operator="gte", value=reference_date),
+                ],
+            ),
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="current contracts",
+        queries=[
+            {
+                "purpose": "current contract query",
+                "query": ConceptualQuery(
+                    entities=["contract", "employee"],
+                    select=[
+                        QuerySelect(field="employee.employee_code"),
+                        QuerySelect(field="contract.start_date"),
+                        QuerySelect(field="contract.end_date"),
+                    ],
+                    filters=[QueryFilter(field="contract.status", operator="eq", value="active")],
+                    where=QueryFilterGroup(
+                        operator="and",
+                        conditions=[
+                            QueryFilter(
+                                field="contract.start_date",
+                                operator="lte",
+                                value=reference_date,
+                            ),
+                            QueryFilterGroup(
+                                operator="or",
+                                conditions=[
+                                    QueryFilter(field="contract.end_date", operator="is_null"),
+                                    QueryFilter(
+                                        field="contract.end_date",
+                                        operator="gte",
+                                        value=reference_date,
+                                    ),
+                                ],
+                            ),
+                        ],
+                    ),
+                    relationships=["contract_employee"],
+                ),
+            }
+        ],
+    )
+    result = QueryResult(
+        request_id="req",
+        validation=QueryValidation(valid=True, query_hash="hash", catalog_version="v1"),
+        columns=["employee_code", "start_date", "end_date"],
+        rows=[
+            {"employee_code": "E-101", "start_date": "2024-01-08", "end_date": None},
+            {"employee_code": "E-103", "start_date": "2023-05-02", "end_date": None},
+        ],
+    )
+
+    coverage = verify_semantic_coverage(semantic, plan, [(plan.queries[0], result)])
+
+    assert coverage.status == "COMPLETE"
+    assert coverage.missing_conditions == []
+    assert coverage.contradictory_rows == []
+
+
+def test_semantic_coverage_accepts_union_plan_covering_or_conditions() -> None:
+    reference_date = date(2026, 9, 11)
+    semantic = SemanticRequest(
+        goal="records with open-ended or future end",
+        operational_conditions=[
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="record.valid_to", operator="is_null"),
+                    QueryFilter(field="record.valid_to", operator="gte", value=reference_date),
+                ],
+            )
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="records with open-ended or future end",
+        combination={
+            "strategy": "union",
+            "deduplication_keys": ["record.id"],
+            "partial_failure_policy": "fail_analysis",
+            "reason": "The condition is covered by separate alternative evidence sets.",
+        },
+        queries=[
+            {
+                "purpose": "open-ended records",
+                "query": ConceptualQuery(
+                    entities=["record"],
+                    select=[QuerySelect(field="record.id")],
+                    filters=[QueryFilter(field="record.valid_to", operator="is_null")],
+                ),
+            },
+            {
+                "purpose": "future-ended records",
+                "query": ConceptualQuery(
+                    entities=["record"],
+                    select=[QuerySelect(field="record.id")],
+                    filters=[
+                        QueryFilter(field="record.valid_to", operator="gte", value=reference_date)
+                    ],
+                ),
+            },
+        ],
+    )
+
+    coverage = verify_semantic_coverage(semantic, plan, [])
+
+    assert coverage.status == "COMPLETE"
+    assert coverage.missing_conditions == []
+
+
+def test_semantic_coverage_handles_non_comparable_row_values() -> None:
+    semantic = SemanticRequest(
+        goal="threshold records",
+        operational_conditions=[
+            QueryFilter(field="vacation_balance.available_days", operator="lt", value=10)
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="threshold records",
+        queries=[
+            {
+                "purpose": "threshold records",
+                "query": ConceptualQuery(
+                    entities=["vacation_balance"],
+                    select=[QuerySelect(field="vacation_balance.available_days")],
+                    filters=[
+                        QueryFilter(
+                            field="vacation_balance.available_days",
+                            operator="lt",
+                            value=10,
+                        )
+                    ],
+                ),
+            }
+        ],
+    )
+    result = QueryResult(
+        request_id="req",
+        validation=QueryValidation(valid=True, query_hash="hash", catalog_version="v1"),
+        columns=["available_days"],
+        rows=[{"available_days": "not numeric"}],
+    )
+
+    coverage = verify_semantic_coverage(semantic, plan, [(plan.queries[0], result)])
+
+    assert coverage.status == "CONTRADICTED"
+    assert coverage.contradictory_rows == [
+        {
+            "purpose": "threshold records",
+            "row_index": 0,
+            "condition": {
+                "field": "vacation_balance.available_days",
+                "operator": "lt",
+                "value": 10,
+            },
+        }
+    ]
+
+
+def test_query_programmer_validation_tool_accepts_direct_query_args() -> None:
+    direct_args = {
+        "entities": ["employee"],
+        "select": [{"field": "employee.employee_code"}],
+        "time_scope": {
+            "type": "date_range",
+            "field": "employee.hire_date",
+            "start": "2026-01-01",
+            "end": "2026-12-31",
+        },
+        "order_by": [],
+        "dimensions": [],
+    }
+
+    assert _validate_tool_args(direct_args) == {"query": direct_args}
+    assert _validate_tool_args({"query": direct_args}) == {"query": direct_args}
+    assert _validate_tool_args({"unexpected": "shape"}) == {"unexpected": "shape"}
+
+
+def test_query_programmer_normalizes_equivalent_query_payload_shapes() -> None:
+    from reference_mcp_server.discovery import build_catalog
+
+    catalog = build_catalog()
+    payload = {
+        "entities": ["attendance"],
+        "metrics": [
+            {"alias": "total_absence", "field": "sum(absence_minutes)"},
+        ],
+        "filters": [{"field": "work_date", "operator": "gte", "value": "2026-01-01"}],
+        "time_scope": {
+            "type": "date_range",
+            "field": "work_date",
+            "start": "2026-01-01",
+            "end": "2026-12-31",
+        },
+        "order_by": [{"reference": "work_date", "direction": "asc"}],
+        "grouping_requirements": ["month(work_date)"],
+        "ordering_requirements": ["month(work_date)"],
+        "where": {
+            "operator": "and",
+            "conditions": [
+                {"field": "work_date", "operator": "eq", "value": "2026-01-15"},
+                {"field": "work_date", "operator": "eq", "value": "2026-02-15"},
+            ],
+        },
+    }
+
+    normalized = _normalize_query_payload(payload, catalog)
+
+    assert "grouping_requirements" not in normalized
+    assert "ordering_requirements" not in normalized
+    assert normalized["metrics"] == [
+        {"alias": "total_absence", "field": "attendance.absence_minutes", "function": "sum"}
+    ]
+    assert normalized["filters"][0]["field"] == "attendance.work_date"
+    assert normalized["time_scope"]["field"] == "attendance.work_date"
+    assert normalized["dimensions"] == ["month(attendance.work_date)"]
+    assert normalized["order_by"] == [
+        {"reference": "month(attendance.work_date)", "direction": "asc"}
+    ]
+    assert normalized["where"] == {
+        "field": "attendance.work_date",
+        "operator": "in",
+        "value": ["2026-01-15", "2026-02-15"],
+    }
+
+
+def test_query_programmer_does_not_duplicate_selected_grouping_fields() -> None:
+    from reference_mcp_server.discovery import build_catalog
+
+    payload = {
+        "entities": ["attendance_incident", "employee"],
+        "select": [
+            {"field": "employee.id"},
+            {"field": "employee.first_name"},
+            {"field": "employee.last_name"},
+        ],
+        "metrics": [
+            {"alias": "incident_count", "field": "attendance_incident.id", "function": "count"}
+        ],
+        "grouping_requirements": ["employee.id", "employee.first_name", "employee.last_name"],
+        "order_by": [{"reference": "incident_count", "direction": "desc"}],
+    }
+
+    normalized = _normalize_query_payload(payload, build_catalog())
+
+    assert normalized["dimensions"] == []
+
+
+def test_structured_comparison_expands_current_period_query_to_multi_query() -> None:
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="compare current and previous period totals",
+        comparison_requirements=["compare both requested periods"],
+    )
+    plan = AnalysisPlan(
+        goal="compare current and previous period totals",
+        queries=[
+            {
+                "purpose": "period total",
+                "query": ConceptualQuery(
+                    entities=["overtime"],
+                    metrics=[
+                        QueryMetric(
+                            field="overtime.approved_minutes",
+                            function="sum",
+                            alias="total_approved_minutes",
+                        )
+                    ],
+                    filters=[
+                        QueryFilter(field="overtime.work_date", operator="gte", value="2026-09-01")
+                    ],
+                    where=QueryFilterGroup(
+                        operator="and",
+                        conditions=[
+                            QueryFilter(
+                                field="overtime.work_date",
+                                operator="lte",
+                                value="2026-09-30",
+                            )
+                        ],
+                    ),
+                    time_scope=QueryPeriod(
+                        type="date_range",
+                        field="overtime.work_date",
+                        start=date(2026, 9, 1),
+                        end=date(2026, 9, 30),
+                    ),
+                    order_by=[{"reference": "overtime.work_date", "direction": "asc"}],
+                ),
+            }
+        ],
+    )
+    context = TemporalContext(
+        source_current_date=date(2026, 9, 11),
+        source_current_timestamp=datetime(2026, 9, 11, tzinfo=UTC),
+        current_year=2026,
+        current_month=9,
+    )
+
+    expanded = _apply_structured_multi_query_plan(plan, semantic, context, build_catalog())
+
+    assert expanded.combination.strategy == "comparison"
+    assert [item.logical_role for item in expanded.queries] == ["current", "previous"]
+    assert [item.query.time_scope.period.month for item in expanded.queries] == [9, 8]
+    assert all(not item.query.filters for item in expanded.queries)
+    assert all(item.query.where is None for item in expanded.queries)
+    assert all(not item.query.order_by for item in expanded.queries)
+
+
+def test_structured_comparison_expands_multiple_temporal_filter_windows() -> None:
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="compare two closed periods",
+        comparison_requirements=["compare both requested periods"],
+    )
+    plan = AnalysisPlan(
+        goal="compare two closed periods",
+        queries=[
+            {
+                "purpose": "period total",
+                "query": ConceptualQuery(
+                    entities=["overtime"],
+                    metrics=[
+                        QueryMetric(
+                            field="overtime.approved_minutes",
+                            function="sum",
+                            alias="total_approved_minutes",
+                        )
+                    ],
+                    filters=[
+                        QueryFilter(field="overtime.work_date", operator="gte", value="2026-09-01"),
+                        QueryFilter(field="overtime.work_date", operator="lte", value="2026-09-30"),
+                        QueryFilter(field="overtime.work_date", operator="gte", value="2026-08-01"),
+                        QueryFilter(field="overtime.work_date", operator="lte", value="2026-08-31"),
+                    ],
+                    order_by=[{"reference": "overtime.work_date", "direction": "asc"}],
+                ),
+            }
+        ],
+    )
+    context = TemporalContext(
+        source_current_date=date(2026, 9, 11),
+        source_current_timestamp=datetime(2026, 9, 11, tzinfo=UTC),
+        current_year=2026,
+        current_month=9,
+    )
+
+    expanded = _apply_structured_multi_query_plan(plan, semantic, context, build_catalog())
+
+    assert expanded.combination.strategy == "comparison"
+    assert [item.logical_role for item in expanded.queries] == ["previous", "current"]
+    assert [(item.query.time_scope.start, item.query.time_scope.end) for item in expanded.queries] == [
+        (date(2026, 8, 1), date(2026, 8, 31)),
+        (date(2026, 9, 1), date(2026, 9, 30)),
+    ]
+    assert all(not item.query.filters for item in expanded.queries)
+    assert all(not item.query.order_by for item in expanded.queries)
+
+
+def test_structured_comparison_uses_month_grain_for_multi_month_range() -> None:
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="compare multiple periods",
+        comparison_requirements=["compare requested periods"],
+    )
+    plan = AnalysisPlan(
+        goal="compare multiple periods",
+        queries=[
+            {
+                "purpose": "period series",
+                "query": ConceptualQuery(
+                    entities=["overtime"],
+                    metrics=[
+                        QueryMetric(
+                            field="overtime.approved_minutes",
+                            function="sum",
+                            alias="total_approved_minutes",
+                        )
+                    ],
+                    dimensions=["overtime.work_date"],
+                    order_by=[{"reference": "overtime.work_date", "direction": "asc"}],
+                    time_scope=QueryPeriod(
+                        type="date_range",
+                        field="overtime.work_date",
+                        start=date(2026, 1, 1),
+                        end=date(2026, 3, 31),
+                    ),
+                ),
+            }
+        ],
+    )
+
+    normalized = _apply_structured_multi_query_plan(plan, semantic, None, build_catalog())
+
+    assert normalized.queries[0].query.dimensions == ["month(overtime.work_date)"]
+    assert normalized.queries[0].query.order_by[0].reference == "month(overtime.work_date)"
+
+
+def test_functional_analyst_converts_rejected_submission_to_clarification() -> None:
+    semantic = _clarification_from_failed_submission(
+        [
+            {
+                "tool": "submit_semantic_request",
+                "output": {
+                    "reason": "INCOMPLETE_SEMANTIC_REQUEST",
+                    "errors": ["comparison requires a measurable business subject"],
+                },
+            }
+        ],
+        "Compare January with the previous period.",
+    )
+
+    assert semantic is not None
+    assert semantic.needs_clarification is True
+    assert semantic.requires_structured_data is False
+    assert semantic.questions_or_missing_information == [
+        "comparison requires a measurable business subject"
+    ]
+
+
+def test_functional_analyst_authorization_block_survives_later_unrelated_catalog() -> None:
+    denied = {
+        "tool": "discover_scoped_catalog",
+        "output": {"status": "error", "error": {"code": "AUTHORIZATION_DENIED"}},
+    }
+    wrapped_denied = {
+        "tool": "discover_scoped_catalog",
+        "output": {"status": "error", "error": {"code": "ToolException", "message": "AUTHORIZATION_DENIED"}},
+    }
+    success = {"tool": "discover_scoped_catalog", "output": {"status": "success"}}
+
+    assert _authorization_blocked_discovery([denied]) is True
+    assert _authorization_blocked_discovery([wrapped_denied]) is True
+    assert _authorization_blocked_discovery([denied, success]) is True
+
+
+def test_mcp_provider_error_code_is_preserved_from_exception_text() -> None:
+    assert (
+        _provider_error_code_from_text("Error executing tool: AUTHORIZATION_DENIED")
+        == "AUTHORIZATION_DENIED"
+    )
+    grouped = ExceptionGroup(
+        "transport wrapper",
+        [ExceptionGroup("task wrapper", [MCPProviderError("AUTHORIZATION_DENIED", "denied", request_id="r")])],
+    )
+    assert _provider_error_code_from_exception(grouped) == "AUTHORIZATION_DENIED"
+
+
+def test_senior_reviewer_query_tools_accept_direct_query_args() -> None:
+    direct_args = {
+        "entities": ["employee"],
+        "select": [{"field": "employee.employee_code"}],
+    }
+
+    assert _review_query_args(None, {}, direct_args) == (0, direct_args)
+    assert _review_query_args(1, direct_args, {}) == (1, direct_args)
+
+
+def test_senior_review_approval_is_overridden_when_semantic_coverage_is_incomplete() -> None:
+    reference_date = date(2026, 9, 11)
+    semantic = SemanticRequest(
+        goal="current contracts",
+        entities=["contract", "employee"],
+        operational_conditions=[
+            QueryFilter(field="contract.status", operator="eq", value="active"),
+            QueryFilter(field="contract.start_date", operator="lte", value=reference_date),
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="current contracts",
+        queries=[
+            {
+                "purpose": "status-only contract query",
+                "query": ConceptualQuery(
+                    entities=["contract", "employee"],
+                    select=[QuerySelect(field="employee.employee_code")],
+                    filters=[QueryFilter(field="contract.status", operator="eq", value="active")],
+                    relationships=["contract_employee"],
+                ),
+            }
+        ],
+    )
+    review = SeniorReview(status="APPROVE", summary="Looks valid.", confidence=1.0)
+
+    revised, coverage = _apply_semantic_coverage_to_review(review, semantic, plan)
+
+    assert coverage.status == "INCOMPLETE"
+    assert revised.status == "REVISE"
+    assert revised.confidence == 0.4
+    assert revised.issues[0].category == "semantic_coverage"
 
 
 @dataclass
@@ -230,6 +820,201 @@ def test_functional_analyst_accepts_filtered_list_requests_with_grounded_require
     assert _semantic_submission_errors(semantic, build_catalog()) == []
 
 
+def test_functional_analyst_accepts_capability_required_sources():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="Retrieve contracts ending soon",
+        required_information=["database access"],
+        required_sources=["employment"],
+        filters=["contract.end_date between reference date and next 60 days"],
+        data_retrieval_request="Retrieve contracts ending in the next 60 days.",
+        entities=["contract"],
+        measures=[],
+        dimensions=[],
+        requires_structured_data=True,
+        requires_policy=False,
+    )
+
+    assert _semantic_submission_errors(semantic, build_catalog()) == []
+
+
+def test_functional_analyst_round_budget_tracks_tool_count():
+    from peopleops_api.functional_analyst_agent import (
+        FUNCTIONAL_ANALYST_EXTRA_SUBMISSION_ROUNDS,
+        MIN_FUNCTIONAL_ANALYST_ROUNDS,
+        _round_budget_for_tool_count,
+    )
+
+    assert _round_budget_for_tool_count(3) == 3 + FUNCTIONAL_ANALYST_EXTRA_SUBMISSION_ROUNDS
+    assert _round_budget_for_tool_count(6) == 6 + FUNCTIONAL_ANALYST_EXTRA_SUBMISSION_ROUNDS
+    assert _round_budget_for_tool_count(6, configured=2) == MIN_FUNCTIONAL_ANALYST_ROUNDS
+    assert _round_budget_for_tool_count(6, configured=9) == 9
+
+
+def test_functional_analyst_qualifies_unambiguous_operational_condition_fields():
+    from reference_mcp_server.discovery import build_catalog
+
+    catalog = build_catalog()
+    scoped_catalog = catalog.model_copy(
+        update={
+            "entities": [
+                entity for entity in catalog.entities if entity.entity_id == "contract"
+            ],
+            "capabilities": [
+                capability
+                for capability in catalog.capabilities
+                if capability.name == "employment"
+            ],
+        }
+    )
+    semantic = SemanticRequest(
+        goal="contracts ending soon",
+        required_information=["database access"],
+        required_sources=["employment"],
+        entities=["contract"],
+        filters=["end_date in the next 60 days"],
+        data_retrieval_request="Retrieve contracts ending in the next 60 days.",
+        operational_conditions=[
+            QueryFilter(field="end_date", operator="gte", value=date(2026, 9, 11))
+        ],
+    )
+
+    qualified = _qualify_semantic_operational_conditions(semantic, scoped_catalog)
+
+    assert qualified.operational_conditions == [
+        QueryFilter(field="contract.end_date", operator="gte", value=date(2026, 9, 11))
+    ]
+    assert _semantic_submission_errors(qualified, scoped_catalog) == []
+
+
+def test_functional_analyst_rejects_ambiguous_unqualified_operational_condition_fields():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="records by status",
+        required_information=["database access"],
+        required_sources=["employment"],
+        entities=[],
+        filters=["status active"],
+        data_retrieval_request="Retrieve records by status.",
+        operational_conditions=[QueryFilter(field="status", operator="eq", value="active")],
+    )
+
+    qualified = _qualify_semantic_operational_conditions(semantic, build_catalog())
+
+    assert qualified.operational_conditions == [
+        QueryFilter(field="status", operator="eq", value="active")
+    ]
+    assert (
+        "UNQUALIFIED_FIELD: operational_conditions:status"
+        in _semantic_submission_errors(qualified, build_catalog())
+    )
+
+
+def test_functional_analyst_qualifies_fields_using_semantic_entity_scope():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="active records in an organization unit",
+        required_information=["database access"],
+        required_sources=["employee", "department"],
+        entities=[],
+        filters=["active status"],
+        data_retrieval_request="Retrieve active subject records for the organization unit.",
+        operational_conditions=[QueryFilter(field="status", operator="eq", value="active")],
+    )
+
+    qualified = _qualify_semantic_operational_conditions(semantic, build_catalog())
+
+    assert qualified.operational_conditions == [
+        QueryFilter(field="employee.status", operator="eq", value="active")
+    ]
+    assert _semantic_submission_errors(qualified, build_catalog()) == []
+
+
+def test_functional_analyst_rejects_flat_mutually_exclusive_operational_conditions():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="records effective as of a reference date",
+        required_information=["database access"],
+        required_sources=["employment"],
+        entities=["contract"],
+        filters=["records effective as of a reference date"],
+        data_retrieval_request="Retrieve records effective as of the reference date.",
+        operational_conditions=[
+            QueryFilter(field="contract.end_date", operator="is_null"),
+            QueryFilter(field="contract.end_date", operator="gte", value=date(2026, 9, 11)),
+        ],
+    )
+
+    errors = _semantic_submission_errors(semantic, build_catalog())
+
+    assert any("CONTRADICTORY_OPERATIONAL_CONDITIONS" in error for error in errors)
+
+
+def test_functional_analyst_accepts_grouped_alternative_operational_conditions():
+    from reference_mcp_server.discovery import build_catalog
+
+    semantic = SemanticRequest(
+        goal="records effective as of a reference date",
+        required_information=["database access"],
+        required_sources=["employment"],
+        entities=["contract"],
+        filters=["records effective as of a reference date"],
+        data_retrieval_request="Retrieve records effective as of the reference date.",
+        operational_conditions=[
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(
+                        field="contract.end_date",
+                        operator="gte",
+                        value=date(2026, 9, 11),
+                    ),
+                ],
+            )
+        ],
+    )
+
+    assert _semantic_submission_errors(semantic, build_catalog()) == []
+
+
+def test_functional_analyst_infers_entities_from_grounded_operational_conditions():
+    from reference_mcp_server.discovery import build_catalog
+
+    catalog = build_catalog()
+    semantic = SemanticRequest(
+        goal="records effective as of a reference date",
+        required_information=["database access"],
+        required_sources=["employment"],
+        entities=[],
+        filters=["records effective as of a reference date"],
+        data_retrieval_request="Retrieve records effective as of the reference date.",
+        operational_conditions=[
+            QueryFilter(field="contract.start_date", operator="lte", value=date(2026, 9, 11)),
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(
+                        field="contract.end_date",
+                        operator="gte",
+                        value=date(2026, 9, 11),
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    inferred = _infer_semantic_entities(semantic, catalog)
+
+    assert inferred.entities == ["contract"]
+    assert _semantic_submission_errors(inferred, catalog) == []
+
+
 def test_finalize_response_persists_insufficient_data_status(db_session):
     interaction = _interaction()
     db_session.add(interaction)
@@ -320,6 +1105,58 @@ def test_workflow_uses_typed_model_gateway_and_persists_observable_stages(db_ses
         "synthesis",
     }
     assert "chain" not in str(result.response).lower()
+
+
+def test_workflow_does_not_complete_when_structured_evidence_lacks_semantic_coverage(
+    db_session,
+):
+    reference_date = date(2026, 9, 11)
+    semantic = SemanticRequest(
+        goal="current contracts",
+        required_capabilities=["employment"],
+        entities=["contract", "employee"],
+        operational_conditions=[
+            QueryFilter(field="contract.status", operator="eq", value="active"),
+            QueryFilter(field="contract.start_date", operator="lte", value=reference_date),
+            QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(field="contract.end_date", operator="gte", value=reference_date),
+                ],
+            ),
+        ],
+    )
+    plan = AnalysisPlan(
+        goal="current contracts",
+        queries=[
+            {
+                "purpose": "status-only contract query",
+                "query": ConceptualQuery(
+                    entities=["contract", "employee"],
+                    select=[QuerySelect(field="employee.employee_code")],
+                    filters=[QueryFilter(field="contract.status", operator="eq", value="active")],
+                    relationships=["contract_employee"],
+                ),
+            }
+        ],
+    )
+    model = FakeModel([semantic, plan])
+    interaction = _interaction(question="Que empleados tienen contrato vigente?")
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+    ).run(interaction)
+
+    assert result.status == "insufficient_data"
+    assert result.response["status"] == "insufficient_data"
+    assert result.evidence == []
+    assert result.evaluation_trace["senior_reviews"][0]["semantic_coverage"]["status"] == "INCOMPLETE"
 
 
 def test_evaluation_trace_correlates_happy_path_plan_validation_and_execution(db_session):
@@ -466,7 +1303,19 @@ def test_evaluation_trace_persists_authorization_decision(db_session):
         [
             SemanticRequest(
                 goal="payroll totals", required_capabilities=["payroll"], entities=["payroll"]
-            )
+            ),
+            AnalysisPlan(
+                goal="payroll totals",
+                queries=[
+                    {
+                        "purpose": "payroll totals",
+                        "query": ConceptualQuery(
+                            entities=["payroll"],
+                            select=[QuerySelect(field="payroll.net_amount")],
+                        ),
+                    }
+                ],
+            ),
         ]
     )
     interaction = _interaction(question="What are the payroll totals?")
@@ -479,7 +1328,15 @@ def test_evaluation_trace_persists_authorization_decision(db_session):
         security=SecurityContext(scopes=["hr:read"]),
     ).run(interaction)
 
-    assert result.status == "failed"
+    assert result.status == "pending_human_review"
+    assert result.human_review_id is not None
+    assert result.response["answer"] == (
+        "La solicitud requiere permisos adicionales para consultar esos datos."
+    )
+    assert result.error_detail == "payroll access requires the hr:payroll scope"
+    assert result.warnings == [
+        "La solicitud requiere permisos adicionales para consultar esos datos."
+    ]
     assert result.evaluation_trace["authorization"] == {
         "required": True,
         "enforcement_enabled": True,
@@ -552,7 +1409,189 @@ def test_evaluation_trace_marks_zero_row_execution_as_valid(db_session):
     )
 
 
-def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
+def test_payroll_without_scope_is_denied_even_when_review_is_enabled(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="payroll explanation",
+                required_capabilities=["payroll"],
+                entities=["payroll"],
+            ),
+            AnalysisPlan(
+                goal="payroll explanation",
+                queries=[
+                    {
+                        "purpose": "payroll totals",
+                        "query": ConceptualQuery(
+                            entities=["payroll"],
+                            select=[QuerySelect(field="payroll.net_amount")],
+                        ),
+                    }
+                ],
+            ),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+    ).run(interaction)
+
+    assert result.status == "pending_human_review"
+    assert result.error_type == "AUTHORIZATION_ERROR"
+    assert result.error_detail == "payroll access requires the hr:payroll scope"
+    assert result.human_review_id is not None
+    assert result.human_review_status == "pending"
+    assert result.evaluation_trace["provider_validations"] == []
+    assert result.evaluation_trace["provider_executions"] == []
+
+
+def test_payroll_entity_without_capability_is_denied_before_planning(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="workers earning more than 1000",
+                required_capabilities=[],
+                entities=["payroll"],
+                operational_conditions=[
+                    QueryFilter(field="payroll.gross_amount", operator="gt", value=1000)
+                ],
+            ),
+        ]
+    )
+    interaction = _interaction(question="Que trabajadores ganan más de 1000?")
+    db_session.add(interaction)
+    db_session.commit()
+    gateway = FakeGateway()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=gateway,
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+    ).run(interaction)
+
+    assert result.status == "pending_human_review"
+    assert result.error_type == "AUTHORIZATION_ERROR"
+    assert result.human_review_id is not None
+    assert result.evaluation_trace["authorization"]["required"] is True
+    assert result.evaluation_trace["authorization"]["decision"] == "denied"
+    assert result.query_plan is None
+    assert gateway.validation_calls == 0
+    assert gateway.execution_calls == 0
+
+
+def test_restricted_payroll_plan_is_denied_when_semantic_capability_is_omitted(
+    db_session,
+):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="workers earning more than 1000",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+            ),
+            AnalysisPlan(
+                goal="workers earning more than 1000",
+                queries=[
+                    {
+                        "purpose": "workers above salary threshold",
+                        "query": ConceptualQuery(
+                            entities=["payroll"],
+                            select=[QuerySelect(field="payroll.net_amount")],
+                            filters=[
+                                QueryFilter(
+                                    field="payroll.net_amount", operator="gt", value=1000
+                                )
+                            ],
+                        ),
+                    }
+                ],
+            ),
+        ]
+    )
+    interaction = _interaction(question="Que trabajadores ganan más de 1000?")
+    db_session.add(interaction)
+    db_session.commit()
+    gateway = FakeGateway()
+
+    result = AnalysisWorkflow(
+        session=db_session,
+        gateway=gateway,
+        model=model,
+        security=SecurityContext(scopes=["hr:read"]),
+    ).run(interaction)
+
+    assert result.status == "pending_human_review"
+    assert result.error_type == "AUTHORIZATION_ERROR"
+    assert result.error_detail == "payroll access requires the hr:payroll scope"
+    assert result.human_review_id is not None
+    assert result.human_review.reason == "payroll access requires the hr:payroll scope"
+    assert gateway.validation_calls == 0
+    assert gateway.execution_calls == 0
+
+
+def test_human_review_approval_reruns_payroll_with_scoped_authorization(db_session):
+    semantic = SemanticRequest(
+        goal="payroll explanation", required_capabilities=["payroll"], entities=["payroll"]
+    )
+    plan = AnalysisPlan(
+        goal="payroll explanation",
+        queries=[
+            {
+                "purpose": "payroll totals",
+                "query": ConceptualQuery(
+                    entities=["payroll"], select=[QuerySelect(field="payroll.net_amount")]
+                ),
+            }
+        ],
+    )
+    initial_interaction = _interaction()
+    db_session.add(initial_interaction)
+    db_session.commit()
+    gateway = FakeGateway()
+
+    answer = StructuredAnswer(answer="Approved payroll analysis.")
+    workflow = AnalysisWorkflow(
+        session=db_session,
+        gateway=gateway,
+        model=FakeModel([semantic, plan, semantic.model_copy(deep=True), plan.model_copy(deep=True), answer]),
+        security=SecurityContext(scopes=["hr:read"]),
+    )
+    pending = workflow.run(initial_interaction)
+    assert pending.status == "pending_human_review"
+    assert pending.error_type == "AUTHORIZATION_ERROR"
+    assert pending.human_review_id is not None
+    assert gateway.execution_calls == 0
+
+    record_human_review_decision(
+        db_session,
+        pending.human_review_id,
+        decision="approve",
+        reviewed_by="reviewer@example.test",
+        comments="Authorize payroll read for this analysis.",
+    )
+    db_session.commit()
+
+    resumed = workflow.resume(pending, force=True)
+
+    assert resumed.request_id == pending.request_id
+    assert resumed.status == "completed"
+    assert resumed.human_review_status == "approve"
+    assert resumed.error_type is None
+    assert resumed.error_detail is None
+    assert resumed.response["answer"].startswith("Approved payroll analysis.")
+    assert gateway.validation_calls > 0
+    assert gateway.execution_calls > 0
+    assert "hr:payroll" in resumed.evaluation_trace["authorization_resume"][0]["scope_added"]
+
+
+def test_workflow_denies_payroll_without_scope_when_human_review_is_disabled(db_session):
     model = FakeModel(
         [
             SemanticRequest(
@@ -571,11 +1610,14 @@ def test_workflow_denies_payroll_before_discovery_without_scope(db_session):
         gateway=FakeGateway(),
         model=model,
         security=SecurityContext(scopes=["hr:read"]),
+        read_analysis_human_review_enabled=False,
     ).run(interaction)
 
-    assert result.status == "failed"
+    assert result.status == "insufficient_data"
     assert result.error_type == "AUTHORIZATION_ERROR"
     assert result.error_detail == "payroll access requires the hr:payroll scope"
+    assert "permisos adicionales" in result.response["answer"]
+    assert "workflow stopped" not in result.response["answer"]
 
 
 def test_payroll_read_authorization_can_be_disabled_for_trusted_demo(db_session):
@@ -652,6 +1694,57 @@ def test_restricted_read_only_analysis_reviews_when_enabled(db_session):
         "review_required": True,
         "reason": "semantic_review_required",
     }
+
+
+def test_approved_human_review_can_resume_after_prior_resume_failure(db_session):
+    model = FakeModel(
+        [
+            SemanticRequest(
+                goal="restricted analysis",
+                required_capabilities=["workforce"],
+                entities=["employee"],
+                sensitivity="restricted",
+            ),
+            _plan(),
+        ]
+    )
+    interaction = _interaction()
+    db_session.add(interaction)
+    db_session.commit()
+
+    workflow = AnalysisWorkflow(
+        session=db_session,
+        gateway=FakeGateway(),
+        model=model,
+        security=SecurityContext(),
+        read_analysis_human_review_enabled=True,
+    )
+    paused = workflow.run(interaction)
+    assert paused.status == "pending_human_review"
+    assert paused.human_review_id is not None
+
+    record_human_review_decision(
+        db_session,
+        paused.human_review_id,
+        decision="approve",
+        reviewed_by="reviewer@example.test",
+        comments=None,
+    )
+    paused.status = "insufficient_data"
+    paused.current_stage = "finalize_response"
+    paused.error_type = "HUMAN_REVIEW_ERROR"
+    paused.error_detail = "analysis resume failed"
+    db_session.commit()
+
+    resumed = workflow.resume(paused, force=True)
+
+    assert resumed.status == "completed"
+    assert resumed.response is not None
+    assert "aprobó continuar" in resumed.response["answer"]
+    assert resumed.response["facts"]
+    assert resumed.human_review_status == "approve"
+    assert resumed.error_type is None
+    assert resumed.error_detail is None
 
 
 def test_restricted_read_only_analysis_skips_review_when_disabled(db_session):
@@ -883,6 +1976,40 @@ def test_filter_literals_are_not_conceptual_references():
     )
 
 
+def test_relationship_completion_uses_grouped_where_references():
+    from reference_mcp_server.discovery import build_catalog
+
+    plan = AnalysisPlan(
+        goal="filtered related records",
+        queries=[
+            {
+                "purpose": "filtered related records",
+                "query": ConceptualQuery(
+                    entities=["employee"],
+                    select=[QuerySelect(field="employee.employee_code")],
+                    filters=[QueryFilter(field="employee.status", operator="eq", value="active")],
+                    where=QueryFilterGroup(
+                        operator="and",
+                        conditions=[
+                            QueryFilter(
+                                field="department.name",
+                                operator="eq",
+                                value="Operations",
+                            )
+                        ],
+                    ),
+                ),
+            }
+        ],
+    )
+
+    query = _complete_plan_relationship_entities(plan, build_catalog()).queries[0].query
+
+    assert query.entities == ["employee", "department"]
+    assert query.relationships == ["employee_department"]
+    assert _catalog_conceptual_validation_errors(query, build_catalog()) == []
+
+
 def test_projection_aliases_are_unique_across_select_and_metrics():
     from reference_mcp_server.discovery import build_catalog
 
@@ -1072,6 +2199,57 @@ def test_catalog_preflight_accepts_only_discovered_qualified_fields():
     assert any(
         "UNQUALIFIED_FIELD" in error
         for error in _catalog_conceptual_validation_errors(unqualified, catalog)
+    )
+
+
+def test_catalog_preflight_checks_grouped_where_fields_and_literal_values():
+    from reference_mcp_server.discovery import build_catalog
+
+    catalog = build_catalog()
+    valid = ConceptualQuery(
+        entities=["contract"],
+        select=[QuerySelect(field="contract.id")],
+        where=QueryFilterGroup(
+            operator="or",
+            conditions=[
+                QueryFilter(field="contract.end_date", operator="is_null"),
+                QueryFilter(field="contract.end_date", operator="gte", value=date(2026, 9, 11)),
+            ],
+        ),
+    )
+    invalid_field = valid.model_copy(
+        update={
+            "where": QueryFilterGroup(
+                operator="or",
+                conditions=[
+                    QueryFilter(field="contract.end_date", operator="is_null"),
+                    QueryFilter(
+                        field="contract.not_in_catalog",
+                        operator="gte",
+                        value=date(2026, 9, 11),
+                    ),
+                ],
+            )
+        }
+    )
+    invalid_value = valid.model_copy(
+        update={
+            "where": QueryFilter(
+                field="contract.status",
+                operator="eq",
+                value="employee.status",
+            )
+        }
+    )
+
+    assert _catalog_conceptual_validation_errors(valid, catalog) == []
+    assert any(
+        "UNKNOWN_FIELD: where:contract.not_in_catalog" in error
+        for error in _catalog_conceptual_validation_errors(invalid_field, catalog)
+    )
+    assert any(
+        "INVALID_FILTER: contract.status value must be a literal" in error
+        for error in _catalog_conceptual_validation_errors(invalid_value, catalog)
     )
 
 

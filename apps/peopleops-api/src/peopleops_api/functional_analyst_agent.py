@@ -16,8 +16,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from peopleops_api.analysis_contracts import SemanticRequest
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_contracts import DiscoveryCatalog, DiscoveryEntity, SecurityContext
+from peopleops_api.query_contracts import QueryFilter, QueryFilterGroup
 
-MAX_FUNCTIONAL_ANALYST_ROUNDS = 4
+MIN_FUNCTIONAL_ANALYST_ROUNDS = 4
+FUNCTIONAL_ANALYST_EXTRA_SUBMISSION_ROUNDS = 6
+MAX_FUNCTIONAL_ANALYST_ROUNDS = MIN_FUNCTIONAL_ANALYST_ROUNDS
 MAX_FUNCTIONAL_ANALYST_TOOL_CALLS_PER_ROUND = 4  # compatibility alias; runtime derives len(tools)
 MAX_FUNCTIONAL_ANALYST_TOOL_CALLS = 16
 
@@ -88,6 +91,15 @@ def _is_retryable_tool_error(exc: Exception) -> bool:
     )
 
 
+def _round_budget_for_tool_count(tool_count: int, configured: int | None = None) -> int:
+    return max(
+        MIN_FUNCTIONAL_ANALYST_ROUNDS,
+        configured
+        if configured is not None
+        else tool_count + FUNCTIONAL_ANALYST_EXTRA_SUBMISSION_ROUNDS,
+    )
+
+
 def _merge_described_entity(
     catalog: DiscoveryCatalog | None, entity: DiscoveryEntity
 ) -> DiscoveryCatalog:
@@ -144,15 +156,29 @@ def _semantic_submission_errors(
         )
     if catalog is not None:
         known_entities = {item.entity_id for item in catalog.entities}
+        known_capabilities = {item.name for item in catalog.capabilities}
+        known_fields = {
+            f"{entity.entity_id}.{field.field_id}"
+            for entity in catalog.entities
+            for field in entity.fields
+        }
         errors.extend(
             f"UNKNOWN_ENTITY: {entity}"
             for entity in semantic.entities
             if entity not in known_entities
         )
         errors.extend(
-            f"UNKNOWN_ENTITY: {entity}"
-            for entity in semantic.required_sources
-            if entity not in known_entities
+            f"UNKNOWN_SOURCE: {source}"
+            for source in semantic.required_sources
+            if source not in known_entities and source not in known_capabilities
+        )
+        for field_ref in _operational_condition_field_refs(semantic.operational_conditions):
+            if "." not in field_ref:
+                errors.append(f"UNQUALIFIED_FIELD: operational_conditions:{field_ref}")
+            elif field_ref not in known_fields:
+                errors.append(f"UNKNOWN_FIELD: operational_conditions:{field_ref}")
+        errors.extend(
+            _operational_condition_contradictions(semantic.operational_conditions)
         )
     has_multiple_periods = len(semantic.temporal_requirements) > 1
     has_comparison_intent = bool(semantic.comparison_requirements)
@@ -161,6 +187,166 @@ def _semantic_submission_errors(
             "comparison_requirements is required when multiple periods are requested"
         )
     return errors
+
+
+def _qualify_semantic_operational_conditions(
+    semantic: SemanticRequest, catalog: DiscoveryCatalog | None
+) -> SemanticRequest:
+    if catalog is None or not semantic.operational_conditions:
+        return semantic
+    semantic_entity_scope = {
+        item
+        for item in [*semantic.entities, *semantic.required_sources]
+        if item in {entity.entity_id for entity in catalog.entities}
+    }
+    matches: dict[str, list[str]] = {}
+    scoped_matches: dict[str, list[str]] = {}
+    for entity in catalog.entities:
+        for field in entity.fields:
+            reference = f"{entity.entity_id}.{field.field_id}"
+            matches.setdefault(field.field_id, []).append(reference)
+            if entity.entity_id in semantic_entity_scope:
+                scoped_matches.setdefault(field.field_id, []).append(reference)
+
+    def qualify(condition: QueryFilter | QueryFilterGroup) -> QueryFilter | QueryFilterGroup:
+        if isinstance(condition, QueryFilter):
+            if "." in condition.field:
+                return condition
+            candidates = scoped_matches.get(condition.field) or matches.get(condition.field, [])
+            if len(candidates) != 1:
+                return condition
+            return condition.model_copy(update={"field": candidates[0]})
+        return condition.model_copy(
+            update={"conditions": [qualify(item) for item in condition.conditions]}
+        )
+
+    return semantic.model_copy(
+        update={
+            "operational_conditions": [
+                qualify(condition) for condition in semantic.operational_conditions
+            ]
+        }
+    )
+
+
+def _infer_semantic_entities(
+    semantic: SemanticRequest, catalog: DiscoveryCatalog | None
+) -> SemanticRequest:
+    """Complete omitted entity identifiers from already-grounded catalog refs."""
+
+    if catalog is None or semantic.entities:
+        return semantic
+    known_entities = {item.entity_id for item in catalog.entities}
+    inferred: list[str] = []
+    for source in semantic.required_sources:
+        if source in known_entities and source not in inferred:
+            inferred.append(source)
+    for field_ref in _operational_condition_field_refs(semantic.operational_conditions):
+        if "." not in field_ref:
+            continue
+        entity_id = field_ref.split(".", 1)[0]
+        if entity_id in known_entities and entity_id not in inferred:
+            inferred.append(entity_id)
+    if not inferred:
+        return semantic
+    return semantic.model_copy(update={"entities": inferred})
+
+
+def _operational_condition_field_refs(
+    conditions: list[QueryFilter | QueryFilterGroup],
+) -> list[str]:
+    refs: list[str] = []
+    for condition in conditions:
+        if isinstance(condition, QueryFilter):
+            refs.append(condition.field)
+        else:
+            refs.extend(_operational_condition_field_refs(condition.conditions))
+    return refs
+
+
+def _operational_condition_contradictions(
+    conditions: list[QueryFilter | QueryFilterGroup],
+) -> list[str]:
+    errors: list[str] = []
+    filters_by_field: dict[str, list[QueryFilter]] = {}
+    for condition in conditions:
+        if isinstance(condition, QueryFilter):
+            filters_by_field.setdefault(condition.field, []).append(condition)
+        elif condition.operator == "and":
+            errors.extend(_operational_condition_contradictions(condition.conditions))
+    for field, field_conditions in filters_by_field.items():
+        operators = {condition.operator for condition in field_conditions}
+        if "is_null" in operators and len(operators - {"is_null"}) > 0:
+            errors.append(
+                "CONTRADICTORY_OPERATIONAL_CONDITIONS: "
+                f"{field} is_null cannot be combined with another predicate using AND; "
+                "use a grouped OR condition for alternatives"
+            )
+        if "is_null" in operators and "is_not_null" in operators:
+            errors.append(
+                f"CONTRADICTORY_OPERATIONAL_CONDITIONS: {field} is_null and is_not_null"
+            )
+    return errors
+
+
+def _clarification_from_failed_submission(
+    tool_events: list[dict[str, Any]],
+    question: str,
+) -> SemanticRequest | None:
+    for event in reversed(tool_events):
+        if event.get("tool") != "submit_semantic_request":
+            continue
+        output = event.get("output")
+        if not isinstance(output, dict) or output.get("reason") != "INCOMPLETE_SEMANTIC_REQUEST":
+            continue
+        errors = [
+            str(item)
+            for item in output.get("errors", [])
+            if isinstance(item, str) and item.strip()
+        ]
+        question_items = errors or [
+            "The request could not be grounded in the available semantic catalog."
+        ]
+        return SemanticRequest(
+            goal="Clarify the structured analysis request",
+            original_user_request=question,
+            clarified_request_english=question,
+            needs_clarification=True,
+            requires_structured_data=False,
+            requires_catalog=False,
+            required_information=[],
+            questions_or_missing_information=question_items[:8],
+        )
+    return None
+
+
+def _tool_error_code(output: dict[str, Any]) -> str:
+    error = output.get("error")
+    if isinstance(error, dict):
+        code = str(error.get("code") or "").strip()
+        message = str(error.get("message") or "").strip()
+    else:
+        code = ""
+        message = str(error or "").strip()
+    for candidate in (code, message, str(output.get("reason") or "")):
+        if "AUTHORIZATION_DENIED" in candidate:
+            return "AUTHORIZATION_DENIED"
+        if "AUTHORIZATION_REQUIRED" in candidate:
+            return "AUTHORIZATION_REQUIRED"
+    return code
+
+
+def _authorization_blocked_discovery(tool_events: list[dict[str, Any]]) -> bool:
+    saw_authorization_denied = False
+    for event in tool_events:
+        if event.get("tool") != "discover_scoped_catalog":
+            continue
+        output = event.get("output")
+        if not isinstance(output, dict):
+            continue
+        if _tool_error_code(output) == "AUTHORIZATION_DENIED":
+            saw_authorization_denied = True
+    return saw_authorization_denied
 
 
 class FunctionalAnalystAgent:
@@ -176,6 +362,8 @@ class FunctionalAnalystAgent:
         model_name: str | None = None,
         api_key: str | None = None,
         max_retries: int = 2,
+        max_rounds: int | None = None,
+        max_tool_calls: int | None = None,
     ) -> None:
         from langchain_openai import ChatOpenAI
 
@@ -183,6 +371,8 @@ class FunctionalAnalystAgent:
         self.security = security
         self.request_id = request_id
         self.reference_context = reference_context
+        self.max_rounds = max_rounds
+        self.max_tool_calls = max_tool_calls
         self.model_name = model_name or os.getenv("OPENAI_MODEL", "gpt-4o-mini")
         self.model = ChatOpenAI(
             model=self.model_name,
@@ -281,13 +471,19 @@ class FunctionalAnalystAgent:
     def _build_subgraph(self) -> Any:
         tools = self._tools()
         max_tool_calls_per_round = len(tools)
-        max_tool_calls = max_tool_calls_per_round * MAX_FUNCTIONAL_ANALYST_ROUNDS
+        max_rounds = _round_budget_for_tool_count(len(tools), self.max_rounds)
+        max_tool_calls = self.max_tool_calls or (max_tool_calls_per_round * max_rounds)
         tool_map = {tool.name: tool for tool in tools}
-        bound = self.model.bind_tools(tools, tool_choice="required")
+        try:
+            bound = self.model.bind_tools(
+                tools, tool_choice="required", parallel_tool_calls=False
+            )
+        except TypeError:
+            bound = self.model.bind_tools(tools, tool_choice="required")
 
         def analyst_model(state: FunctionalAnalystState) -> dict[str, Any]:
             round_number = state.get("model_rounds", 0) + 1
-            if round_number > MAX_FUNCTIONAL_ANALYST_ROUNDS:
+            if round_number > max_rounds:
                 return {"termination_reason": "FUNCTIONAL_ANALYST_ROUND_BUDGET_EXHAUSTED"}
             messages = list(state["messages"])
             model_events = list(state.get("model_events", []))
@@ -449,6 +645,9 @@ class FunctionalAnalystAgent:
                                 ).model_dump(mode="json")
                         if name == "submit_semantic_request":
                             proposed = SemanticRequest.model_validate(result["semantic_request"])
+                            catalog_model = (
+                                DiscoveryCatalog.model_validate(catalog) if catalog else None
+                            )
                             if not proposed.entities and proposed.required_sources and catalog:
                                 known_entities = {
                                     item["entity_id"]
@@ -464,6 +663,10 @@ class FunctionalAnalystAgent:
                                     proposed = proposed.model_copy(
                                         update={"entities": grounded_sources}
                                     )
+                            proposed = _qualify_semantic_operational_conditions(
+                                proposed, catalog_model
+                            )
+                            proposed = _infer_semantic_entities(proposed, catalog_model)
                             requires_discovery = (
                                 proposed.requires_catalog or proposed.requires_structured_data
                             ) and not proposed.requires_policy and not proposed.needs_clarification
@@ -477,7 +680,7 @@ class FunctionalAnalystAgent:
                                 }
                             elif (submission_errors := _semantic_submission_errors(
                                 proposed,
-                                DiscoveryCatalog.model_validate(catalog) if catalog else None,
+                                catalog_model,
                             )):
                                 result = {
                                     "submitted": False,
@@ -488,12 +691,13 @@ class FunctionalAnalystAgent:
                                 semantic = proposed.model_dump(mode="json")
                                 result = {"submitted": True, "semantic_request": semantic}
                     except Exception as exc:  # noqa: BLE001 - feedback belongs to the model
+                        error_code = getattr(exc, "code", type(exc).__name__)
                         result = {
                             "status": "error",
                             "ok": False,
                             "retryable": _is_retryable_tool_error(exc),
                             "error": {
-                                "code": type(exc).__name__,
+                                "code": error_code,
                                 "message": str(exc),
                             },
                         }
@@ -566,6 +770,15 @@ class FunctionalAnalystAgent:
             "catalog": result.get("discovered_catalog"),
         }
         if result.get("semantic_request") is None:
+            if _authorization_blocked_discovery(result.get("tool_events", [])):
+                metadata["termination_reason"] = "AUTHORIZATION_DENIED"
+                raise FunctionalAnalystAgentError("AUTHORIZATION_DENIED", metadata)
+            if clarification := _clarification_from_failed_submission(
+                result.get("tool_events", []),
+                question,
+            ):
+                metadata["termination_reason"] = "SUBMISSION_REJECTED_NEEDS_CLARIFICATION"
+                return clarification, metadata
             raise FunctionalAnalystAgentError(metadata["termination_reason"], metadata)
         metadata["termination_reason"] = "SUBMISSION_ACCEPTED"
         return SemanticRequest.model_validate(result["semantic_request"]), metadata

@@ -18,19 +18,20 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel, ConfigDict, Field
 
-from peopleops_api.analysis_contracts import AnalysisPlan, SeniorReview, SeniorReviewIssue
+from peopleops_api.analysis_contracts import AnalysisPlan, SeniorReview, SeniorReviewIssue, SemanticRequest
 from peopleops_api.hr_data_gateway import HRDataGateway
 from peopleops_api.mcp_contracts import DiscoveryCatalog, SecurityContext
 from peopleops_api.query_contracts import ConceptualQuery, QueryResult
+from peopleops_api.semantic_coverage import verify_semantic_coverage
 
 MAX_SENIOR_REVIEW_ROUNDS = 4
 
 
 class ReviewQueryInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="allow")
 
-    query_index: int = Field(ge=0, le=7)
-    query: dict[str, Any]
+    query_index: int | None = Field(default=None, ge=0, le=7)
+    query: dict[str, Any] = Field(default_factory=dict)
 
 
 class RepairRequestInput(BaseModel):
@@ -42,6 +43,10 @@ class RepairRequestInput(BaseModel):
     issues: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
 
 
+class VerifySemanticCoverageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 class SeniorReviewerState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     model_rounds: int
@@ -50,6 +55,7 @@ class SeniorReviewerState(TypedDict, total=False):
     tool_events: list[dict[str, Any]]
     validations: dict[int, dict[str, Any]]
     executions: dict[int, dict[str, Any]]
+    semantic_coverage: dict[str, Any] | None
     decision: dict[str, Any] | None
     termination_reason: str | None
 
@@ -61,6 +67,13 @@ def _dump(value: Any) -> str:
 def _query_fingerprint(query: dict[str, Any]) -> str:
     canonical = json.dumps(query, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _review_query_args(query_index: int | None, query: dict[str, Any], extra: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    direct_query = {key: value for key, value in extra.items() if key not in {"query_index", "query"}}
+    if not query and direct_query:
+        query = direct_query
+    return 0 if query_index is None else query_index, query
 
 
 class SeniorReviewerAgentError(RuntimeError):
@@ -98,8 +111,16 @@ class SeniorReviewerAgent:
             max_retries=2,
         )
 
-    def _tools(self, validated_cache: dict[int, dict[str, Any]]) -> list[StructuredTool]:
-        def validate(query_index: int, query: dict[str, Any]) -> dict[str, Any]:
+    def _tools(
+        self,
+        validated_cache: dict[int, dict[str, Any]],
+        semantic_request: SemanticRequest,
+        plan: AnalysisPlan,
+    ) -> list[StructuredTool]:
+        def validate(
+            query_index: int | None = None, query: dict[str, Any] | None = None, **extra: Any
+        ) -> dict[str, Any]:
+            query_index, query = _review_query_args(query_index, query or {}, extra)
             try:
                 parsed = ConceptualQuery.model_validate(query)
                 result = self.gateway.validate_query(
@@ -118,7 +139,10 @@ class SeniorReviewerAgent:
             except Exception as exc:  # noqa: BLE001 - tool feedback is part of the protocol
                 return {"query_index": query_index, "valid": False, "errors": [str(exc)]}
 
-        def execute(query_index: int, query: dict[str, Any]) -> dict[str, Any]:
+        def execute(
+            query_index: int | None = None, query: dict[str, Any] | None = None, **extra: Any
+        ) -> dict[str, Any]:
+            query_index, query = _review_query_args(query_index, query or {}, extra)
             try:
                 parsed = ConceptualQuery.model_validate(query)
                 validation = validated_cache.get(query_index)
@@ -169,7 +193,20 @@ class SeniorReviewerAgent:
             except Exception as exc:  # noqa: BLE001 - tool feedback is part of the protocol
                 return {"submitted": False, "errors": [str(exc)]}
 
+        def verify_coverage() -> dict[str, Any]:
+            return verify_semantic_coverage(semantic_request, plan, []).model_dump()
+
         return [
+            StructuredTool.from_function(
+                func=verify_coverage,
+                name="verify_semantic_coverage",
+                description=(
+                    "Verify whether the complete AnalysisPlan covers the typed operational "
+                    "semantic conditions from the Functional Analyst. This does not execute "
+                    "queries and does not validate SQL."
+                ),
+                args_schema=VerifySemanticCoverageInput,
+            ),
             StructuredTool.from_function(
                 func=validate,
                 name="validate_conceptual_query",
@@ -210,8 +247,9 @@ class SeniorReviewerAgent:
         previous_feedback: list[str] | None = None,
         review_cycle: int = 1,
     ) -> tuple[SeniorReview, dict[str, Any]]:
+        semantic = SemanticRequest.model_validate(semantic_request)
         validated_cache: dict[int, dict[str, Any]] = {}
-        tools = self._tools(validated_cache)
+        tools = self._tools(validated_cache, semantic, plan)
         max_tool_calls_per_round = len(tools)
         max_tool_calls = max_tool_calls_per_round * self.max_rounds
         tool_map = {tool.name: tool for tool in tools}
@@ -239,6 +277,7 @@ class SeniorReviewerAgent:
             "tool_events": [],
             "validations": {},
             "executions": {},
+            "semantic_coverage": None,
             "decision": None,
         }
 
@@ -261,6 +300,7 @@ class SeniorReviewerAgent:
             responses: list[ToolMessage] = []
             validations = dict(current.get("validations", {}))
             executions = dict(current.get("executions", {}))
+            semantic_coverage = current.get("semantic_coverage")
             decision = current.get("decision")
             repair_requested = False
             round_keys: set[str] = set()
@@ -314,7 +354,17 @@ class SeniorReviewerAgent:
                     required = set(range(len(plan.queries)))
                     validated = {idx for idx, payload in validations.items() if payload.get("valid")}
                     executed = {idx for idx, payload in executions.items() if payload.get("executed")}
-                    if requested_status == "APPROVE" and required - validated:
+                    if (
+                        requested_status == "APPROVE"
+                        and semantic.operational_conditions
+                        and (semantic_coverage or {}).get("status") != "COMPLETE"
+                    ):
+                        result = {
+                            "submitted": False,
+                            "errors": ["SEMANTIC_COVERAGE_MUST_BE_COMPLETE_BEFORE_APPROVE"],
+                            "semantic_coverage": semantic_coverage,
+                        }
+                    elif requested_status == "APPROVE" and required - validated:
                         result = {"submitted": False, "errors": ["ALL_QUERIES_MUST_BE_VALIDATED_BEFORE_SUBMIT", f"missing_query_indexes={sorted(required - validated)}"]}
                     elif requested_status == "APPROVE" and required - executed:
                         result = {"submitted": False, "errors": ["ALL_QUERIES_MUST_BE_EXECUTED_BEFORE_SUBMIT", f"missing_query_indexes={sorted(required - executed)}"]}
@@ -330,6 +380,8 @@ class SeniorReviewerAgent:
                 if name == "execute_conceptual_query" and index is not None:
                     if result.get("executed"):
                         executions[int(index)] = result
+                if name == "verify_semantic_coverage":
+                    semantic_coverage = result
                 if name == "request_query_repair" and result.get("submitted"):
                     decision = result["review"]
                     repair_requested = bool(result.get("repair_requested"))
@@ -342,6 +394,7 @@ class SeniorReviewerAgent:
                 "tool_events": tool_events,
                 "validations": validations,
                 "executions": executions,
+                "semantic_coverage": semantic_coverage,
                 "decision": decision,
                 "repair_requested": repair_requested,
             }
@@ -365,6 +418,7 @@ class SeniorReviewerAgent:
             "tool_events": result.get("tool_events", []),
             "validations": result.get("validations", {}),
             "executions": result.get("executions", {}),
+            "semantic_coverage": result.get("semantic_coverage"),
             "repair_requested": result.get("repair_requested", False),
             "model_decision": (result.get("decision") or {}).get("status"),
             "prompt_template": self._prompt(),

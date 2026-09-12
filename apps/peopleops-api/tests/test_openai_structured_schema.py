@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from peopleops_api.analysis_contracts import AnalysisPlan, StructuredAnswer
 from peopleops_api.mcp_contracts import (
@@ -14,6 +15,8 @@ from peopleops_api.analysis_workflow import (
     _response_output_text,
     _semantic_catalog,
 )
+
+PROMPTS_DIR = Path(__file__).resolve().parents[1] / "src" / "peopleops_api" / "resources" / "prompts"
 
 
 def test_openai_schema_closes_nested_objects_and_dynamic_items():
@@ -31,6 +34,38 @@ def test_openai_schema_closes_nested_objects_and_dynamic_items():
                 assert_strict(child)
 
     assert_strict(schema)
+
+
+def test_runtime_prompts_do_not_embed_reference_fixture_identifiers():
+    prompt_names = [
+        "functional-analyst.md",
+        "functional-analyst-agent.md",
+        "query-programmer.md",
+        "query-programmer-agent.md",
+        "senior-reviewer.md",
+    ]
+    forbidden = [
+        "employee.employee_code",
+        "employee.first_name",
+        "employee.last_name",
+        "employee.department_id",
+        "department.name",
+        "department.id",
+        "contract.start_date",
+        "contract.end_date",
+        "contract.status",
+        "overtime.approved_minutes",
+        "overtime.status",
+        "Operaciones",
+        "employee-department",
+    ]
+
+    findings = {
+        name: [item for item in forbidden if item in (PROMPTS_DIR / name).read_text()]
+        for name in prompt_names
+    }
+
+    assert findings == {name: [] for name in prompt_names}
 
 
 def test_openai_schema_supports_nested_analysis_contracts():

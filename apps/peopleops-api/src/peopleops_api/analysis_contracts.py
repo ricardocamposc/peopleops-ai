@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from peopleops_api.query_contracts import ConceptualQuery
+from peopleops_api.query_contracts import ConceptualQuery, QueryFilter, QueryFilterGroup
 
 
 class PolicyMetadataFilter(BaseModel):
@@ -42,6 +42,14 @@ class SemanticRequest(BaseModel):
     measures: list[str] = Field(default_factory=list, max_length=24)
     dimensions: list[str] = Field(default_factory=list, max_length=24)
     filters: list[str] = Field(default_factory=list, max_length=24)
+    operational_conditions: list[QueryFilter | QueryFilterGroup] = Field(
+        default_factory=list,
+        max_length=16,
+        description=(
+            "Structured provider-neutral conditions inferred from business meaning and "
+            "required to verify the requested population or metric."
+        ),
+    )
     temporal_requirements: list[str] = Field(default_factory=list, max_length=12)
     grouping_requirements: list[str] = Field(default_factory=list, max_length=12)
     ordering_requirements: list[str] = Field(default_factory=list, max_length=12)
@@ -116,6 +124,17 @@ class PlannedQuery(BaseModel):
     logical_role: Literal["current", "previous"] | None = None
 
 
+class QueryCombination(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    strategy: Literal["independent", "union", "intersection", "difference", "comparison"] = (
+        "independent"
+    )
+    deduplication_keys: list[str] = Field(default_factory=list, max_length=8)
+    partial_failure_policy: Literal["fail_analysis", "warn_and_continue"] = "fail_analysis"
+    reason: str = Field(default="", max_length=500)
+
+
 class PolicyPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -130,6 +149,7 @@ class AnalysisPlan(BaseModel):
 
     goal: str = Field(min_length=1, max_length=255)
     queries: list[PlannedQuery] = Field(default_factory=list, max_length=8)
+    combination: QueryCombination = Field(default_factory=QueryCombination)
     policy: PolicyPlan | None = None
 
 

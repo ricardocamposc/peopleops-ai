@@ -81,6 +81,20 @@ The repository is currently **production-oriented, not production-ready**.
 Before any real client implementation, review the backlog's Production Gate
 and Controlled Pilot Gate.
 
+### Semantic analysis capability plan
+
+For work that improves natural-language business analysis, conceptual query
+expressiveness, semantic coverage verification, reviewer behavior, structured
+evidence sufficiency, or related evaluations, Codex MUST use
+`docs/SEMANTIC-ANALYSIS-CAPABILITY-PLAN.md` as the implementation guide and
+tracking document.
+
+Before implementing any related change, read that plan after the mandatory
+baseline documentation above. After each completed implementation, update the
+plan's status, checklist items, implementation log, important decisions, tests
+run, and unresolved issues so the current state and implementation details are
+not lost.
+
 ## 3. Work one slice at a time
 
 The implementation roadmap is intentionally incremental.

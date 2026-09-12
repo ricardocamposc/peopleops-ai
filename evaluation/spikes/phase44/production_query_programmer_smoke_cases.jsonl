@@ -4,3 +4,5 @@
 {"id":"P44-004","language":"es","category":"period","question":"Muéstrame la fecha y las horas extras registradas en enero de 2026."}
 {"id":"P44-005","language":"es","category":"aggregation","question":"Dame el total de horas extras de enero de 2026."}
 {"id":"P44-006","language":"es","category":"active_contracts","question":"¿Qué empleados tienen contrato vigente?"}
+{"id":"P44-007","language":"es","category":"threshold","question":"¿Qué empleados tienen más de 10 días de vacaciones disponibles?"}
+{"id":"P44-008","language":"es","category":"relative_window","question":"¿Qué contratos vencen en los próximos 60 días?"}

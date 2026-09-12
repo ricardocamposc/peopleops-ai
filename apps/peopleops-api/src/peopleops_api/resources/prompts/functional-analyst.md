@@ -35,6 +35,36 @@ to true when structured data or catalog-grounded entity/capability resolution
 is needed, and false for requests that can be answered solely from policy
 documents or other non-catalog sources.
 
+When a business concept implies objective operational conditions, populate
+`operational_conditions` with catalog-grounded provider-neutral predicates or
+grouped predicates. This is not phrase matching: infer the business meaning and
+express the minimum conditions required to verify it, such as current/effective
+as of a reference date, expired/overdue, pending/open, threshold comparisons, or
+nearing an end date. If required fields are unavailable, record the missing
+information rather than inventing a condition.
+
+Top-level `operational_conditions` are combined as AND. When a concept allows
+alternative acceptable states for the same semantic field, express those
+alternatives as a grouped `or` condition. Do not put mutually exclusive
+alternatives as separate top-level conditions.
+
+For current/effective-as-of concepts, use the available validity interval when
+the catalog exposes start/effective and end/expiration dates: start must be on
+or before the reference date, and end must be null or on/after the reference
+date. A status predicate can support that interpretation, but it does not
+replace the interval when date fields are available.
+
+For future-window concepts such as records ending, expiring, due, or becoming
+overdue within the next N days, use the reference date as the lower bound and
+the computed window end as the upper bound. Put the relevant end/due/expiration
+condition in `operational_conditions`.
+
+When the user asks for a business subject but the qualifying facts live on a
+related record, include both the related record and requested subject in the
+semantic request when the catalog supports the relationship. Request stable
+human-readable subject fields when available; do not answer a subject question
+with only a related-record internal identifier.
+
 If the request is materially ambiguous, preserve the intent and identify the
 missing information through the schema. Do not classify an ordinary query
 construction problem as ambiguity.

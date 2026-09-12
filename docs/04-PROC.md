@@ -69,6 +69,11 @@ Question → discover payroll capabilities
 → policy retrieval if relevant
 → explanation + evidence
 ```
+Si la solicitud requiere datos payroll/HRIS restringidos y el contexto de
+seguridad actual no incluye `hr:payroll`, el flujo payroll debe detenerse con
+`AUTHORIZATION_DENIED` y pasar a `PROC-14`. No debe gastar rondas adicionales
+del modelo intentando entidades payroll alternativas, ni validar/ejecutar una
+consulta conceptual payroll sin aprobación.
 
 ## PROC-08 — Attendance ↔ Payroll Reconciliation
 ```text
@@ -85,6 +90,10 @@ review required → HumanReviewRequest → snapshot evidence
 → reviewer approve/reject/needs_information
 → persist → resume → synthesis
 ```
+Para autorización payroll restringida, Human Review funciona como punto de
+aprobación del mismo análisis bloqueado. La aprobación no otorga permisos
+globales al usuario; autoriza una re-ejecución auditada de la solicitud
+pendiente con `hr:payroll` registrado explícitamente en el rastro del workflow.
 
 ## PROC-10 — Conversation Follow-up
 ```text
@@ -102,6 +111,9 @@ MODEL_ERROR, HUMAN_REVIEW_ERROR, SYSTEM_ERROR.
 Failure → normalize → persist stage/error
 → retry only if policy permits → safe response
 ```
+`AUTHORIZATION_DENIED` desde MCP no es transitorio. Para payroll restringido es
+una pausa gobernada: persistir la respuesta segura de autorización, crear el
+item de Human Review y esperar la decisión del revisor.
 
 ## PROC-12 — Evaluation Run
 ```text
@@ -119,3 +131,40 @@ Evaluation subset
 → compare outcomes
 ```
 Falla si hay que cambiar PeopleOps para soportar el segundo schema.
+
+## PROC-14 — Restricted Payroll Authorization
+```text
+User question requires restricted payroll/HRIS data
+→ AnalysisInteraction created
+→ Functional Analyst discovers available capabilities
+→ MCP scoped payroll discovery/read attempt
+→ MCP returns AUTHORIZATION_DENIED because hr:payroll is absent
+→ PeopleOps persists safe authorization state
+→ HumanReviewRequest created with authorization recommendation
+→ AnalysisInteraction=pending_human_review
+→ Human Review inbox shows the blocked request
+→ reviewer decision
+   reject / needs_information → persist decision and keep safe response
+   approve → re-run the same analysis with explicit hr:payroll scope
+→ normal payroll discovery/planning/validation/execution through MCP
+→ evidence merge + synthesis
+→ AnalysisInteraction completed with human_review_status=approve
+```
+
+Reglas:
+- `hr:payroll` es requerido antes de exponer filas payroll, campos payroll,
+  conceptos payroll, montos payroll o evidencia payroll a nivel empleado.
+- El primer intento no autorizado debe fallar cerrado antes de validar o
+  ejecutar una consulta conceptual payroll.
+- La denegación de autorización del MCP es autoritativa y debe conservarse
+  aunque el modelo intente después un alcance de catálogo más amplio o distinto.
+- La aprobación está acotada a la solicitud de análisis pendiente. No debe
+  mutar permisos globales del usuario, saltarse MCP ni crear acceso directo a
+  HRIS.
+- La re-ejecución aprobada usa el camino normal PeopleOps API → HRDataGateway
+  → MCP Client → Reference MCP Server con `hr:payroll` incluido.
+- El análisis final debe quedar auditable en el historial: denegación original,
+  decisión de Human Review, scope elevado para la re-ejecución aprobada,
+  validación del proveedor, evidencia de ejecución y respuesta final persistida
+  en `AnalysisInteraction`.
+- No se permiten escrituras payroll/HRIS.

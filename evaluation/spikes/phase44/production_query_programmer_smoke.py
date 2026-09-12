@@ -1,4 +1,4 @@
-"""Run five production PeopleOps analyses and persist viewer-friendly traces."""
+"""Run production PeopleOps smoke analyses and persist viewer-friendly traces."""
 
 from __future__ import annotations
 
@@ -271,6 +271,8 @@ def _row(case: dict, response: dict, started: float) -> dict:
     model_events = [event for event in audit_trace if event["role"] == "query_programmer_model"]
     tool_events = [event for event in audit_trace if event["role"] == "query_programmer_tool"]
     planning = trace.get("planning_attempts", [])
+    senior_reviews = trace.get("senior_reviews", [])
+    semantic_coverage = _semantic_coverage_from_reviews(senior_reviews)
     return {
         "id": case["id"],
         "language": case.get("language", "es"),
@@ -289,7 +291,8 @@ def _row(case: dict, response: dict, started: float) -> dict:
         "model_events": model_events,
         "tool_events": tool_events,
         "audit_trail": audit_trace,
-        "senior_reviews": trace.get("senior_reviews", []),
+        "senior_reviews": senior_reviews,
+        "semantic_coverage": semantic_coverage,
         "validation": trace.get("provider_validations", []),
         "stage_history": response.get("stage_history", []),
         "technical_valid": response.get("status") == "completed",
@@ -318,7 +321,10 @@ def run(
             raise ValueError("--limit must be positive")
         cases = cases[:limit]
     if case_ids is None and not allow_case_count and len(cases) != 5:
-        raise ValueError(f"smoke dataset must contain exactly 5 cases, found {len(cases)}")
+        raise ValueError(
+            f"legacy smoke mode expects exactly 5 cases, found {len(cases)}; "
+            "use --allow-case-count for expanded smoke datasets"
+        )
     if not cases:
         raise ValueError("at least one case is required")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -326,11 +332,11 @@ def run(
         "run_type": "production_query_programmer_smoke",
         "phase": "phase44",
         "test_description": (
-            f"Phase 4.4 — Production Query Programmer — baseline {len(cases)} cases"
+            f"Phase 4.4 — Production Query Programmer — expanded {len(cases)}-case smoke"
             if allow_case_count
             else "Phase 4.4 — Production Query Programmer — selected case smoke"
             if case_ids is not None
-            else "Phase 4.4 — Production Query Programmer — complete 5-case smoke"
+            else "Phase 4.4 — Production Query Programmer — legacy 5-case smoke"
         ),
         "cases": len(cases),
         "status": "RUNNING",
@@ -363,6 +369,11 @@ def run(
 
 
 def _metrics(rows: list[dict]) -> dict:
+    coverage_statuses = [
+        row.get("semantic_coverage", {}).get("status")
+        for row in rows
+        if row.get("semantic_coverage")
+    ]
     return {
         "cases": len(rows),
         "completed": sum(row.get("final_status") == "completed" for row in rows),
@@ -370,7 +381,22 @@ def _metrics(rows: list[dict]) -> dict:
         "tool_calls": sum(row.get("programmer_metadata", {}).get("tool_calls", 0) for row in rows),
         "validation_calls": sum(row.get("programmer_metadata", {}).get("validation_calls", 0) for row in rows),
         "senior_reviews": sum(bool(row.get("senior_reviews")) for row in rows),
+        "semantic_coverage_checked": len(coverage_statuses),
+        "semantic_coverage_complete": coverage_statuses.count("COMPLETE"),
+        "semantic_coverage_not_applicable": coverage_statuses.count("NOT_APPLICABLE"),
+        "semantic_coverage_incomplete": coverage_statuses.count("INCOMPLETE"),
+        "semantic_coverage_contradicted": coverage_statuses.count("CONTRADICTED"),
     }
+
+
+def _semantic_coverage_from_reviews(reviews: list[dict]) -> dict | None:
+    for review in reversed(reviews):
+        coverage = review.get("semantic_coverage") or (
+            review.get("metadata") or {}
+        ).get("semantic_coverage")
+        if isinstance(coverage, dict):
+            return coverage
+    return None
 
 
 def main() -> None:

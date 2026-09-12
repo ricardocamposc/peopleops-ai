@@ -1,9 +1,9 @@
 import json
 import logging
 from time import monotonic
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
@@ -44,7 +44,9 @@ from peopleops_api.repositories import (
 )
 from peopleops_api.schemas import (
     AnalysisCreate,
+    AnalysisDetailTrace,
     AnalysisRead,
+    AnalysisTraceStep,
     HumanReviewDecisionCreate,
     HumanReviewRead,
     PolicyChunkRead,
@@ -82,6 +84,311 @@ def _analysis_response(interaction, *, include_evaluation_trace: bool = False) -
     if not include_evaluation_trace:
         result.evaluation_trace = None
     return result
+
+
+def _safe_trace_payload(value: Any, *, max_items: int = 8) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    blocked = {
+        "input",
+        "incremental_input",
+        "rendered_messages",
+        "rendered_system_prompt",
+        "prompt_template",
+        "request",
+        "request_messages",
+        "messages",
+    }
+    payload = {key: item for key, item in value.items() if key not in blocked}
+    if not payload:
+        return None
+    return dict(list(payload.items())[:max_items])
+
+
+def _display_name(value: str | None) -> str:
+    if not value:
+        return "Workflow"
+    return value.replace("_", " ").strip().title()
+
+
+def _parse_datetime(value: Any):
+    if not value:
+        return None
+    if hasattr(value, "isoformat"):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+def _query_count(query_plan: Any) -> int:
+    if not isinstance(query_plan, dict):
+        return 0
+    queries = query_plan.get("queries")
+    return len(queries) if isinstance(queries, list) else 0
+
+
+def _row_count(structured_result: Any) -> int | None:
+    if isinstance(structured_result, list):
+        return len(structured_result)
+    if isinstance(structured_result, dict):
+        rows = structured_result.get("rows")
+        if isinstance(rows, list):
+            return len(rows)
+        facts = structured_result.get("facts")
+        if isinstance(facts, list):
+            return len(facts)
+    return None
+
+
+def _validation_records(interaction, trace: dict[str, Any]) -> list[dict[str, Any]]:
+    records = trace.get("provider_validations", [])
+    if isinstance(records, list) and records:
+        return [record for record in records if isinstance(record, dict)]
+    if not isinstance(interaction.validation, dict):
+        return []
+    derived = []
+    for key, value in interaction.validation.items():
+        if not isinstance(value, dict) or "valid" not in value:
+            continue
+        query_index = value.get("query_index")
+        if query_index is None:
+            query_index = int(key) if str(key).isdigit() else key
+        derived.append(
+            {
+                "attempt_number": value.get("attempt_number") or 1,
+                "query_index": query_index,
+                "accepted": bool(value.get("valid")),
+                "errors": value.get("errors") or [],
+                "catalog_version": value.get("catalog_version"),
+                "query_hash": value.get("query_hash"),
+                "source": "analysis_interaction.validation",
+            }
+        )
+    return derived
+
+
+def _execution_records(interaction, trace: dict[str, Any]) -> list[dict[str, Any]]:
+    records = trace.get("provider_executions", [])
+    if isinstance(records, list) and records:
+        return [record for record in records if isinstance(record, dict)]
+    evidence = interaction.evidence or interaction.structured_result or []
+    if not isinstance(evidence, list):
+        return []
+    derived = []
+    for index, item in enumerate(evidence):
+        if not isinstance(item, dict) or item.get("type") != "structured_data":
+            continue
+        result = item.get("result") if isinstance(item.get("result"), dict) else {}
+        rows = result.get("rows") if isinstance(result, dict) else None
+        verification = item.get("result_verification") if isinstance(item.get("result_verification"), dict) else {}
+        derived.append(
+            {
+                "attempt_number": 1,
+                "query_index": index,
+                "success": True,
+                "row_count": len(rows) if isinstance(rows, list) else None,
+                "result_verification_status": verification.get("status"),
+                "source": "analysis_interaction.evidence",
+            }
+        )
+    return derived
+
+
+def _analysis_detail_trace(interaction) -> AnalysisDetailTrace:
+    trace = interaction.evaluation_trace or {}
+    steps: list[AnalysisTraceStep] = []
+
+    for index, event in enumerate(interaction.stage_history or [], start=1):
+        stage = event.get("stage")
+        status_value = event.get("status")
+        details = []
+        if event.get("error_type"):
+            details.append(f"Error: {event['error_type']}")
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="workflow",
+                title=_display_name(stage),
+                status=status_value,
+                stage=stage,
+                graph_node=event.get("graph_node") or stage,
+                at=_parse_datetime(event.get("at")),
+                summary=f"Estado {status_value}" if status_value else None,
+                details=details,
+                metrics={"stage_event": index},
+            )
+        )
+
+    if interaction.semantic_request:
+        semantic = interaction.semantic_request
+        details = []
+        if isinstance(semantic.get("required_capabilities"), list) and semantic[
+            "required_capabilities"
+        ]:
+            details.append(
+                "Capacidades requeridas: " + ", ".join(map(str, semantic["required_capabilities"]))
+            )
+        if isinstance(semantic.get("operational_conditions"), list):
+            details.append(
+                f"Condiciones operacionales: {len(semantic['operational_conditions'])}"
+            )
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="analysis",
+                title="Interpretacion Semantica",
+                status="completed",
+                stage="understanding",
+                graph_node="understand_request",
+                summary=str(semantic.get("goal") or "Requerimiento interpretado"),
+                details=details,
+                payload=_safe_trace_payload(semantic),
+            )
+        )
+
+    if interaction.query_plan:
+        combination = interaction.query_plan.get("combination")
+        details = [f"Queries conceptuales: {_query_count(interaction.query_plan)}"]
+        if isinstance(combination, dict) and combination.get("strategy"):
+            details.append(f"Estrategia: {combination['strategy']}")
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="analysis",
+                title="Plan Conceptual",
+                status="completed",
+                stage="planning",
+                graph_node="plan_queries",
+                summary=str(interaction.query_plan.get("goal") or "Plan de consulta preparado"),
+                details=details,
+                metrics={"query_count": _query_count(interaction.query_plan)},
+                payload=_safe_trace_payload(interaction.query_plan),
+            )
+        )
+
+    validation_records = _validation_records(interaction, trace if isinstance(trace, dict) else {})
+    for record in validation_records:
+        if not isinstance(record, dict):
+            continue
+        accepted = bool(record.get("accepted"))
+        details = []
+        if record.get("errors"):
+            details.append("; ".join(map(str, record["errors"])))
+        if record.get("query_hash"):
+            details.append(f"Query hash: {record['query_hash']}")
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="tool",
+                title="MCP Validate Conceptual Query",
+                status="completed" if accepted else "failed",
+                stage="query_execution",
+                graph_node="execute_queries",
+                tool_name="validate_query",
+                summary="Query aceptada por el provider" if accepted else "Query rechazada por el provider",
+                details=details,
+                metrics={
+                    "attempt": record.get("attempt_number"),
+                    "query_index": record.get("query_index"),
+                },
+                payload=_safe_trace_payload(record),
+            )
+        )
+
+    execution_records = _execution_records(interaction, trace if isinstance(trace, dict) else {})
+    for record in execution_records:
+        if not isinstance(record, dict):
+            continue
+        success = bool(record.get("success"))
+        details = []
+        if record.get("error"):
+            details.append(str(record["error"]))
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="tool",
+                title="MCP Execute Conceptual Query",
+                status="completed" if success else "failed",
+                stage="query_execution",
+                graph_node="execute_queries",
+                tool_name="execute_query",
+                summary="Ejecucion completada" if success else "Ejecucion fallida",
+                details=details,
+                metrics={
+                    "attempt": record.get("attempt_number"),
+                    "query_index": record.get("query_index"),
+                    "row_count": record.get("row_count"),
+                    "result_verification_status": record.get("result_verification_status"),
+                },
+                payload=_safe_trace_payload(record),
+            )
+        )
+
+    for review in trace.get("senior_reviews", []) if isinstance(trace, dict) else []:
+        if not isinstance(review, dict):
+            continue
+        coverage = review.get("semantic_coverage") if isinstance(review.get("semantic_coverage"), dict) else {}
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="review",
+                title="Senior Semantic Review",
+                status=str(review.get("status") or "").lower() or None,
+                stage="senior_review",
+                graph_node="senior_review_node",
+                summary=str((review.get("review") or {}).get("summary") or review.get("status") or "Revision semantica"),
+                details=[f"Cobertura semantica: {coverage.get('status')}"] if coverage.get("status") else [],
+                metrics={"attempt": review.get("attempt_number")},
+                payload=_safe_trace_payload(review),
+            )
+        )
+
+    if interaction.validation:
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="validation",
+                title="Validacion Deterministica",
+                status="completed",
+                summary="Validaciones persistidas para auditoria",
+                payload=_safe_trace_payload(interaction.validation),
+            )
+        )
+
+    if interaction.response:
+        warnings = interaction.warnings or []
+        steps.append(
+            AnalysisTraceStep(
+                sequence=len(steps) + 1,
+                kind="analysis",
+                title="Sintesis",
+                status=interaction.status,
+                stage="synthesis",
+                graph_node="hr_assistant",
+                summary=str(interaction.response.get("answer") or "Respuesta preparada"),
+                details=[f"Advertencias: {len(warnings)}"] if warnings else [],
+            )
+        )
+
+    return AnalysisDetailTrace(
+        request_id=interaction.request_id,
+        status=interaction.status,
+        current_stage=interaction.current_stage,
+        steps=steps,
+        summary={
+            "workflow_events": len(interaction.stage_history or []),
+            "tool_validations": len(validation_records),
+            "tool_executions": len(execution_records),
+            "query_count": _query_count(interaction.query_plan),
+            "structured_result_count": _row_count(interaction.structured_result),
+            "policy_evidence_count": len(interaction.policy_sources or []),
+            "warnings": len(interaction.warnings or []),
+        },
+    )
 
 
 def _security_context(request: Request) -> SecurityContext:
@@ -217,6 +524,20 @@ def read_analysis(request_id: str, session: Annotated[Session, Depends(get_db)])
     return _analysis_response(interaction, include_evaluation_trace=include_trace)
 
 
+@app.get("/api/v1/analysis/{request_id}/details", response_model=AnalysisDetailTrace)
+def read_analysis_details(
+    request_id: str, session: Annotated[Session, Depends(get_db)]
+) -> AnalysisDetailTrace:
+    try:
+        parsed_request_id = UUID(request_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid request_id") from exc
+    interaction = get_interaction(session, parsed_request_id)
+    if interaction is None:
+        raise HTTPException(status_code=404, detail="analysis not found")
+    return _analysis_detail_trace(interaction)
+
+
 @app.get("/api/v1/analysis", response_model=list[AnalysisRead])
 def list_analysis(
     session: Annotated[Session, Depends(get_db)], limit: int = 50
@@ -306,10 +627,15 @@ def human_review_decision(
     except ValueError as exc:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    if created:
-        interaction = session.get(type(review.analysis), review.analysis_id)
-        if interaction is None:
-            raise HTTPException(status_code=404, detail="analysis not found")
+    interaction = session.get(type(review.analysis), review.analysis_id)
+    if interaction is None:
+        raise HTTPException(status_code=404, detail="analysis not found")
+    should_resume = created or (
+        payload.decision == "approve"
+        and review.decision == "approve"
+        and interaction.status != "completed"
+    )
+    if should_resume:
         workflow = AnalysisWorkflow(
             session=session,
             gateway=HRDataGateway(
@@ -331,7 +657,7 @@ def human_review_decision(
             policy_provider=PolicyKnowledgeProvider(session, get_embedding_model(settings)),
             read_analysis_human_review_enabled=settings.hr_read_analysis_human_review_enabled,
         )
-        workflow.resume(interaction)
+        workflow.resume(interaction, force=not created)
         session.refresh(review)
     return _human_review_response(review)
 

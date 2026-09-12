@@ -104,6 +104,13 @@ class MCPClient:
                     continue
                 raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id, retryable=True) from exc
             except Exception as exc:
+                provider_code = _provider_error_code_from_exception(exc)
+                if provider_code != "MCP_PROVIDER_ERROR":
+                    raise MCPProviderError(
+                        provider_code,
+                        "MCP provider rejected the request",
+                        request_id=context.request_id,
+                    ) from exc
                 if attempt < self.max_retries:
                     continue
                 raise MCPUnavailableError("MCP_UNAVAILABLE", "MCP provider is unavailable", request_id=context.request_id, retryable=True) from exc
@@ -142,6 +149,11 @@ class MCPClient:
 
 
 def _provider_error_code(content: list[Any]) -> str:
+    text = " ".join(item.text for item in content if isinstance(item, TextContent))
+    return _provider_error_code_from_text(text)
+
+
+def _provider_error_code_from_text(text: str) -> str:
     known = {
         "INVALID_CONCEPTUAL_QUERY",
         "UNSUPPORTED_ENTITY",
@@ -157,5 +169,20 @@ def _provider_error_code(content: list[Any]) -> str:
         "CATALOG_CHANGED",
         "SOURCE_UNAVAILABLE",
     }
-    text = " ".join(item.text for item in content if isinstance(item, TextContent))
     return next((code for code in known if code in text), "MCP_PROVIDER_ERROR")
+
+
+def _provider_error_code_from_exception(exc: BaseException) -> str:
+    if isinstance(exc, MCPProviderError):
+        return exc.code
+    if isinstance(exc, BaseExceptionGroup):
+        for item in exc.exceptions:
+            code = _provider_error_code_from_exception(item)
+            if code != "MCP_PROVIDER_ERROR":
+                return code
+    cause = getattr(exc, "__cause__", None)
+    if cause is not None:
+        code = _provider_error_code_from_exception(cause)
+        if code != "MCP_PROVIDER_ERROR":
+            return code
+    return _provider_error_code_from_text(str(exc))

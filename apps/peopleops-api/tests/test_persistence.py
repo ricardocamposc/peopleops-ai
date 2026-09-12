@@ -104,6 +104,129 @@ def test_analysis_api_lists_recent_interactions(db_session) -> None:
         app.dependency_overrides.pop(get_db, None)
 
 
+def test_analysis_api_reports_payroll_authorization_as_controlled_restriction(
+    monkeypatch, db_session
+) -> None:
+    from peopleops_api.analysis_workflow import AnalysisWorkflow
+    from peopleops_api.db import get_db
+
+    def fake_run(self, interaction):  # noqa: ANN001
+        interaction.status = "insufficient_data"
+        interaction.current_stage = "finalize_response"
+        interaction.error_type = "AUTHORIZATION_ERROR"
+        interaction.error_detail = "payroll access requires the hr:payroll scope"
+        interaction.response = {
+            "answer": "La solicitud requiere permisos adicionales para consultar esos datos.",
+            "status": "insufficient_data",
+            "facts": [],
+            "policies": [],
+            "inference": [],
+            "key_findings": [],
+            "warnings": ["La solicitud requiere permisos adicionales para consultar esos datos."],
+        }
+        interaction.warnings = interaction.response["warnings"]
+        db_session.add(interaction)
+        db_session.commit()
+        return interaction
+
+    def override_get_db():
+        yield db_session
+
+    monkeypatch.setattr(AnalysisWorkflow, "run", fake_run)
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).post(
+            "/api/v1/analysis",
+            json={"question": "Que trabajadores ganan mas de 1000?", "created_by": "tester"},
+        )
+        assert response.status_code == 201
+        body = response.json()
+        assert body["status"] == "insufficient_data"
+        assert body["error_type"] == "AUTHORIZATION_ERROR"
+        assert "permisos adicionales" in body["response"]["answer"]
+        assert "REPEATED_TOOL_FAILURE_NO_PROGRESS" not in str(body)
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_analysis_details_api_returns_safe_persisted_trace(db_session) -> None:
+    from peopleops_api.db import get_db
+
+    interaction = create_interaction(
+        db_session,
+        question="Explain this flow",
+        conversation_id=None,
+        created_by="tester",
+        metadata={},
+    )
+    transition(
+        db_session,
+        interaction,
+        stage="planning",
+        status="completed",
+        snapshots={
+            "semantic_request": {
+                "goal": "Explain evidence",
+                "required_capabilities": ["structured_data"],
+            },
+            "query_plan": {
+                "goal": "Explain evidence",
+                "queries": [{"query": {"entities": ["conceptual_entity"]}}],
+                "combination": {"strategy": "independent"},
+            },
+            "validation": {"semantic_coverage": {"status": "COMPLETE"}},
+        },
+    )
+    interaction.evaluation_trace = {
+        "provider_validations": [
+            {
+                "attempt_number": 1,
+                "query_index": 0,
+                "accepted": True,
+                "query_hash": "abc",
+                "prompt_template": "hidden",
+                "input": {"messages": ["hidden"]},
+            }
+        ],
+        "provider_executions": [
+            {
+                "attempt_number": 1,
+                "query_index": 0,
+                "success": True,
+                "row_count": 2,
+                "result_verification_status": "VALID",
+            }
+        ],
+        "senior_reviews": [
+            {
+                "attempt_number": 1,
+                "status": "APPROVE",
+                "review": {"summary": "Covered"},
+                "semantic_coverage": {"status": "COMPLETE"},
+            }
+        ],
+    }
+    db_session.commit()
+
+    def override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        response = TestClient(app).get(f"/api/v1/analysis/{interaction.request_id}/details")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["summary"]["tool_validations"] == 1
+        assert body["summary"]["tool_executions"] == 1
+        assert {step["kind"] for step in body["steps"]} >= {"workflow", "analysis", "tool", "review"}
+        serialized = str(body)
+        assert "hidden" not in serialized
+        assert "prompt_template" not in serialized
+        assert "input" not in serialized
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
 def test_missing_conversation_is_rejected(db_session) -> None:
     with pytest.raises(LookupError):
         create_interaction(
